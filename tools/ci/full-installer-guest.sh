@@ -5,7 +5,7 @@ mkdir -p /ci-output
 exec > >(tee /ci-output/guest.log) 2>&1
 
 desktop_user() {
-    runuser -u builder -- env XDG_RUNTIME_DIR=/run/user/1000 \
+    runuser -u builder -- env -u PYTHONPATH XDG_RUNTIME_DIR=/run/user/1000 \
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
         CARGO_BUILD_JOBS=3 CMAKE_BUILD_PARALLEL_LEVEL=4 TERM=dumb NO_COLOR=1 "$@"
 }
@@ -33,6 +33,7 @@ printf 'Guest PID 1: '
 cat /proc/1/comm
 [[ $(cat /proc/1/comm) == systemd ]]
 [[ $(systemd-detect-virt) == kvm ]]
+[[ ${SYSTEMD_OFFLINE:-0} == 0 ]]
 uname -a
 systemctl is-active systemd-udevd.service
 udevadm control --reload-rules
@@ -52,6 +53,17 @@ desktop_user pw-dump > /ci-output/pipewire-after.json
 systemctl is-active systemd-udevd.service
 pacman -Q spatial-workbench plasma-budslink-companion-spatial orender-spatial \
     harletty-bridge mpv-omniphony sony-tracker python-tidalapi
+
+# Exercise the installed native decoder and complete software audio path. The
+# private PipeWire endpoints and head-pose packets remain explicit test inputs;
+# they do not turn the separate physical-host checks below into hardware PASSes.
+install -d -o builder -g builder /ci-output/audio
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/decoder-smoke.py \
+    --download-fixture --report /ci-output/audio/decoder-smoke.json
+desktop_user timeout --signal=TERM --kill-after=10s 10m dbus-run-session -- \
+    python -I /home/builder/spatial-workbench/tools/ci/audio-stack-smoke.py \
+    --require-media-audio --bridge /usr/lib/orender/libharletty_bridge.so \
+    --report-dir /ci-output/audio/pipewire
 python - <<'PY'
 import json
 from pathlib import Path

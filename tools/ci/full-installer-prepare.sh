@@ -2,11 +2,27 @@
 # Image assembly only. Installation under test runs later, after a genuine boot.
 set -Eeuo pipefail
 export LC_ALL=C
+mkdir -p /ci-output
+outer_network=$(readlink /proc/self/ns/net)
+isolated_network=$(unshare --net readlink /proc/self/ns/net)
+[[ "$outer_network" != "$isolated_network" ]]
+printf 'Package-hook network namespace: %s -> %s\n' "$outer_network" "$isolated_network"
 # Stable, readable English prompt transcripts; normal package review stays on.
 sed -i '/^[[:space:]]*Color[[:space:]]*$/s/^/# CI transcript: /' /etc/pacman.conf
-pacman -Syu --noconfirm --needed base-devel git python python-pexpect sudo \
+# Official systemd image-build mode: package hooks may install units and data,
+# but must not try to start kernel/service units against Docker's PID 1.
+# This environment applies only to this offline package transaction; it is
+# neither persisted in the image nor set for the real booted installer below.
+# https://github.com/systemd/systemd/blob/main/docs/ENVIRONMENT.md
+SYSTEMD_OFFLINE=1 pacman -Syu --noconfirm --needed base-devel git python python-pexpect python-numpy sudo \
     systemd systemd-sysvcompat mkinitcpio linux-cachyos \
-    pipewire pipewire-audio wireplumber dbus
+    pipewire pipewire-audio wireplumber dbus 2>&1 | tee /ci-output/bootstrap-pacman.log
+# pacman can return success after a failed post-transaction hook. Missing
+# depmod/systemd hooks would leave an incomplete guest, so fail at the cause.
+if grep -Eq '^error: command failed to execute correctly|refusing to run ' /ci-output/bootstrap-pacman.log; then
+    printf 'Package setup or a post-transaction hook failed; refusing to boot an incomplete image.\n' >&2
+    exit 1
+fi
 pacman-conf --repo-list | grep -Fx cachyos
 pacman -Q cachyos-keyring linux-cachyos systemd
 useradd --create-home --uid 1000 --shell /bin/bash builder
@@ -59,6 +75,8 @@ EOF
 mapfile -t kernel_images < <(find /usr/lib/modules -mindepth 2 -maxdepth 2 -name vmlinuz -type f)
 [[ ${#kernel_images[@]} == 1 ]]
 kernel_version=$(basename "$(dirname "${kernel_images[0]}")")
+[[ -s /usr/lib/modules/"$kernel_version"/modules.dep.bin ]]
+modinfo -k "$kernel_version" virtio_blk
 cp "${kernel_images[0]}" /boot/ci-vmlinuz
 mkinitcpio -k "$kernel_version" -c /ci-mkinitcpio.conf -g /boot/ci-initramfs.img
 pacman -Q > /ci-output/bootstrap-packages.txt

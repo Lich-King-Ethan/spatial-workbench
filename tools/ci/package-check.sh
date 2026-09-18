@@ -24,6 +24,18 @@ if (( status == 0 && pipeline_status[1] != 0 )); then
   status=${pipeline_status[1]}
 fi
 
+# Pacman can return zero after refusing network isolation for install hooks.
+# Reject that specific incomplete execution. Other hook diagnostics can reflect
+# the documented non-booted container scope; the booted VM checks those itself.
+hook_failure=0
+if grep -Eq 'refusing to run .* with network access; set DisableSandboxNetwork' "$log_file"; then
+  hook_failure=1
+  if (( status == 0 )); then
+    status=1
+  fi
+  printf '%s\n' '::error title=Pacman hook isolation failure::Pacman refused an install scriptlet/hook because network isolation was unavailable. A zero transaction exit does not establish a complete installation.'
+fi
+
 write_summary() {
   printf '### Package `%s`: ' "$package"
   if (( status == 0 )); then
@@ -31,6 +43,9 @@ write_summary() {
     return
   fi
   printf 'failed (exit %s)\n\n' "$status"
+  if (( hook_failure )); then
+    printf '%s\n\n' 'Pacman refused a scriptlet/hook because network isolation was unavailable; a zero transaction exit does not establish complete execution.'
+  fi
   printf '%s\n\n' 'Download the package-check log artifact for the complete output.'
   printf '%s\n\n' '<details><summary>First errors and final output</summary>'
   printf '%s\n' '<pre>'

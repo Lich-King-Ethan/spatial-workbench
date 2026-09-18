@@ -16,6 +16,14 @@ widget behavior, Bluetooth, HID permissions on a physical receiver and headphone
 playback still require the desktop and actual devices. The acceptance artifact
 requires those absent hardware/playback checks to remain `WAIT`.
 
+After installation, the job also decodes a checksummed upstream E-AC-3 JOC
+fixture through the installed genuine decoder bridge and renderer, requiring
+decoded objects, non-silent stereo PCM and a binaural response to head rotation.
+The separate private PipeWire gate exercises the real installed player,
+renderer and equalizer with generated head poses and simulated audio endpoints.
+Its captured audio and metrics are software integration evidence, not proof of
+physical earbud playback.
+
 The job uses a standard public `ubuntu-24.04` runner and requires usable KVM,
 16GB host RAM and at least 22GiB free disk before provisioning. It gives the guest
 4 virtual CPUs, 10GiB RAM and an 18GiB disk, with a 90-minute workflow limit.
@@ -30,6 +38,16 @@ secrets, host files and physical devices are not shared. QEMU uses outbound NAT
 with no forwarded ports. Serial boot output, exact package versions, package
 configuration, journals, installer logs and acceptance JSON are retained as a
 workflow artifact on success or failure. The VM disk is temporary.
+
+The temporary image-assembly container receives `CAP_SYS_ADMIN` so pacman can
+create the network namespaces that isolate its installation hooks. Docker's
+default seccomp/AppArmor policies and pacman's sandbox stay enabled. Assembly
+checks namespace creation and fails on any rejected package hook; it never
+disables package sandboxing or ignores a failed `depmod`/initramfs operation.
+Only the offline bootstrap transaction uses systemd's documented
+`SYSTEMD_OFFLINE=1` image-build mode, so hooks install their files without trying
+to start services against Docker's PID 1. The booted guest requires normal live
+systemd operation and runs the actual installer without that environment.
 
 This complements the faster Arch packaging and CachyOS userspace checks. A
 successful VM job proves the real installer reaches service activation and

@@ -73,7 +73,10 @@ sudo apt-get install --no-install-recommends -y qemu-system-x86 e2fsprogs
 docker pull "$CACHYOS_IMAGE"
 docker image inspect "$CACHYOS_IMAGE" --format '{{json .RepoDigests}}' > "$evidence_dir/image-digests.json"
 git -C "$project_dir" archive --format=tar HEAD > "$vm_dir/source.tar"
-docker run --detach --name "$container_name" "$CACHYOS_IMAGE" sleep infinity
+# pacman isolates installation hooks with a network namespace. Give only this
+# image-assembly container the capability needed to create that namespace;
+# retain Docker's default seccomp/AppArmor policy and pacman's own sandbox.
+docker run --detach --cap-add=SYS_ADMIN --name "$container_name" "$CACHYOS_IMAGE" sleep infinity
 docker cp "$vm_dir/source.tar" "$container_name:/source.tar"
 docker cp "$project_dir/tools/ci/full-installer-prepare.sh" "$container_name:/prepare.sh"
 docker exec "$container_name" bash /prepare.sh
@@ -122,6 +125,10 @@ sudo mount -o loop,ro,noload "$vm_dir/root.raw" "$vm_root"
 mounted=1
 if [[ -d "$vm_root/ci-output" ]]; then
     sudo cp -a "$vm_root/ci-output/." "$evidence_dir/"
+fi
+if [[ -d "$vm_root/home/builder/.local/state/spatiald/install" ]]; then
+    sudo find "$vm_root/home/builder/.local/state/spatiald/install" -maxdepth 1 -type f \
+        \( -name '*.log' -o -name '*.json' \) -exec cp -t "$evidence_dir/" -- {} +
 fi
 sudo umount "$vm_root"
 mounted=0

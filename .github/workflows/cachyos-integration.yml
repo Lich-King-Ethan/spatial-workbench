@@ -23,6 +23,9 @@ jobs:
       # Official baseline x86-64 image, published 2026-09-17.
       # Upstream: https://github.com/CachyOS/docker
       image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+      # Current pacman isolates hooks in a network namespace. Grant only the
+      # capability it needs; retain Docker's default seccomp and AppArmor.
+      options: --cap-add=SYS_ADMIN
     defaults:
       run:
         shell: bash
@@ -54,6 +57,17 @@ jobs:
             runuser -u builder -- env -u PYTHONPATH SPATIAL_TEST_DBUS=1 \
               dbus-run-session -- python -I tools/ci/cachyos-installed-tests.py \
               --report dist/cachyos-evidence/installed-python.json
+      - name: Build and install the pinned genuine Harletty decoder bridge
+        run: |
+          bash tools/ci/package-check.sh harletty-bridge dist/cachyos-evidence -- \
+            runuser -u builder -- bash tools/ci/cachyos-bridge.sh
+      - name: Decode real Atmos objects and measure binaural head rotation through the installed FFI
+        timeout-minutes: 5
+        run: |
+          bash tools/ci/package-check.sh native-atmos-decoder dist/cachyos-evidence -- \
+            runuser -u builder -- env -u PYTHONPATH \
+              python -I tools/ci/decoder-smoke.py --download-fixture \
+              --report dist/cachyos-evidence/decoder.json
       - name: Run native Qt cards from the installed Companion package
         run: |
           bash tools/ci/package-check.sh installed-companion dist/cachyos-evidence -- \
@@ -75,7 +89,8 @@ jobs:
           bash tools/ci/package-check.sh live-audio dist/cachyos-evidence -- \
             runuser -u builder -- env -u PYTHONPATH \
               dbus-run-session -- python -I tools/ci/audio-stack-smoke.py \
-              --report-dir "$GITHUB_WORKSPACE/dist/cachyos-evidence/audio"
+              --report-dir "$GITHUB_WORKSPACE/dist/cachyos-evidence/audio" \
+              --require-renderer-audio --bridge /usr/lib/orender/libharletty_bridge.so
       - name: Record image, package, repository, and kernel provenance
         if: always()
         run: bash tools/ci/cachyos-provenance.sh dist/cachyos-evidence
@@ -95,5 +110,6 @@ jobs:
             dist/arch/core/*.pkg.tar.*
             dist/arch/companion/*.pkg.tar.*
             dist/arch/orender/*.pkg.tar.*
+            dist/aur/harletty-bridge/*.pkg.tar.*
           if-no-files-found: error
           retention-days: 14

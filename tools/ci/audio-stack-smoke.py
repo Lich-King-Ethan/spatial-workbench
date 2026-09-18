@@ -3,7 +3,7 @@
 
 Run as an ordinary user under dbus-run-session. The endpoints and PCM signal are
 synthetic: this is a software integration gate, never a Bluetooth/hearing test.
-No source-tree import override, mock session manager, or decoder bridge is used.
+Installed production modules and genuine native binaries are exercised directly.
 """
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ import argparse
 import asyncio
 import contextlib
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
 import re
+import random
 import shutil
 import struct
 import sys
@@ -152,8 +154,63 @@ class GraphWatch:
         self._check_links(changed)
 
 
+def load_helper(filename):
+    path = Path(__file__).resolve().with_name(filename)
+    require(path.is_file(), f"Required integration helper is missing: {path}")
+    module_name = "spatial_ci_" + path.stem.replace("-", "_")
+    spec = importlib.util.spec_from_file_location(module_name, path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+class PCMRecorder:
+    """Observe a synthetic sink's real post-processing monitor ports."""
+    def __init__(self, gate, sink):
+        self.gate, self.sink = gate, sink
+        self.data = bytearray()
+        self.process = self.task = None
+
+    async def start(self):
+        log = (self.gate.report_dir / "earbud-recorder.log").open("wb")
+        self.gate.files.append(log)
+        self.process = await asyncio.create_subprocess_exec("pw-cat", "--record", "--raw",
+            "--rate", "48000", "--channels", "2", "--channel-map", "FL,FR", "--format", "f32",
+            "--target", self.sink.serial, "--properties", json.dumps({
+                "node.name": "spatial-ci-earbud-recorder", "stream.capture.sink": True}),
+            "-", stdout=asyncio.subprocess.PIPE, stderr=log)
+        self.gate.processes.append(("earbud-recorder", self.process))
+
+        async def consume():
+            while chunk := await self.process.stdout.read(65536):
+                self.data.extend(chunk)
+
+        self.task = asyncio.create_task(consume())
+        self.gate.feeds.append(self.task)
+        await self.gate.until("earbud-recorder-ready", lambda objects:
+            (capture := named(objects, "spatial-ci-earbud-recorder")) is not None
+            and (endpoint := named(objects, self.sink.name)) is not None
+            and str(props(endpoint).get("object.serial")) == self.sink.serial
+            and stereo_linked(objects, endpoint["id"], capture["id"]))
+
+    async def window(self, name, seconds=1):
+        require(self.process.returncode is None, "Synthetic earbud recorder exited")
+        start = (len(self.data) + 7) // 8 * 8
+        await self.gate.observe(seconds)
+        end = len(self.data) // 8 * 8
+        pcm = self.data[start:end]
+        require(len(pcm) >= int(seconds * 48000 * 8 * 0.8),
+                f"Too little actual sink audio for {name}: {len(pcm) // 8} frames")
+        path = self.gate.report_dir / "earbud-audio" / (name + ".f32le")
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(pcm)
+        return path
+
+
 class Gate:
-    def __init__(self, report_dir):
+    def __init__(self, report_dir, *, require_renderer_audio=False, require_media_audio=False,
+                 bridge=Path("/usr/lib/orender/libharletty_bridge.so")):
         self.report_dir = report_dir.resolve()
         self.report_dir.mkdir(parents=True, exist_ok=True)
         self.processes = []
@@ -162,7 +219,12 @@ class Gate:
         self.monitor_task = None
         self.monitor = None
         self.watch = GraphWatch()
+        self.last_objects = []
         self.equalizer = None
+        self.live = None
+        self.require_renderer_audio = require_renderer_audio
+        self.require_media_audio = require_media_audio
+        self.bridge = bridge
         self.report = {"status": "running", "hardware_validated": False,
                        "endpoint_type": "synthetic headless stereo sinks",
                        "checks": [], "renderer_audio": {
@@ -208,16 +270,21 @@ class Gate:
         self.health()
         result = json.loads(await self.command("pw-dump", "--no-colors"))
         require(isinstance(result, list), "pw-dump returned a non-array")
+        self.last_objects = result
         return result
 
-    async def until(self, description, predicate, timeout=15):
+    async def until(self, description, predicate, timeout=15, child=None):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
+            require(child is None or child.returncode is None,
+                    f"Owned process exited {child.returncode if child else ''} during {description}")
             objects = await self.snapshot()
             if predicate(objects):
                 (self.report_dir / (description + ".json")).write_text(json.dumps(objects, indent=2))
                 return objects
             await asyncio.sleep(0.08)
+        self.report["last_wait"] = description
+        (self.report_dir / (description + "-timeout.json")).write_text(json.dumps(objects, indent=2))
         raise Failure(f"Timed out: {description}")
 
     async def observe(self, seconds=2):
@@ -284,14 +351,19 @@ class Gate:
                 "filter.smart.name": name, "filter.smart.target": {
                     "node.name": props(target)["node.name"],
                     "object.serial": str(props(target)["object.serial"])}})
+        # pw-loopback 1.6.x inserts its channel-map verbatim into SPA module
+        # arguments; unlike pw-cat, it needs the brackets. Bare FL,FR consumes
+        # subsequent keys as values and discards capture/playback properties.
         proc = await self.spawn(name + "-" + uuid.uuid4().hex[:8], "pw-loopback",
-            "--channels", "2", "--channel-map", "FL,FR", "--capture-props",
+            "--remote", os.environ["PIPEWIRE_REMOTE"],
+            "--channels", "2", "--channel-map", "[ FL, FR ]", "--capture-props",
             json.dumps(capture_props),
             "--playback-props", json.dumps({"node.name": name + ".output",
                 "target.object": str(props(target)["object.serial"]),
                 "node.passive": smart,
                 "node.dont-fallback": True, "node.dont-reconnect": True}))
-        objects = await self.until("created-" + name, lambda value: named(value, name) is not None)
+        objects = await self.until("created-" + name,
+                                   lambda value: named(value, name) is not None, child=proc)
         return proc, named(objects, name)
 
     async def renderer(self):
@@ -309,6 +381,155 @@ class Gate:
         self.passed("installed-renderer-cli-and-ffi", version=version,
                     library=str(library.resolve()),
                     sha256=hashlib.sha256(library.read_bytes()).hexdigest())
+
+    async def spatial_chain(self, sink, original_sink):
+        """Actual Sony UDP → canonical pose → OSC/DSP → EQ → recorded PCM."""
+        from spatial.equalizer import Equalizer
+        from spatial.audio_runtime import renderer_pose
+        from spatial.live_audio import LiveAudio, GUARD_KEY, _metadata
+        require(self.bridge.is_file(), f"Genuine decoder bridge is required: {self.bridge}")
+        metrics = load_helper("spatial-metrics.py")
+        poses = load_helper("pose-fixtures.py")
+        self.equalizer = Equalizer(bluetooth_address=sink.device, enabled=True)
+        await self.equalizer.update_sink(sink)
+        require(self.equalizer.process is not None,
+                f"End-to-end EQ failed to start: {self.equalizer.status()}")
+
+        source_name = "spatial-ci-surround-source"
+        source_process = await self.spawn(source_name, "pw-cat", "--playback", "--raw",
+            "--rate", "48000", "--channels", "8", "--channel-map", "FL,FR,FC,LFE,SL,SR,RL,RR",
+            "--format", "f32", "--target", str(props(original_sink)["object.serial"]),
+            "--properties", json.dumps({"node.name": source_name,
+                "application.name": "Spatial CI positioned broadband PCM"}),
+            "-", stdin=asyncio.subprocess.PIPE)
+        generator = random.Random(4844)
+        noise = [generator.uniform(-0.03, 0.03) for _ in range(4800)]
+        blocks = {channel: b"".join(struct.pack("<8f", *(
+                    value if index == channel else 0.0 for index in range(8)))
+                    for value in noise) for channel in (0, 1, 2, 6, 7)}
+        signal = {"channel": 2}
+
+        async def feed():
+            try:
+                while source_process.returncode is None:
+                    source_process.stdin.write(blocks[signal["channel"]])
+                    await source_process.stdin.drain()
+            except (BrokenPipeError, ConnectionResetError):
+                return
+
+        self.feeds.append(asyncio.create_task(feed()))
+        objects = await self.until("surround-source-ready", lambda value:
+            (source := named(value, source_name)) is not None
+            and destinations(value, source["id"]) == {str(original_sink["id"])})
+        source = named(objects, source_name)
+        before = _metadata(objects, source["id"])
+        self.live = LiveAudio(bridge_path=self.bridge,
+            authorized_filter_inputs=self.equalizer.verified_input_ids,
+            pending_filter_inputs=self.equalizer.pending_input_ids)
+        await self.live.start(sink, str(props(source)["object.serial"]), objects)
+
+        def full_graph(value):
+            state = self.live.status()
+            require(not state["error"], f"Genuine live renderer failed: {state}")
+            if state["state"] != "playing":
+                return False
+            require(source_process.returncode is None, "Positioned PCM source exited")
+            audit = self.live.audit(value)
+            require(audit["state"] != "violation", f"Unsafe full-chain graph: {audit}")
+            eq_inputs = self.equalizer.verified_input_ids(value)
+            eq_state = self.equalizer.status()
+            require(eq_state["link_group"] is not None and eq_state["state"] != "error",
+                    f"Full-chain EQ failed: {eq_state}")
+            eq_output = named(value, eq_state["link_group"] + ".output")
+            owned = self.live._owned_nodes(value)
+            rendered = [node for node, properties in owned.items()
+                        if properties.get("media.class") == "Stream/Output/Audio"]
+            return (audit["state"] == "ready" and len(eq_inputs) == 1
+                    and len(rendered) == 1 and eq_output is not None
+                    and stereo_linked(value, rendered[0], next(iter(eq_inputs)))
+                    and stereo_linked(value, eq_output["id"], named(value, sink.name)["id"]))
+
+        await self.until("full-spatial-renderer-eq-earbud-chain", full_graph, timeout=35)
+        await self.until("monitor-observed-real-renderer-input", lambda _: (
+            actual := named(list(self.watch.objects.values()), self.live.status()["input_node"]))
+            is not None and destinations(list(self.watch.objects.values()), source["id"]) == {str(actual["id"])})
+        self.watch.arm(props(source)["object.serial"], self.live.status()["input_serial"])
+        recorder = PCMRecorder(self, sink)
+        await recorder.start()
+        windows = {}
+
+        async def apply_pose(pose):
+            self.live.set_pose(pose)
+            expected = renderer_pose(pose)
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                applied = self.live.telemetry.renderer.get("binaural", {}).get("headPose", {})
+                if all(key in applied for key in ("w", "x", "y", "z")):
+                    values = [applied[key] for key in ("w", "x", "y", "z")]
+                    if min(max(abs(a - sign * b) for a, b in zip(values, expected))
+                           for sign in (-1, 1)) < 1e-5:
+                        return values
+                # Registration asks the real renderer for a fresh state snapshot.
+                self.live.telemetry.send("/omniphony/register")
+                await self.observe(0.1)
+            raise Failure("Real standalone renderer did not acknowledge the production head pose")
+
+        async with poses.SonyPoseFixtures() as tracker:
+            neutral = await tracker.pose("pose_neutral")
+            tracker.records[-1]["renderer_acknowledged"] = await apply_pose(neutral)
+            for name, channel in (("position_fl", 0), ("position_fr", 1), ("position_fc", 2),
+                                  ("position_rl", 6), ("position_rr", 7)):
+                signal["channel"] = channel
+                await self.observe(1)
+                require(full_graph(await self.snapshot()), f"Full chain not verified for {name}")
+                windows[name] = await recorder.window(name)
+            signal["channel"] = 2
+            for name in ("pose_neutral", "pose_yaw_plus90", "pose_yaw_minus90", "pose_yaw_180",
+                         "pose_pitch_plus45", "pose_pitch_minus45", "pose_roll_plus45",
+                         "pose_roll_minus45", "pose_pitch_plus45_roll_plus90",
+                         "pose_pitch_minus45_roll_plus90", "pose_neutral_repeat",
+                         "pose_recentered", "pose_recentered_yaw_plus90"):
+                pose = await tracker.pose(name)
+                tracker.records[-1]["renderer_acknowledged"] = await apply_pose(pose)
+                await self.observe(1)
+                require(full_graph(await self.snapshot()), f"Full chain not verified for {name}")
+                windows[name] = await recorder.window(name)
+            pose_records = tracker.records
+        (self.report_dir / "sony-pose-evidence.json").write_text(json.dumps(pose_records, indent=2) + "\n")
+        try:
+            result = metrics.analyze_windows(windows, sample_rate=48000)
+        except Exception as exc:
+            if hasattr(exc, "report"):
+                (self.report_dir / "spatial-acoustics.json").write_text(
+                    json.dumps(exc.report, indent=2) + "\n")
+            raise
+        (self.report_dir / "spatial-acoustics.json").write_text(json.dumps(result, indent=2) + "\n")
+        self.report["renderer_audio"] = {"tested": True, "status": "passed",
+            "bridge": str(self.bridge.resolve()),
+            "bridge_sha256": hashlib.sha256(self.bridge.read_bytes()).hexdigest(),
+            "input": "seeded broadband float32 PCM, 48 kHz, fixed 7.1 channels",
+            "output": "real post-EQ synthetic sink monitor, stereo float32 at 48 kHz",
+            "windows": {name: str(path.relative_to(self.report_dir)) for name, path in windows.items()},
+            "pose_transport": "actual Sony helper UDP → production adapter/Engine → OSC",
+            "acoustic_metrics": "spatial-acoustics.json", "hardware_validated": False}
+        self.passed("real-pcm-position-headpose-recenter-through-renderer-eq-earbud-chain",
+                    windows=len(windows))
+        self.watch.protected = None
+        await self.live.stop()
+        objects = await self.until("full-chain-stop-restored-source", lambda value:
+            destinations(value, source["id"]) == {str(original_sink["id"])})
+        require(_metadata(objects, source["id"]) == before, "Full chain stop changed prior routing metadata")
+        require(_metadata(objects, source["id"], GUARD_KEY) is None, "Full chain stop retained route guard")
+        source_process.terminate()
+        await source_process.wait()
+        if self.require_media_audio:
+            media = load_helper("media-spatial-smoke.py")
+            self.report["media_audio"] = await media.run(self, sink, self.bridge, recorder)
+            self.passed("actual-mpv-object-decoder-renderer-eq-earbud-chain")
+        await self.equalizer.stop()
+        recorder.process.terminate()
+        await recorder.process.wait()
+        self.passed("full-chain-stop-restores-original-source-route")
 
     async def run(self, private):
         require(os.geteuid() != 0, "Run this gate as an unprivileged build user")
@@ -473,6 +694,10 @@ class Gate:
                     observed_link_events=len(self.watch.links),
                     old_serial=str(props(capture)["object.serial"]),
                     replacement_serial=str(props(replacement)["object.serial"]))
+        replacement_proc.terminate()
+        await replacement_proc.wait()
+        await self.until("replacement-capture-cleaned-up", lambda value:
+                         named(value, "spatial-ci-capture") is None)
 
         # This descriptor intentionally represents a synthetic endpoint with a
         # Bluetooth-shaped name so the real production EQ configuration is used.
@@ -504,6 +729,8 @@ class Gate:
         await self.equalizer.stop()
         eq_source.terminate()
         await eq_source.wait()
+        if self.require_renderer_audio:
+            await self.spatial_chain(sink, speakers)
         objects = await self.snapshot()
         require(all(_metadata(objects, "0", key) == value for key, value in defaults.items()),
                 "Scoped routing or EQ changed the global default")
@@ -513,7 +740,13 @@ class Gate:
         self.report["status"] = "passed"
 
     async def cleanup(self):
+        if self.live is not None:
+            self.report["live_status_at_cleanup"] = self.live.status()
+            self.watch.protected = None
+            await self.live.stop()
         if self.equalizer is not None:
+            self.report["equalizer_status_at_cleanup"] = self.equalizer.status()
+            (self.report_dir / "equalizer-backend.log").write_text(self.equalizer._stderr)
             await self.equalizer.stop()
         for task in self.feeds:
             task.cancel()
@@ -538,12 +771,66 @@ class Gate:
                                   "violations": self.watch.violations}
         (self.report_dir / "report.json").write_text(json.dumps(self.report, indent=2) + "\n")
 
+    def print_failure_diagnostics(self):
+        """Keep the next real failure actionable directly from the job log."""
+        state = {"processes": [{"name": label, "pid": proc.pid, "exit_code": proc.returncode}
+                               for label, proc in self.processes],
+                 "versions": self.report.get("versions", {}),
+                 "pipewire_remote": os.environ.get("PIPEWIRE_REMOTE"),
+                 "nodes": [], "links": [], "metadata": []}
+        fields = ("object.serial", "node.name", "media.class", "application.process.id",
+                  "target.object", "node.link-group", "node.dont-fallback", "filter.smart.target")
+        for obj in self.last_objects:
+            kind, info = obj.get("type"), obj.get("info") or {}
+            if kind == "PipeWire:Interface:Node" and len(state["nodes"]) < 80:
+                state["nodes"].append({"id": obj["id"], "state": info.get("state"),
+                    **{key: str(props(obj)[key])[:256] for key in fields if key in props(obj)}})
+            elif kind == "PipeWire:Interface:Link" and len(state["links"]) < 160:
+                state["links"].append({"id": obj["id"], **{key: info.get(key) for key in
+                    ("output-node-id", "input-node-id", "output-port-id", "input-port-id", "state", "error")}})
+            elif kind == "PipeWire:Interface:Metadata":
+                for entry in obj.get("metadata", []):
+                    if (len(state["metadata"]) < 80 and entry.get("key") in
+                            ("target.object", "spatiald.live-target", "spatiald.live-guard",
+                             "default.audio.sink", "default.configured.audio.sink")):
+                        state["metadata"].append(entry)
+        if self.equalizer is not None:
+            state["equalizer"] = self.equalizer.status()
+            (self.report_dir / "equalizer-backend.log").write_text(self.equalizer._stderr)
+        if self.live is not None:
+            state["live_audio"] = self.live.status()
+        (self.report_dir / "failure-diagnostics.json").write_text(json.dumps(state, indent=2) + "\n")
+        print("Audio failure: process exits and latest graph", file=sys.stderr, flush=True)
+        print(json.dumps(state, indent=2), file=sys.stderr, flush=True)
+        for handle in self.files:
+            if not handle.closed:
+                handle.flush()
+        # This gate creates these logs itself. Do not enumerate environment,
+        # external logs, or the binary PCM evidence in the console diagnostics.
+        for path in sorted(self.report_dir.glob("*.log"))[:24]:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                handle.seek(max(0, handle.tell() - 4096))
+                tail = handle.read().decode("utf-8", errors="replace")
+            tail = re.sub(r"\x1b\[[0-9;]*m", "", tail)
+            tail = "".join(char for char in tail if char in "\n\t" or ord(char) >= 32)
+            print(f"Audio failure log tail: {path.name}", file=sys.stderr, flush=True)
+            for line in tail.splitlines()[-25:]:
+                print("> " + line, file=sys.stderr, flush=True)
+
 
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report-dir", required=True, type=Path)
+    parser.add_argument("--require-renderer-audio", action="store_true",
+                        help="Require genuine bridge, real PCM renderer, head poses, EQ and recorded output")
+    parser.add_argument("--require-media-audio", action="store_true",
+                        help="Also require genuine mpv-Omniphony object decode through the same EQ/output")
+    parser.add_argument("--bridge", type=Path, default=Path("/usr/lib/orender/libharletty_bridge.so"))
     args = parser.parse_args()
-    gate = Gate(args.report_dir)
+    gate = Gate(args.report_dir,
+                require_renderer_audio=args.require_renderer_audio or args.require_media_audio,
+                require_media_audio=args.require_media_audio, bridge=args.bridge)
     with tempfile.TemporaryDirectory(prefix="spatial-ci-") as directory:
         try:
             await gate.run(Path(directory))
@@ -551,6 +838,10 @@ async def main():
             gate.report["status"] = "failed"
             gate.report["error"] = f"{type(exc).__name__}: {exc}"
             print(gate.report["error"], file=sys.stderr, flush=True)
+            try:
+                gate.print_failure_diagnostics()
+            except Exception as diagnostic_error:
+                print(f"Could not collect failure diagnostics: {diagnostic_error}", file=sys.stderr, flush=True)
             return 1
         finally:
             await gate.cleanup()
