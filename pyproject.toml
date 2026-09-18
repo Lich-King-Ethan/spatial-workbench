@@ -7,7 +7,8 @@ name = "spatial-workbench"
 version = "0.2.2"
 description = "Modular headphone tracking, spatial playback, and Plasma integration"
 requires-python = ">=3.11"
-license = {text = "MIT"}
+readme = {file = "README.md", content-type = "text/markdown"}
+license = "MIT"
 dependencies = ["dbus-next>=0.2.3,<0.3"]
 
 [project.optional-dependencies]
