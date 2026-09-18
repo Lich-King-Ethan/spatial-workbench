@@ -21,7 +21,23 @@ def link(identifier, target, state="active"):
         "output-node-id": 10, "input-node-id": target, "state": state}}
 
 
+def port(identifier, node_identifier, direction, channel, monitor=False):
+    return {"id": identifier, "type": "PipeWire:Interface:Port", "info": {
+        "direction": direction, "props": {"node.id": node_identifier,
+        "audio.channel": channel, "port.monitor": monitor}}}
+
+
 class AudioGateEvidenceTests(unittest.TestCase):
+    def test_ports_for_selects_stereo_monitor_channels(self):
+        objects = [port(11, 10, "output", "FL", True),
+                   port(12, 10, "output", "FR", True),
+                   port(13, 10, "output", "AUX", True),
+                   port(14, 10, "input", "FL"),
+                   port(15, 20, "output", "FL", True)]
+        self.assertEqual(set(smoke.ports_for(objects, 10, direction="output", monitor=True)),
+                         {"FL", "FR"})
+        self.assertEqual(set(smoke.ports_for(objects, 10, direction="input")), {"FL"})
+
     def test_consecutive_arrays_split_at_every_character_and_both_removal_forms(self):
         events = [[node(10, 100), node(20, 200), link(30, 20)],
                   [{"id": 20, "info": None}], [{"id": 30, "props": None}]]
