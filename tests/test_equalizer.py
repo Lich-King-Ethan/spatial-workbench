@@ -1,5 +1,6 @@
 import asyncio
 import ctypes
+import ctypes.util
 import json
 import math
 import os
@@ -151,6 +152,74 @@ class FakeProcess:
 
 
 class Lifecycle(unittest.IsolatedAsyncioTestCase):
+    async def test_private_launch_config_resolves_in_actual_pipewire(self):
+        library = (os.environ.get("SPATIAL_TEST_PIPEWIRE_LIBRARY")
+                   or ctypes.util.find_library("pipewire-0.3"))
+        if not library:
+            self.skipTest("Native PipeWire library is required for configuration resolution")
+        native = ctypes.CDLL(library)
+        native.pw_init.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        native.pw_init.restype = None
+        native.pw_deinit.argtypes = []
+        native.pw_deinit.restype = None
+        native.pw_properties_new_string.argtypes = [ctypes.c_char_p]
+        native.pw_properties_new_string.restype = ctypes.c_void_p
+        native.pw_properties_get.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
+        native.pw_properties_get.restype = ctypes.c_char_p
+        native.pw_properties_free.argtypes = [ctypes.c_void_p]
+        native.pw_properties_free.restype = None
+        native.pw_conf_load_conf_for_context.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        native.pw_conf_load_conf_for_context.restype = ctypes.c_int
+        eq = Equalizer(enabled=True, bluetooth_address=SINK.device)
+        eq._dependencies = AsyncMock(return_value="/tmp/limiter.so")
+        try:
+            with tempfile.TemporaryDirectory(prefix="unrelated-pipewire-") as directory:
+                unrelated = Path(directory)
+                fragments = unrelated / "pipewire/filter.conf.d"
+                fragments.mkdir(parents=True)
+                (fragments / "99-unrelated.conf").write_text("unrelated.marker = true\n")
+                inherited = {"PIPEWIRE_CONFIG_DIR": str(unrelated),
+                             "PIPEWIRE_CONFIG_PREFIX": "unrelated",
+                             "PIPEWIRE_CONFIG_NAME": "unrelated.conf",
+                             "PIPEWIRE_PROPS": '{ "target.object": "speakers" }',
+                             "XDG_CONFIG_HOME": str(unrelated),
+                             "PIPEWIRE_REMOTE": "existing-audio-session"}
+                with patch.dict(os.environ, inherited), patch(
+                        "asyncio.create_subprocess_exec", AsyncMock(return_value=FakeProcess())) as launch:
+                    await eq.update_sink(SINK)
+                args, options = launch.await_args.args, launch.await_args.kwargs
+                self.assertIsNotNone(eq.process)
+                env = options["env"]
+                self.assertNotIn("PIPEWIRE_PROPS", env)
+                self.assertNotIn("PIPEWIRE_CONFIG_NAME", env)
+                self.assertEqual(env["PIPEWIRE_REMOTE"], "existing-audio-session")
+                self.assertEqual(args[1], "-c")
+                with patch.dict(os.environ, env, clear=True):
+                    native.pw_init(None, None)
+                    properties = native.pw_properties_new_string(
+                        json.dumps({"config.name": args[2]}).encode())
+                    parsed = native.pw_properties_new_string(b"{}")
+                    try:
+                        self.assertTrue(properties and parsed)
+                        result = native.pw_conf_load_conf_for_context(properties, parsed)
+                        self.assertEqual(result, 0, "Native PipeWire could not resolve the production EQ configuration")
+                        resolved = native.pw_properties_get(parsed, b"config.path")
+                        self.assertIsNotNone(resolved)
+                        self.assertEqual(Path(os.fsdecode(resolved)).resolve(),
+                                         (Path(eq._directory.name) / "filter.conf").resolve())
+                        modules = json.loads(native.pw_properties_get(parsed, b"context.modules"))
+                        self.assertEqual(modules[-1]["args"]["playback.props"]["target.object"], SINK.serial)
+                        self.assertIsNone(native.pw_properties_get(parsed, b"override.0.0.config.path"),
+                                          "Unrelated user filter fragments escaped configuration isolation")
+                    finally:
+                        if parsed:
+                            native.pw_properties_free(parsed)
+                        if properties:
+                            native.pw_properties_free(properties)
+                        native.pw_deinit()
+        finally:
+            await eq.stop()
+
     async def test_disconnect_removes_owned_process_and_config(self):
         eq = Equalizer(enabled=True, bluetooth_address=SINK.device)
         eq._dependencies = AsyncMock(return_value="/tmp/limiter.so")
