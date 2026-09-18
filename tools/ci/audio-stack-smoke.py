@@ -209,7 +209,8 @@ class PCMRecorder:
 
 
 class Gate:
-    def __init__(self, report_dir, *, require_renderer_audio=False, require_media_audio=False,
+    def __init__(self, report_dir, *, routing_only=False,
+                 require_renderer_audio=False, require_media_audio=False,
                  bridge=Path("/usr/lib/orender/libharletty_bridge.so")):
         self.report_dir = report_dir.resolve()
         self.report_dir.mkdir(parents=True, exist_ok=True)
@@ -224,12 +225,19 @@ class Gate:
         self.live = None
         self.require_renderer_audio = require_renderer_audio
         self.require_media_audio = require_media_audio
+        self.routing_only = routing_only
         self.bridge = bridge
         self.report = {"status": "running", "hardware_validated": False,
+                       "scope": "routing-and-eq-only" if routing_only else
+                                "full-media-and-pcm-audio" if require_media_audio else
+                                "full-pcm-audio" if require_renderer_audio else
+                                "routing-eq-and-renderer-capabilities",
                        "endpoint_type": "synthetic headless stereo sinks",
                        "checks": [], "renderer_audio": {
                            "tested": False,
                            "reason": "No genuine Harletty decoder bridge supplied; CLI/FFI only"}}
+        if routing_only:
+            self.report["renderer_audio"]["reason"] = "Explicit early routing gate; full renderer gate runs separately"
 
     def passed(self, name, **detail):
         self.report["checks"].append({"name": name, "status": "passed", **detail})
@@ -534,8 +542,11 @@ class Gate:
     async def run(self, private):
         require(os.geteuid() != 0, "Run this gate as an unprivileged build user")
         require(os.environ.get("DBUS_SESSION_BUS_ADDRESS"), "Run under dbus-run-session")
-        for executable in ("pipewire", "wireplumber", "pw-dump", "pw-cli", "pw-cat",
-                           "pw-loopback", "pw-metadata", "wpctl", "orender"):
+        required_tools = ("pipewire", "wireplumber", "pw-dump", "pw-cli", "pw-cat",
+                          "pw-loopback", "pw-metadata", "wpctl")
+        if not self.routing_only:
+            required_tools += ("orender",)
+        for executable in required_tools:
             require(shutil.which(executable), f"Missing installed executable: {executable}")
         import spatial
         from spatial import pipewire
@@ -554,7 +565,8 @@ class Gate:
         self.passed("installed-policy-assets-match-source")
         self.report["versions"] = {tool: (await self.command(tool, "--version")).strip()
                                     for tool in ("pipewire", "wireplumber", "pw-cat")}
-        await self.renderer()
+        if not self.routing_only:
+            await self.renderer()
         for name in ("PIPEWIRE_CONFIG_DIR", "PIPEWIRE_CONFIG_PREFIX", "PIPEWIRE_CONFIG_NAME",
                      "PIPEWIRE_PROPS", "WIREPLUMBER_CONFIG_DIR", "WIREPLUMBER_DATA_DIR"):
             os.environ.pop(name, None)
@@ -613,8 +625,12 @@ class Gate:
         selected_proc, selected = await self.playback("spatial-ci-selected", speakers)
         unrelated_proc, unrelated = await self.playback("spatial-ci-unrelated", speakers)
         capture_proc, capture = await self.loopback("spatial-ci-capture", headphones)
-        smart_proc, smart_input = await self.loopback("spatial-ci-target-filter", capture, smart=True)
-        smart_probe, _ = await self.playback("spatial-ci-filter-probe", capture,
+        # Stock WirePlumber treats ANY node.link-group as a filter. Its
+        # get_filter_from_target() deliberately bypasses a non-smart loopback
+        # target, so exercise the positive control on a plain endpoint instead.
+        # This also matches the real renderer input / physical EQ target shape.
+        smart_proc, smart_input = await self.loopback("spatial-ci-target-filter", alternate, smart=True)
+        smart_probe, _ = await self.playback("spatial-ci-filter-probe", alternate,
                                               expected_target=smart_input)
         smart_probe.terminate()
         await smart_probe.wait()
@@ -631,6 +647,22 @@ class Gate:
             return (stereo_linked(value, selected["id"], speakers["id"])
                     and stereo_linked(value, unrelated["id"], speakers["id"]))
 
+        guarded_filter_route = Route(props(selected)["object.serial"], selected["id"],
+                                     original, props(alternate)["object.serial"])
+        await guarded_filter_route.apply(objects)
+        await self.until("guard-bypasses-target-associated-smart-filter", lambda value:
+            stereo_linked(value, selected["id"], alternate["id"])
+            and stereo_linked(value, unrelated["id"], speakers["id"]))
+        await guarded_filter_route.restore(await self.snapshot())
+        objects = await self.until("smart-filter-guard-restored-original", original_links)
+        require(_metadata(objects, selected["id"]) == original, "Smart-filter guard changed original route")
+        require(_metadata(objects, selected["id"], GUARD_KEY) is None, "Smart-filter guard not removed")
+        self.passed("guard-retains-exact-target-through-stock-smart-filter-policy")
+        smart_proc.terminate()
+        await smart_proc.wait()
+        objects = await self.until("smart-filter-positive-control-cleaned-up", lambda value:
+                                  named(value, "spatial-ci-target-filter") is None)
+
         transaction = route()
         await transaction.apply(objects)
         await self.until("selected-only-routed", lambda value:
@@ -641,9 +673,6 @@ class Gate:
         require(_metadata(objects, selected["id"]) == original, "Original metadata not restored")
         require(_metadata(objects, selected["id"], GUARD_KEY) is None, "Guard not removed after restore")
         self.passed("production-route-apply-and-restore-selected-only")
-        self.passed("guard-retains-exact-target-through-stock-smart-filter-policy")
-        smart_proc.terminate()
-        await smart_proc.wait()
 
         transaction = route()
         await transaction.apply(objects)
@@ -822,13 +851,17 @@ class Gate:
 async def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report-dir", required=True, type=Path)
+    parser.add_argument("--routing-only", action="store_true",
+                        help="Early real routing/EQ gate; renderer capability/audio gates run separately")
     parser.add_argument("--require-renderer-audio", action="store_true",
                         help="Require genuine bridge, real PCM renderer, head poses, EQ and recorded output")
     parser.add_argument("--require-media-audio", action="store_true",
                         help="Also require genuine mpv-Omniphony object decode through the same EQ/output")
     parser.add_argument("--bridge", type=Path, default=Path("/usr/lib/orender/libharletty_bridge.so"))
     args = parser.parse_args()
-    gate = Gate(args.report_dir,
+    if args.routing_only and (args.require_renderer_audio or args.require_media_audio):
+        parser.error("--routing-only cannot be combined with required renderer/media audio")
+    gate = Gate(args.report_dir, routing_only=args.routing_only,
                 require_renderer_audio=args.require_renderer_audio or args.require_media_audio,
                 require_media_audio=args.require_media_audio, bridge=args.bridge)
     with tempfile.TemporaryDirectory(prefix="spatial-ci-") as directory:

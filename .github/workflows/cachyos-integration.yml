@@ -45,12 +45,23 @@ jobs:
         run: |
           bash tools/ci/package-check.sh release-sources dist/cachyos-evidence -- \
             runuser -u builder -- python tools/make-release.py
-      - name: Build, check, and install core, Companion, and patched renderer
+      - name: Build, check, and install core and Companion
         run: |
-          for package in core companion orender; do
+          for package in core companion; do
             bash tools/ci/package-check.sh "cachyos-$package" dist/cachyos-evidence -- \
               runuser -u builder -- bash tools/ci/cachyos-packages.sh "$package"
           done
+      - name: Check real routing and EQ before renderer compilation
+        timeout-minutes: 5
+        run: |
+          bash tools/ci/package-check.sh live-routing dist/cachyos-evidence -- \
+            runuser -u builder -- env -u PYTHONPATH \
+              dbus-run-session -- python -I tools/ci/audio-stack-smoke.py \
+              --routing-only --report-dir "$GITHUB_WORKSPACE/dist/cachyos-evidence/audio-routing"
+      - name: Build, check, and install the patched renderer
+        run: |
+          bash tools/ci/package-check.sh cachyos-orender dist/cachyos-evidence -- \
+            runuser -u builder -- bash tools/ci/cachyos-packages.sh orender
       - name: Run the complete test suite against the installed Python package, with zero skips
         run: |
           bash tools/ci/package-check.sh installed-python dist/cachyos-evidence -- \

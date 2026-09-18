@@ -22,6 +22,37 @@ finish() {
         find /home/builder/.local/state/spatiald/install -maxdepth 1 -type f \
             \( -name '*.log' -o -name '*.json' \) -exec cp -t /ci-output/ -- {} +
     fi
+    if (( result )); then
+        # Workflow logs remain usable when artifact downloads are unavailable.
+        # Read only CI build/service logs, never configuration or credentials.
+        journalctl --no-pager -b -p warning -n 60 \
+            -u systemd-udevd.service -u systemd-networkd.service \
+            -u user@1000.service -u spatial-installer-ci.service \
+            > /ci-output/system-errors.log
+        desktop_user journalctl --user --no-pager -b -p warning -n 60 \
+            -u spatiald.service -u pipewire.service -u wireplumber.service \
+            > /ci-output/user-errors.log
+        printf '\n[CI failure] Exit %s; bounded, redacted diagnostic tails follow.\n' "$result"
+        python - <<'PY'
+from pathlib import Path
+import sys
+
+sys.path.insert(0, '/home/builder/spatial-workbench')
+from spatial.diagnostics_privacy import Redactor
+
+redactor = Redactor()
+logs = sorted(Path('/ci-output').glob('install-*.log'))[-3:]
+logs += [Path('/ci-output/system-errors.log'), Path('/ci-output/user-errors.log')]
+for path in logs:
+    if not path.is_file():
+        continue
+    print(f'--- {path.name}: last 100 lines, at most 64KiB ---', flush=True)
+    with path.open('rb') as stream:
+        stream.seek(max(0, path.stat().st_size - 65536))
+        lines = stream.read(65536).decode('utf-8', errors='replace').splitlines()[-100:]
+    print(redactor.text('\n'.join(lines)), flush=True)
+PY
+    fi
     printf '%s\n' "$result" > /ci-output/result
     sync
     systemctl --no-block poweroff
