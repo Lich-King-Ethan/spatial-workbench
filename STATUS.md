@@ -13,7 +13,7 @@ the user's computer from this workspace.
 | Tracking | Identity-checked Sony HID helper, passive SlimeVR nRF HID readers, fresh-packet selection, independent permissions and recentering |
 | Media playback | Owned mpv-omniphony process, protected native headphone targeting, verified renderer telemetry, queue and MPRIS controls |
 | Ordinary music and applications | Standalone Omniphony PCM rendering; automatic routing of this player's native PCM and explicit selection for another application's stream |
-| TIDAL | Official device authorization through tidalapi, protected session storage, track/album/playlist resolution, strict Atmos manifest and renderer checks |
+| TIDAL | Browser device authorization through tidalapi, protected session storage that respects concurrent login/logout, track/album/playlist resolution, strict Atmos manifest and renderer checks |
 | Reference EQ | Device-scoped PipeWire smart filter, sourced AutoEQ five-band profile, separate SWH limiter, graph auditing and disconnect cleanup |
 | Native UI | Revision-specific Companion patch with playback, application audio, fresh-device tracker rows and backend-confirmed state |
 | Packaging | Checksummed Arch recipes, pinned patched engine and matching library, one-command install, user service, diagnostics and host verifier |
@@ -26,14 +26,27 @@ independent capabilities. See [architecture](docs/architecture.md).
 
 ## Evidence available
 
-GitHub CI passed all 240 tests on Python 3.11, 3.12, 3.13 and Arch's 3.14,
-including native D-Bus. The local suite passed 233 and skipped the 7 D-Bus checks
-because this development environment prohibits their sockets. Local test output
-is saved as `test-results.txt`; GitHub Actions records the hosted checks.
-The suite covers policy, real UDP and
-child-process transports, source validation, graph audits, reconnection races,
-playback request ownership, native presentation logic and independent failures.
-Service and hardware fixtures in these tests are identified as test data.
+[GitHub CI run 35357627564](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627564)
+passed for commit `cc73670`: all **253 tests**, with **zero skips**, on Python
+3.11, 3.12, 3.13 and the Arch package's `makepkg check()` against extracted
+sources. This includes native D-Bus.
+The native Qt/Plasma check also passed all three card cases; Qt Test reports
+five passes including setup and cleanup. The local development environment
+still prohibits the sockets needed by seven D-Bus checks; the hosted runs
+provide their execution evidence.
+
+The suite covers policy, real UDP and child-process transports, source
+validation, graph audits, reconnection races, playback request ownership,
+native presentation logic and independent failures. Sony fixtures exercise the
+upstream axis map and nonidentity recentering. TIDAL tests cover concurrent
+login/logout, stale source rejection and temporary manifest cleanup. Service
+and hardware fixtures are identified as test data.
+
+The [CachyOS integration run 35357627508](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627508)
+also passed all 253 installed-package tests and the native Qt checks. Its audio
+harness failed during setup, so **that run did not pass the complete audio
+integration gate**. Updated audio checks and the full installer/media-route
+checks are pending execution; their implementation is not completion evidence.
 
 Additional checks performed include source-matched Companion/engine patch checks,
 checksummed source archive and wheel construction, isolated wheel installation,
@@ -49,6 +62,14 @@ and package staging. The build exposed and fixed the upstream archive's missing
 lockfile, unusable version stamp and help/version failure exit codes. See
 [native renderer evidence](docs/orender-loopback.md).
 
+A separate local check ran the genuine **Harletty 0.7.3 decoder bridge** through
+the real **Omniphony 0.5.2 FFI** with a pinned E-AC-3 JOC fixture. It decoded
+**15 objects and 72,192 frames**, verified twelve speaker channels and two
+binaural channels, and measured a binaural waveform change after an acknowledged
+OSC head rotation. This establishes the decoder/renderer path; the complete
+mpv/PipeWire/EQ/simulated-sink route remains pending. See
+[decoder validation](docs/decoder-validation.md).
+
 The core package's real `build()` and `package()` stages and Companion's real
 `prepare()` and `package()` stages also passed against exported source. These are
 actual staging checks on Ubuntu; they are not a completed Arch installation.
@@ -59,11 +80,10 @@ These runs produced actual pacman package artifacts and ran the package checks.
 Installing the full stack and connecting physical hardware on the target PC
 remain separate acceptance steps.
 
-The [native Qt/Plasma check](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187)
-passed all three cards on Qt 6.11.2, with a real private D-Bus fixture and no
-QML-engine warnings. It checks tracker delegates and plain names, playback
-format updates, and exact application identifiers. This is offscreen component
-and state validation, not a review of the user's live desktop or hardware.
+The native Qt/Plasma checks use a real private D-Bus fixture and inspect tracker
+delegates and plain names, playback format updates, and exact application
+identifiers. They establish offscreen component and state behavior; the user's
+live desktop appearance and hardware remain separate acceptance checks.
 
 A real unauthenticated TIDAL device-authorization request succeeded. No account
 was signed in and no media entitlement or Atmos playback was tested.
