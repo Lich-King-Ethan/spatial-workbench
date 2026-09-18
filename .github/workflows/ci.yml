@@ -34,7 +34,7 @@ jobs:
       - name: Install real D-Bus, Lua, JavaScript, compiler, and limiter dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install --no-install-recommends -y dbus dbus-x11 lua5.4 nodejs build-essential swh-plugins
+          sudo apt-get install --no-install-recommends -y dbus dbus-x11 lua5.4 nodejs build-essential swh-plugins libpipewire-0.3-0t64
           python -m pip install --upgrade pip
           python -m pip install '.[tidal]' build twine
       - name: Check native dependencies and source syntax
