@@ -321,6 +321,13 @@ class Gate:
             "node.description": "CI synthetic endpoint " + name,
             "media.class": "Audio/Sink", "object.linger": True,
             "audio.position": ["FL", "FR"], "audio.channels": 2,
+            # A null sink does not expose monitor output ports unless they
+            # are requested explicitly.  The recorder must consume the
+            # actual post-EQ sink monitor; without these properties it can
+            # create a Stream/Input node but PipeWire has nowhere to link it.
+            "monitor.channel-volumes": True, "monitor.passthrough": True,
+            "adapter.auto-port-config": {
+                "mode": "dsp", "monitor": True, "position": "preserve"},
             "priority.session": priority, "node.virtual": True}))
         objects = await self.until("created-" + name, lambda value: named(value, name) is not None)
         return named(objects, name)
