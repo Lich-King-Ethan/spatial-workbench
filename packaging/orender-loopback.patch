@@ -1,0 +1,140 @@
+--- a/omniphony-renderer/orender_engine/src/osc.rs
++++ b/omniphony-renderer/orender_engine/src/osc.rs
+@@ -31,6 +31,25 @@
+ 
+ /// Timeout after which a registered client (one that must heartbeat) is considered dead.
+ const CLIENT_TIMEOUT: Duration = Duration::from_secs(15);
++
++// Optional bind policy for hosts that keep their control API on localhost.
++// Unset preserves upstream behavior; an invalid value fails without falling
++// back to a wildcard address. This also applies to the embedded liborender host.
++fn parse_osc_bind_ip(value: Option<std::ffi::OsString>) -> std::io::Result<std::net::Ipv4Addr> {
++    match value {
++        None => Ok(std::net::Ipv4Addr::UNSPECIFIED),
++        Some(value) => value.to_str()
++            .and_then(|value| value.parse::<std::net::Ipv4Addr>().ok())
++            .ok_or_else(|| std::io::Error::new(
++                std::io::ErrorKind::InvalidInput,
++                "OMNIPHONY_OSC_BIND must be an IPv4 address",
++            )),
++    }
++}
++
++fn bind_osc_socket(port: u16) -> std::io::Result<UdpSocket> {
++    UdpSocket::bind((parse_osc_bind_ip(std::env::var_os("OMNIPHONY_OSC_BIND"))?, port))
++}
+ 
+ /// How long a starting instance waits for a yieldable holder of the OSC RX
+ /// port to shut down after `/omniphony/control/yield_port`. Generous on
+@@ -160,7 +179,7 @@
+             *reservation = None;
+         }
+     }
+-    let first_err = match UdpSocket::bind(("0.0.0.0", rx_port)) {
++    let first_err = match bind_osc_socket(rx_port) {
+         Ok(socket) => return Ok(socket),
+         Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && request_yield => e,
+         Err(e) => return Err(e),
+@@ -177,7 +196,7 @@
+         let deadline = std::time::Instant::now() + LOCAL_RELEASE_GRACE;
+         loop {
+             std::thread::sleep(YIELD_REBIND_POLL);
+-            match UdpSocket::bind(("0.0.0.0", rx_port)) {
++            match bind_osc_socket(rx_port) {
+                 Ok(socket) => {
+                     log::info!("OSC RX port {} reclaimed from the local listener", rx_port);
+                     return Ok(socket);
+@@ -201,7 +220,7 @@
+     let mut resent = false;
+     loop {
+         std::thread::sleep(YIELD_REBIND_POLL);
+-        match UdpSocket::bind(("0.0.0.0", rx_port)) {
++        match bind_osc_socket(rx_port) {
+             Ok(socket) => {
+                 log::info!("OSC RX port {} acquired after yield", rx_port);
+                 return Ok(socket);
+@@ -374,7 +393,7 @@
+ 
+ impl OscSender {
+     pub fn new(default_target: SocketAddrV4) -> Result<Self> {
+-        let socket = UdpSocket::bind("0.0.0.0:0")?;
++        let socket = bind_osc_socket(0)?;
+         let clients = Arc::new(OscClientRegistry::new(CLIENT_TIMEOUT));
+         clients.insert_permanent(SocketAddr::V4(default_target));
+         // Per-instance id: mixes pid and a sub-second timestamp so it differs
+@@ -768,7 +787,7 @@
+                     // release immediately so `resume` can re-bind cleanly).
+                     if last_probe.elapsed() >= Duration::from_secs(2) {
+                         last_probe = std::time::Instant::now();
+-                        if let Ok(probe) = UdpSocket::bind(("0.0.0.0", rx_port)) {
++                        if let Ok(probe) = bind_osc_socket(rx_port) {
+                             drop(probe);
+                             sys::shutdown::request_resume();
+                             return;
+@@ -1284,4 +1303,24 @@
+         assert_eq!(socket.local_addr().unwrap().port(), port);
+         t.join().unwrap();
+     }
+-}
++
++    #[test]
++    fn spatial_loopback_bind_policy_accepts_only_numeric_ipv4() {
++        use std::net::Ipv4Addr;
++        assert_eq!(parse_osc_bind_ip(None).unwrap(), Ipv4Addr::UNSPECIFIED);
++        assert_eq!(parse_osc_bind_ip(Some("127.0.0.1".into())).unwrap(), Ipv4Addr::LOCALHOST);
++        assert_eq!(parse_osc_bind_ip(Some("0.0.0.0".into())).unwrap(), Ipv4Addr::UNSPECIFIED);
++        for invalid in ["", "localhost", "127.0.0.1:9000", "::1", "300.0.0.1"] {
++            assert_eq!(parse_osc_bind_ip(Some(invalid.into())).unwrap_err().kind(),
++                       std::io::ErrorKind::InvalidInput);
++        }
++    }
++
++    #[test]
++    fn spatial_loopback_numeric_address_binds_only_to_loopback() {
++        let address = parse_osc_bind_ip(Some("127.0.0.1".into())).unwrap();
++        let socket = UdpSocket::bind((address, 0)).unwrap();
++        assert!(socket.local_addr().unwrap().ip().is_loopback());
++    }
++
++}
+--- a/omniphony-renderer/src/cli/command.rs
++++ b/omniphony-renderer/src/cli/command.rs
+@@ -9,7 +9,8 @@
+ 
+ pub const VERSION_INFO: &str = concat!(
++    "0.5.2+spatial-loopback1 (",
+     env!("VERGEN_GIT_DESCRIBE"),
+-    " Built: ",
++    ") Built: ",
+     env!("BUILD_TIMESTAMP")
+ );
+ 
+--- a/omniphony-renderer/src/main.rs
++++ b/omniphony-renderer/src/main.rs
+@@ -100,7 +100,8 @@
+         return Ok(());
+     }
+ 
+-    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))?;
++    let parsed = ParsedCli::parse_from(normalize_cli_args(std::env::args_os()))
++        .unwrap_or_else(|error| error.exit());
+     let mut cli = parsed.cli.clone();
+ 
+     // Load global config before initializing the logger so we can apply the
+--- a/omniphony-renderer/orender_ffi/src/lib.rs
++++ b/omniphony-renderer/orender_ffi/src/lib.rs
+@@ -204,6 +204,14 @@
+ //    linear-phase FIR crossover is active).
+ pub const ORENDER_ABI_MINOR: u32 = 7;
+ 
++/// Additive downstream capability marker. The existing liborender ABI is
++/// unchanged; hosts resolve this optional symbol before selecting this library.
++/// A return value of 1 guarantees OMNIPHONY_OSC_BIND is enforced by all OSC binds.
++#[unsafe(no_mangle)]
++pub extern "C" fn orender_spatial_loopback_supported() -> u32 {
++    1
++}
++
+ /// Speaker-position labels written by [`orender_channel_layout`] and
+ /// [`orender_bed_layout`] (one byte per channel). Mirrors the engine's
+ /// ABI-stable `bridge_api::RChannelLabel` exactly (a unit test asserts

@@ -1,0 +1,75 @@
+# Omniphony 0.5.2 with one downstream OSC bind-policy patch.
+# Based on upstream packaging/arch/orender/PKGBUILD. Renderer/DSP and bridge ABI
+# are unchanged; this package supplies both the CLI and its matching library.
+pkgname=orender-spatial
+pkgver=0.5.2
+pkgrel=1
+pkgdesc='Omniphony renderer with verifiable per-process OSC bind-address support'
+arch=('x86_64')
+url='https://github.com/mgth/Omniphony'
+license=('GPL-3.0-only')
+depends=('gcc-libs' 'pipewire')
+optdepends=('harletty-bridge: compressed and object-audio decoder bridge')
+makedepends=('rust' 'cargo' 'clang' 'pkgconf')
+provides=("orender=$pkgver" 'liborender.so=0-64')
+conflicts=('orender')
+options=('!lto')
+source=("omniphony-$pkgver.tar.gz::https://github.com/mgth/Omniphony/archive/refs/tags/v$pkgver.tar.gz"
+        'orender-loopback.patch' 'orender-Cargo.lock')
+sha256sums=('e0c1915f94fd8ce6367517169cfba27b7f6d976622b808aafab6376f868a474a'
+            '@PATCH_SHA256@' '@LOCK_SHA256@')
+
+_src="Omniphony-$pkgver"
+_workspace="$_src/omniphony-renderer"
+
+prepare() {
+    cd "$srcdir/$_src"
+    patch --forward --batch -Np1 < "$srcdir/orender-loopback.patch"
+    # The tagged archive omits this workspace's lockfile. Ship the dependency
+    # resolution we compile and test, then require it for every downstream build.
+    install -m644 "$srcdir/orender-Cargo.lock" omniphony-renderer/Cargo.lock
+}
+
+build() {
+    cd "$srcdir/$_workspace"
+    export RUSTFLAGS="${RUSTFLAGS:-} --remap-path-prefix=$srcdir=src"
+    cargo build --release --locked -p omniphony-renderer -p orender_ffi
+}
+
+check() {
+    cd "$srcdir/$_workspace"
+    OMNIPHONY_OSC_BIND=127.0.0.1 cargo test --release --locked -p orender_engine \
+        spatial_loopback -- --test-threads=1
+    local version
+    version=$(target/release/orender --version)
+    [[ "$version" == *"$pkgver+spatial-loopback1"* ]]
+    target/release/orender render --help > "$srcdir/orender-render-help.txt"
+    grep -- '--output-device' "$srcdir/orender-render-help.txt" > /dev/null
+    grep -- '--osc-rx-port' "$srcdir/orender-render-help.txt" > /dev/null
+    grep -- '--continuous' "$srcdir/orender-render-help.txt" > /dev/null
+    nm -D --defined-only target/release/liborender.so | \
+        grep ' T orender_spatial_loopback_supported$' > /dev/null
+}
+
+package() {
+    cd "$srcdir/$_workspace"
+    install -Dm755 target/release/orender "$pkgdir/usr/bin/orender"
+    install -Dm755 target/release/liborender.so \
+        "$pkgdir/usr/lib/liborender.so.$pkgver"
+    ln -s "liborender.so.$pkgver" "$pkgdir/usr/lib/liborender.so.0"
+    ln -s 'liborender.so.0' "$pkgdir/usr/lib/liborender.so"
+    install -Dm644 orender_ffi/include/orender.h "$pkgdir/usr/include/orender.h"
+    sed -e 's|@PREFIX@|/usr|g' -e "s|@VERSION@|$pkgver|g" \
+        orender_ffi/orender.pc.in > "$srcdir/orender.pc"
+    install -Dm644 "$srcdir/orender.pc" "$pkgdir/usr/lib/pkgconfig/orender.pc"
+    local layout
+    for layout in "$srcdir/$_src"/layouts/*.yaml; do
+        install -Dm644 "$layout" "$pkgdir/usr/share/orender/layouts/${layout##*/}"
+    done
+    for layout in "$srcdir/$_src"/layouts/legacy/*.yaml; do
+        install -Dm644 "$layout" "$pkgdir/usr/share/orender/layouts/legacy/${layout##*/}"
+    done
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/orender-loopback.patch" \
+        "$pkgdir/usr/share/doc/$pkgname/orender-loopback.patch"
+}

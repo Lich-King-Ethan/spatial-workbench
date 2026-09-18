@@ -1,0 +1,13 @@
+include LICENSE README.md STATUS.md build.sh install.sh Makefile CONTRIBUTING.md .gitignore
+recursive-include .github *
+recursive-include packaging *
+recursive-include config *
+recursive-include docs *.md
+recursive-include plasma *.qml *.js *.patch *.md
+recursive-include tests *.py
+recursive-include tools *.py
+recursive-include LICENSES *
+recursive-include wireplumber *.lua *.conf
+recursive-include spatial/data *.json *.txt
+global-exclude *.pyc
+global-exclude __pycache__

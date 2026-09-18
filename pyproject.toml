@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spatial-workbench"
+version = "0.2.1"
+description = "Modular headphone tracking, spatial playback, and Plasma integration"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = ["dbus-next>=0.2.3,<0.3"]
+
+[project.optional-dependencies]
+tidal = ["tidalapi>=0.8.11,<0.9"]
+
+[project.scripts]
+spatialctl = "spatial.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["spatial*"]
+
+[tool.setuptools.package-data]
+spatial = ["data/*.txt", "data/*.json"]

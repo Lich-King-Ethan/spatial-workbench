@@ -1,0 +1,8 @@
+# Grant the active local desktop user access through logind, never world access.
+# SlimeVR USB HID receiver / wired tracker IDs from upstream HIDCommon.kt.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="1209", ATTRS{idProduct}=="7690|7692", MODE="0660", TAG+="uaccess"
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", ATTRS{idVendor}=="4e76", ATTRS{idProduct}=="d2d[0-9a-f]", MODE="0660", TAG+="uaccess"
+# Bluetooth HID devices expose the bus/vendor in their HID parent kernel name.
+# The provider additionally verifies exact Bluetooth address, sensor descriptor,
+# Android head-tracker feature and supported report layout before using a device.
+SUBSYSTEM=="hidraw", KERNEL=="hidraw*", KERNELS=="0005:054C:*", MODE="0660", TAG+="uaccess"

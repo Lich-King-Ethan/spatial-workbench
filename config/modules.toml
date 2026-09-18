@@ -1,0 +1,91 @@
+# Ownership/maturity inventory for release 0.2.1, not executable configuration.
+# Runtime choices belong in ~/.config/spatiald/config.toml; see spatial/settings.py.
+schema = 1
+
+[core]
+implementation = "spatial.core + spatial.runtime"
+boundary = "spatiald process; independent supervised async providers"
+owns = ["tracker policy", "preferences", "connection epochs", "capability state", "queue orchestration"]
+
+[desktop]
+implementation = "spatial.desktop + spatial.discovery + spatial.mpris"
+boundary = "independent daemon tasks; session D-Bus"
+owns = ["BlueZ identity and connection events", "BudsLink device matching", "control API", "MPRIS"]
+failure_effect = "affected service readiness removed; providers retry independently"
+
+[pipewire]
+implementation = "spatial.pipewire"
+boundary = "bounded pw-dump subprocess snapshots"
+owns = ["current physical headphone discovery", "observed graph state"]
+failure_effect = "audio readiness waits; sensor and control discovery continue"
+
+[budslink]
+implementation = "existing upstream installation"
+boundary = "upstream process; sole Sony control connection owner"
+owns = ["battery", "ANC", "ambient", "device EQ", "DSEE", "multipoint", "Speak-to-Chat", "touch assignments", "wear settings"]
+failure_effect = "Sony control capabilities unavailable; audio modules remain independent"
+
+[sony_tracker]
+implementation = "spatial.trackers.sony + upstream sony-tracker"
+boundary = "identity-checked adapter task and owned helper process"
+owns = ["verified Sony HID orientation", "reader generation and freshness"]
+permission = "new earbud identities OFF; provider discovery enabled by default"
+failure_effect = "earbud source unavailable; optional source or static rendering remains"
+validation = "WF HID exposure, firmware layout and physical axes require target hardware"
+
+[optional_tracker]
+implementation = "spatial.trackers.slime; verified SlimeVR nRF HID protocol"
+boundary = "passive nonblocking HID file descriptors and independent reader tasks"
+owns = ["receiver-reported hardware identities", "orientation", "slot lifecycle"]
+permission = "new identities OFF; at most one optional tracker enabled"
+failure_effect = "affected source unavailable; earbud fallback only if independently enabled"
+validation = "physical nRF receiver and concurrent SlimeVR use require target hardware"
+
+[renderer]
+implementation = "spatial.audio_runtime + mpv-omniphony + liborender + harletty-bridge"
+boundary = "owned player process; private IPC and loopback OSC"
+owns = ["encoded spatial decoding", "binaural rendering", "telemetry", "physical output audit"]
+failure_effect = "owned playback stops; BudsLink and sensor providers remain independent"
+engine = "pinned Omniphony 0.5.2 with local-control patch, built as orender-spatial"
+
+[live_audio]
+implementation = "spatial.live_audio + standalone orender 0.5.2 using render.input_mode=live"
+boundary = "owned renderer process, per-stream metadata transaction and WirePlumber policy hook"
+owns = ["temporary PCM input", "selected-stream routing", "binaural PCM", "route recovery"]
+selection = "automatic for this player's native PCM; explicit for another application"
+failure_effect = "selected stream recovery; no global default change"
+validation = "real channel negotiation, graph policy and abrupt process loss require target desktop"
+
+[tidal]
+implementation = "spatial.tidal + optional tidalapi 0.8.x"
+boundary = "lazy provider with bounded worker-thread network requests"
+owns = ["explicit device login", "protected token state", "catalogue queue", "clear manifest validation"]
+policy = "strict Atmos by default; ordinary lossless requires tidal_require_atmos=false"
+failure_effect = "TIDAL request fails; local playback, tracking and controls remain independent"
+validation = "real account entitlement and returned Atmos stream remain unverified"
+
+[host_eq]
+implementation = "spatial.equalizer + PipeWire param_eq + SWH fastLookaheadLimiter"
+boundary = "owned PipeWire client process with WirePlumber smart filters"
+owns = ["physical-device correction", "profile provenance", "gain policy", "filter graph audit"]
+default = "enabled; bundled AutoEQ DHRME WF-1000XM5 five-band profile"
+failure_effect = "EQ unavailable; ordinary audio remains available; no correction on another device"
+validation = "actual limiter ABI/DSP tested; full PipeWire graph requires target desktop"
+
+[companion]
+implementation = "pinned upstream native QML plus plasma/companion.patch"
+boundary = "existing Plasma process; versioned D-Bus state and methods"
+owns = ["playback card", "application selector", "tracker toggles", "recenter", "capability display"]
+validation = "source and presentation logic checked; native Plasma rendering pending"
+
+[diagnostics]
+implementation = "spatial.health + spatial-diagnostics + spatial-verify"
+boundary = "independent bounded collector process and read-only host checks"
+owns = ["persistent error detection", "local redacted reports", "private retention", "host acceptance evidence"]
+default = "automatic collection enabled; ten-minute cooldown; at most ten reports"
+failure_effect = "collection unavailable; audio and sensor modules continue"
+privacy = "no automatic uploads or journal logs"
+
+[battery_alerts]
+implementation = "proposal; existing battery display remains upstream"
+owns = ["possible opt-in threshold notifications and reconnect debounce"]

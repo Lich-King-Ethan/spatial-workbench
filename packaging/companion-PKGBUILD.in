@@ -1,0 +1,31 @@
+# Patched source package. Upstream remains the owner of the Companion UI.
+pkgname=plasma-budslink-companion-spatial
+pkgver=0.2.0.spatial@VERSION@
+pkgrel=1
+pkgdesc='BudsLink Companion with optional spatial tracking controls'
+arch=('any')
+url='https://github.com/maniacx/BudsLink-Companion'
+license=('GPL-3.0-or-later')
+depends=('plasma-workspace' 'kirigami' 'bluez-qt' 'qt6-declarative' 'qt6-5compat')
+makedepends=('patch')
+optdepends=('flatpak: upstream BudsLink service'
+            'spatial-workbench: independent spatial tracking daemon')
+_commit=31c6b3802071a6efc6fbd5a821e9c97f97240fd7
+_id=com.github.maniacx.BudsLink-Companion
+source=("BudsLink-Companion-${_commit}.tar.gz::https://codeload.github.com/maniacx/BudsLink-Companion/tar.gz/${_commit}"
+        'companion.patch' 'PROVENANCE.md')
+sha256sums=('@UPSTREAM_SHA256@' '@PATCH_SHA256@' '@PROVENANCE_SHA256@')
+
+prepare() {
+    cd "$srcdir/BudsLink-Companion-$_commit"
+    patch --batch --forward -p1 -i "$srcdir/companion.patch"
+}
+
+package() {
+    cd "$srcdir/BudsLink-Companion-$_commit"
+    install -d "$pkgdir/usr/share/plasma/plasmoids/$_id"
+    cp -r contents metadata.json "$pkgdir/usr/share/plasma/plasmoids/$_id/"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 "$srcdir/PROVENANCE.md" "$pkgdir/usr/share/doc/$pkgname/PROVENANCE.md"
+    install -Dm644 "$srcdir/companion.patch" "$pkgdir/usr/share/doc/$pkgname/companion.patch"
+}

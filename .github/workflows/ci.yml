@@ -1,0 +1,116 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: Python ${{ matrix.python }} and native test dependencies
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ['3.11', '3.12', '3.13']
+    env:
+      PYTHONUTF8: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install real D-Bus, Lua, JavaScript, compiler, and limiter dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y dbus dbus-x11 lua5.4 nodejs build-essential swh-plugins
+          python -m pip install --upgrade pip
+          python -m pip install '.[tidal]' build twine
+      - name: Check native dependencies and source syntax
+        run: |
+          python -m compileall -q spatial tools tests
+          bash -n build.sh
+          bash -n install.sh
+          luac5.4 -p wireplumber/scripts/spatial-live-guard.lua
+          node --version
+          python - <<'PY'
+          import ctypes.util
+          import shutil
+          from spatial.equalizer import find_limiter
+          assert ctypes.util.find_library('lua5.4'), 'Lua shared library is required'
+          assert shutil.which('cc'), 'A native C compiler is required'
+          print('Native limiter:', find_limiter())
+          PY
+      - name: Run all tests on an isolated real session bus
+        env:
+          SPATIAL_TEST_DBUS: '1'
+        run: |
+          dbus-run-session -- python - <<'PY'
+          import sys
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tests')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          if result.skipped:
+              print('CI requires its installed native dependencies; unexpected skips:', result.skipped)
+          sys.exit(0 if result.wasSuccessful() and not result.skipped else 1)
+          PY
+      - name: Build and inspect wheel and source distribution
+        run: |
+          python -m build
+          python -m twine check dist/*.whl dist/*.tar.gz
+          python tools/make-release.py
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: python-${{ matrix.python }}-distributions
+          path: |
+            dist/*.whl
+            dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  arch-packages:
+    name: Arch core and Companion packages
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 35
+    steps:
+      - name: Prepare current Arch build environment
+        run: |
+          pacman -Syu --noconfirm --needed git python sudo dbus nodejs lua swh-plugins
+          useradd --create-home builder
+          printf '%s\n' 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/spatial-build
+          chmod 0440 /etc/sudoers.d/spatial-build
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate checksummed package sources
+        run: python tools/make-release.py
+      - name: Build and check packages as an unprivileged user
+        shell: bash
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          for package in core companion; do
+            runuser -u builder -- bash -c '
+              cd "$1"
+              makepkg --syncdeps --noconfirm --cleanbuild --check
+            ' bash "$GITHUB_WORKSPACE/dist/arch/$package"
+          done
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arch-core-and-companion
+          path: |
+            dist/arch/core/*.pkg.tar.*
+            dist/arch/companion/*.pkg.tar.*
+          if-no-files-found: error
+          retention-days: 14

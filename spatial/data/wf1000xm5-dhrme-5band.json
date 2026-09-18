@@ -1,0 +1,16 @@
+{
+  "name": "WF-1000XM5 AutoEQ (DHRME, five bands)",
+  "device": "Sony WF-1000XM5",
+  "measurement_source": "DHRME",
+  "generator": "AutoEQ",
+  "upstream_commit": "7ae0f56d53074872b028649617a22bbb4232feb7",
+  "upstream_profile_url": "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/7ae0f56d53074872b028649617a22bbb4232feb7/results/DHRME/in-ear/Sony%20WF-1000XM5/Sony%20WF-1000XM5%20ParametricEQ.txt",
+  "upstream_readme_url": "https://github.com/jaakkopasanen/AutoEq/blob/7ae0f56d53074872b028649617a22bbb4232feb7/results/DHRME/in-ear/Sony%20WF-1000XM5/README.md",
+  "upstream_full_profile_sha256": "aad5ed18ef1a3ec5877411d1fd17cb303b72210e96f6ae143d87290b9b05956c",
+  "profile_sha256": "c6e9f3bf5695e72371264ec4e9a574166ace16d6539a716b06fd852e193deb1d",
+  "modifications": "Retained preamp and first five ON filters, as recommended by upstream README. Omitted optional bands six through ten.",
+  "target": "AutoEQ published DHRME result; not a personalized measurement",
+  "license": "MIT",
+  "preamp_db": -2.6,
+  "bands": 5
+}

@@ -1,0 +1,55 @@
+__pycache__/
+*.pyc
+*.egg-info/
+build/
+dist/
+.venv/
+
+# Additional interpreter, test, and build output
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+venv/
+env/
+node_modules/
+target/
+*.whl
+*.pkg.tar.*
+*.src.tar.*
+/src/
+/pkg/
+
+# Generated local releases and acceptance reports
+/release/
+/releases/
+/deliverables/
+spatial-diagnostics-*.json
+spatial-verification-*.json
+
+# Local credentials and state; keep examples and checked-in profiles
+.env
+.env.*
+!.env.example
+/session.json
+/tidal-session.json
+/credentials.json
+/token.json
+/tokens.json
+/.local/state/
+/.config/spatiald/
+*.pem
+*.key
+
+# Editor and operating-system files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

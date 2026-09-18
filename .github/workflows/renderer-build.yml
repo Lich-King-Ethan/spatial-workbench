@@ -1,0 +1,62 @@
+name: Patched renderer build
+
+# Expensive native compilation is explicit or limited to renderer packaging changes.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - 'packaging/orender-PKGBUILD.in'
+      - 'packaging/orender-loopback.patch'
+      - 'packaging/orender-Cargo.lock'
+      - 'tools/make-release.py'
+      - '.github/workflows/renderer-build.yml'
+  pull_request:
+    paths:
+      - 'packaging/orender-PKGBUILD.in'
+      - 'packaging/orender-loopback.patch'
+      - 'packaging/orender-Cargo.lock'
+      - 'tools/make-release.py'
+      - '.github/workflows/renderer-build.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: renderer-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build CLI and FFI library; run patched Rust tests
+    runs-on: ubuntu-24.04
+    container: archlinux:base-devel
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: '2'
+    steps:
+      - name: Prepare current Arch build environment
+        run: |
+          pacman -Syu --noconfirm --needed git python sudo
+          useradd --create-home builder
+          printf '%s\n' 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman' > /etc/sudoers.d/spatial-build
+          chmod 0440 /etc/sudoers.d/spatial-build
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Generate pinned renderer recipe and patch checksum
+        run: python tools/make-release.py
+      - name: Compile and test patched renderer as an unprivileged user
+        shell: bash
+        run: |
+          chown -R builder:builder "$GITHUB_WORKSPACE"
+          runuser -u builder -- bash -c '
+            cd "$1"
+            makepkg --syncdeps --noconfirm --cleanbuild --check
+          ' bash "$GITHUB_WORKSPACE/dist/arch/orender"
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arch-patched-renderer
+          path: dist/arch/orender/*.pkg.tar.*
+          if-no-files-found: error
+          retention-days: 14
