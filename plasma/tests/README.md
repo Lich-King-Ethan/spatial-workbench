@@ -7,8 +7,9 @@ Qt's file-dialog type, and a real KI18n translation context. It does not substit
 QML components or replace imports with test doubles.
 
 The explicitly named `ControlFixture` provides only a `State` property and
-`PropertiesChanged` signals on that private bus. No headset, audio renderer,
-desktop daemon, or playback methods are started. The test covers component
+`PropertiesChanged` signals on that private bus. The test does not start spatiald,
+BudsLink, an audio renderer, or playback. Qt may activate desktop portal helpers
+inside the private test session. The test covers component
 creation, visible tracker delegates, plain tracker names, playback format updates,
 and exact application-stream identifiers. Component errors and **every warning
 reported by the QML engine** fail the test. General platform diagnostic messages

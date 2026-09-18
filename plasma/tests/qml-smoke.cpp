@@ -24,6 +24,18 @@ static const QString service = QStringLiteral("org.spatiald.Control1");
 static const QString objectPath = QStringLiteral("/org/spatiald/Control1");
 static const QString companionPath = QStringLiteral("/fixture/XM5");
 
+static QQuickItem *findVisualLabel(QQuickItem *item, const QString &text)
+{
+    if (item->property("text").toString() == text)
+        return item;
+    // Repeater delegates are visual children; QObject ownership is a separate tree.
+    for (auto *child : item->childItems()) {
+        if (auto *found = findVisualLabel(child, text))
+            return found;
+    }
+    return nullptr;
+}
+
 class ControlFixture : public QDBusAbstractAdaptor
 {
     Q_OBJECT
@@ -121,14 +133,11 @@ private slots:
 
         if (filename == QStringLiteral("SpatialControls.qml")) {
             QTRY_COMPARE(item->property("rows").value<QJSValue>().property("length").toInt(), 2);
-            bool foundPlainName = false;
-            for (auto *child : item->findChildren<QObject *>()) {
-                if (child->property("text").toString() == QStringLiteral("<tracker & fixture>")) {
-                    QCOMPARE(child->property("textFormat").toInt(), int(Qt::PlainText));
-                    foundPlainName = true;
-                }
-            }
-            QVERIFY(foundPlainName);
+            QQuickItem *plainName = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT(
+                (plainName = findVisualLabel(item, QStringLiteral("<tracker & fixture>"))) != nullptr,
+                5000);
+            QCOMPARE(plainName->property("textFormat").toInt(), int(Qt::PlainText));
         } else if (filename == QStringLiteral("PlaybackControls.qml")) {
             QCOMPARE(item->property("sourceKind").toString(), QStringLiteral("binaural"));
             auto runtime = fixture.snapshot["runtime"].toObject();
