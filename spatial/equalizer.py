@@ -306,7 +306,9 @@ class Equalizer:
                 env["PIPEWIRE_CONFIG_PREFIX"] = ""
                 self._stderr = ""
                 self.process = await asyncio.create_subprocess_exec(
-                    self.executable, "-c", str(config), env=env,
+                    # With an explicit config directory and empty prefix,
+                    # PipeWire appends -c to that directory even if it is absolute.
+                    self.executable, "-c", config.name, env=env,
                     stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.DEVNULL,
                     stderr=asyncio.subprocess.PIPE)
                 if getattr(self.process, "stderr", None) is not None:
