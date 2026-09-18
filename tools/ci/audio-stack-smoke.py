@@ -49,6 +49,24 @@ def named(objects, name):
     return found[0] if len(found) == 1 else None
 
 
+def ports_for(objects, node_id, *, direction, monitor=None):
+    """Return a node's channel ports, optionally restricted to monitor ports."""
+    result = {}
+    for obj in objects:
+        if obj.get("type") != "PipeWire:Interface:Port":
+            continue
+        info = obj.get("info") or {}
+        port_props = info.get("props") or {}
+        if str(port_props.get("node.id")) != str(node_id) or info.get("direction") != direction:
+            continue
+        if monitor is not None and bool(port_props.get("port.monitor", False)) is not monitor:
+            continue
+        channel = port_props.get("audio.channel")
+        if channel in ("FL", "FR"):
+            result[channel] = obj
+    return result
+
+
 def destinations(objects, source):
     return {str(obj["info"]["input-node-id"]) for obj in objects
             if obj.get("type") == "PipeWire:Interface:Link"
@@ -177,8 +195,12 @@ class PCMRecorder:
         self.gate.files.append(log)
         self.process = await asyncio.create_subprocess_exec("pw-cat", "--record", "--raw",
             "--rate", "48000", "--channels", "2", "--channel-map", "FL,FR", "--format", "f32",
-            "--target", self.sink.serial, "--properties", json.dumps({
-                "node.name": "spatial-ci-earbud-recorder", "stream.capture.sink": True}),
+            # Do not let WirePlumber choose a smart-filter input as the
+            # capture target. The gate must consume the endpoint's actual
+            # post-EQ monitor, so it links those ports explicitly below.
+            "--target", "0", "--properties", json.dumps({
+                "node.name": "spatial-ci-earbud-recorder", "node.autoconnect": False,
+                "node.dont-fallback": True, "node.dont-reconnect": True}),
             "-", stdout=asyncio.subprocess.PIPE, stderr=log)
         self.gate.processes.append(("earbud-recorder", self.process))
 
@@ -188,11 +210,27 @@ class PCMRecorder:
 
         self.task = asyncio.create_task(consume())
         self.gate.feeds.append(self.task)
-        await self.gate.until("earbud-recorder-ready", lambda objects:
-            (capture := named(objects, "spatial-ci-earbud-recorder")) is not None
-            and (endpoint := named(objects, self.sink.name)) is not None
+        objects = await self.gate.until("earbud-recorder-created", lambda value:
+            named(value, "spatial-ci-earbud-recorder") is not None
+            and (endpoint := named(value, self.sink.name)) is not None
             and str(props(endpoint).get("object.serial")) == self.sink.serial
-            and stereo_linked(objects, endpoint["id"], capture["id"]))
+            and len(ports_for(value, endpoint["id"], direction="output", monitor=True)) == 2
+            and len(ports_for(value, named(value, "spatial-ci-earbud-recorder")["id"],
+                              direction="input")) == 2)
+        capture = named(objects, "spatial-ci-earbud-recorder")
+        endpoint = named(objects, self.sink.name)
+        endpoint_ports = ports_for(objects, endpoint["id"], direction="output", monitor=True)
+        capture_ports = ports_for(objects, capture["id"], direction="input")
+        require(set(endpoint_ports) == {"FL", "FR"}, "Synthetic endpoint lacks stereo monitor ports")
+        require(set(capture_ports) == {"FL", "FR"}, "Recorder lacks stereo input ports")
+        for channel in ("FL", "FR"):
+            await self.gate.command("pw-link", str(endpoint_ports[channel]["id"]),
+                                    str(capture_ports[channel]["id"]))
+        await self.gate.until("earbud-recorder-ready", lambda value:
+            (capture := named(value, "spatial-ci-earbud-recorder")) is not None
+            and (endpoint := named(value, self.sink.name)) is not None
+            and str(props(endpoint).get("object.serial")) == self.sink.serial
+            and stereo_linked(value, endpoint["id"], capture["id"]))
 
     async def window(self, name, seconds=1):
         require(self.process.returncode is None, "Synthetic earbud recorder exited")
