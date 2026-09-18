@@ -26,39 +26,54 @@ developer runs may also save `test-results.txt`; that generated log is not track
 
 ## Completed hosted CI checks
 
-[CI run 35337361174](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337361174)
-passed for commit `cbc9d7db505216b37cc6350f6aa1d97edd307493` on September 18, 2026.
-The Python 3.11, 3.12 and 3.13 jobs ran the suite with a real private D-Bus
-session and installed native Lua, compiler, JavaScript and limiter dependencies;
-these jobs reject skipped tests.
+[CI run 35357627564](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627564)
+passed for commit `cc73670`. Each Python 3.11, 3.12 and 3.13 job, and the Arch
+package's `makepkg check()` against extracted sources, passed **253 tests with
+zero skips**. The jobs use a real
+private D-Bus session and native Lua, compiler, JavaScript and limiter
+dependencies. This includes the seven D-Bus tests that the development sandbox
+cannot execute. The hosted checks reject skipped tests.
 
-The Arch job used Python 3.14.7 and Lua 5.5.1. Its actual `makepkg` check ran
-all 240 tests successfully, including the seven D-Bus tests that cannot run in
-the development sandbox. It produced `spatial-workbench 0.2.1-1` and
-`plasma-budslink-companion-spatial 0.2.0.spatial0.2.1-1` package artifacts.
-The Lua test harness supports both the older exported `luaL_openlibs` function
-and Lua 5.5's `luaL_openselectedlibs` API; the same guard assertions also passed
-locally against actual Lua 5.3, 5.4.8 and 5.5.1 libraries.
+The current suite includes Sony protocol/axis and nonidentity recenter fixtures,
+TIDAL credential-generation races, and stale-source cleanup. Its service
+fixtures are declared test data. The Lua harness supports both the older
+exported `luaL_openlibs` function and Lua 5.5's `luaL_openselectedlibs` API;
+the same guard assertions also passed locally against actual Lua 5.3, 5.4.8
+and 5.5.1 libraries.
 
-These are real package builds and native service tests. They do not establish
-physical Bluetooth/HID behavior, a rendered Plasma widget, a running PipeWire
-audio graph, or acoustic playback. The local environment restrictions below
-still apply to the development sandbox.
+The native Qt/Plasma job in that CI run also passed all three actual Companion
+card cases. Qt Test reports **five passes including setup and cleanup**. The
+offscreen test uses real Qt/Plasma imports, KI18n and a private D-Bus State
+fixture. It checks tracker delegate creation/plain names, playback format
+updates, and application selection/disappearance with an exact large stream
+identifier. No Bluetooth device, audio renderer or user desktop interaction is
+represented by that fixture. Visual theme/layout, keyboard behavior and physical
+playback remain target-PC checks.
+
+These are real package and native component checks. They do not establish
+physical Bluetooth/HID behavior or the complete audio route. The local
+environment restrictions below still apply to the development sandbox.
 
 The separate [renderer run 35337138960](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337138960)
 also completed successfully: clean Arch `makepkg` compiled the pinned patched CLI
 and FFI library, passed the two Rust bind-policy tests and package CLI/ABI checks,
 and uploaded the actual `orender-spatial` package artifact.
 
-The subsequent [native card run 35338214187](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187)
-passed all three actual Companion components under Arch Qt 6.11.2. The offscreen
-test uses real Qt/Plasma imports, KI18n and a private D-Bus State fixture. It
-checks tracker delegate creation/plain names, playback format updates, and
-application selection/disappearance with an exact large stream identifier.
-All three card cases passed, with no QML-engine warnings; Qt Test reports five
-passes including setup/cleanup. No Bluetooth device, audio renderer or real
-desktop interaction is represented by that fixture. Visual theme/layout,
-keyboard behavior and physical playback remain target-PC checks.
+## Hosted integration work still pending
+
+[CachyOS integration run 35357627508](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627508)
+passed all 253 installed-package tests and the native Qt checks, then failed
+during audio harness setup. The overall integration run therefore failed;
+its successful package/component checks do not establish an end-to-end
+PipeWire/WirePlumber audio result.
+
+Updated audio harness fixes, full installer checks, and the complete media
+route checks are being prepared for another hosted run. Results are pending.
+The new route gates are intended to capture actual sink PCM after production
+rendering and EQ while simulated Sony packets drive the installed tracker
+adapter and selection engine. They must pass on the tested commit before those
+capabilities can be listed as completed validation. The standalone decoder
+result below covers a different, narrower path.
 
 ## Completed local checks
 
@@ -76,6 +91,16 @@ library through its actual child-process capability probe. The renderer's
 `package()` staged its executable, library, headers, layouts and license.
 See [the exact native build evidence](orender-loopback.md).
 
+A subsequent independent local check used the genuine Harletty 0.7.3 bridge
+with Omniphony 0.5.2's real FFI and a pinned E-AC-3 JOC Atmos fixture. It decoded
+15 objects and 72,192 frames, checked finite non-silent output with twelve
+speaker channels and two binaural channels, and verified real OSC pose
+acknowledgement plus a changed binaural waveform after head rotation. This
+check did not require a PipeWire server or mpv IPC and therefore ran despite the
+local Unix-socket restriction. It does not establish the full media route,
+physical headphone output or perceived localization. See
+[decoder and fixture details](decoder-validation.md).
+
 The core PKGBUILD's actual `build()` and `package()` functions were also executed
 against exported source, installing 124 staged files. Companion's actual
 `prepare()` and `package()` functions ran against its checksum-verified upstream
@@ -85,7 +110,11 @@ installation or hardware operation is implied by these staging directories.
 The tests include an actual child process transmitting the Sony helper's binary
 protocol over a private UDP port, an actual OSC UDP exchange, and a pipe-backed
 file-descriptor receiver test. Their telemetry is a declared test fixture; no
-physical sensor or decoder is involved. Runtime tests inject a player recorder
+physical sensor is involved. The new CI pose utility separately passed 13
+simulated orientations through the actual Sony subprocess/UDP adapter and
+Engine, including compound recentering and subsequent relative yaw. That local
+check verifies pose delivery and policy, not captured audio. Runtime tests inject
+a player recorder
 to exercise delayed readiness, wrong output rejection, disconnect/stop races,
 source cleanup, EOF queue advancement, and isolation of optional provider faults.
 The shipped WirePlumber guard is executed by an actual Lua shared library against
