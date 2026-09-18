@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spatial-workbench"
-version = "0.2.1"
+version = "0.2.2"
 description = "Modular headphone tracking, spatial playback, and Plasma integration"
 requires-python = ">=3.11"
 license = {text = "MIT"}

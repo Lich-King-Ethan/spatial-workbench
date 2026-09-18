@@ -119,13 +119,16 @@ def decode_pose(packet):
     cy, sy = math.cos(yaw), math.sin(yaw)
     cp, sp = math.cos(pitch), math.sin(pitch)
     cr, sr = math.cos(roll), math.sin(roll)
-    # Invert upstream quat_to_euler_deg (ZYX); then Xright,Yforward,Zup ->
-    # canonical Xright,Yup,Zback. This is head-to-world, not its inverse.
+    # Invert upstream quat_to_euler_deg (ZYX). Its input is already remapped
+    # from Android's reference-to-head rotation vector to (-ry, rx, -rz).
     w = cr * cp * cy + sr * sp * sy
     x = sr * cp * cy - cr * sp * sy
     y = cr * sp * cy + sr * cp * sy
     z = cr * cp * sy - sr * sp * cy
-    return Quaternion.parse((w, x, z, -y))
+    # Undo that helper map, invert reference-to-head, then change Android's
+    # Xright,Yforward,Zup to canonical Xright,Yup,Zback. Together these form
+    # a proper basis rotation, preserving reference^-1 * current recentering.
+    return Quaternion.parse((w, -y, z, -x))
 
 
 async def session(engine, stop, device, source, reporter, executable):

@@ -1,4 +1,4 @@
-# Release status — 0.2.1
+# Release status — 0.2.2
 
 This release contains operational modules and a single-command Arch installation
 workflow. It is ready for building and desktop acceptance testing; it is **not

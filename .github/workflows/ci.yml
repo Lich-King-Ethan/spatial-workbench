@@ -101,11 +101,19 @@ jobs:
         run: |
           chown -R builder:builder "$GITHUB_WORKSPACE"
           for package in core companion; do
-            runuser -u builder -- bash -c '
+            bash tools/ci/package-check.sh "$package" dist/ci-logs -- runuser -u builder -- bash -c '
               cd "$1"
               makepkg --syncdeps --noconfirm --cleanbuild --check
             ' bash "$GITHUB_WORKSPACE/dist/arch/$package"
           done
+      - name: Upload complete package-check logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: arch-package-check-logs
+          path: dist/ci-logs/*.log
+          if-no-files-found: warn
+          retention-days: 14
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: arch-core-and-companion

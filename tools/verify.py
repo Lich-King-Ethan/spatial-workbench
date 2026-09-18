@@ -15,7 +15,7 @@ from types import SimpleNamespace
 import uuid
 
 _source_root = Path(__file__).resolve().parents[1]
-if (_source_root / "spatial").is_dir():
+if not sys.flags.isolated and (_source_root / "spatial").is_dir():
     sys.path.insert(0, str(_source_root))
 from spatial.diagnostics_privacy import Redactor
 

@@ -1,0 +1,36 @@
+name: Full installer in a CachyOS VM
+
+# Building every upstream audio package is deliberately an explicit operation.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    name: Real install.sh, systemd, udev and PipeWire
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      # Official baseline image, resolved 2026-09-18. Package updates retain
+      # CachyOS/Arch signature verification and are recorded in the artifacts.
+      CACHYOS_IMAGE: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Provision and boot minimal CachyOS VM; run unchanged installer
+        run: bash tools/ci/full-installer-host.sh
+      - name: Retain installer and boot evidence, including failures
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: full-installer-cachyos-${{ github.sha }}
+          path: installer-evidence/
+          if-no-files-found: error
+          retention-days: 14

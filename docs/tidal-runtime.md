@@ -87,6 +87,16 @@ tokens are stored locally, protected by filesystem permissions rather than
 encrypted at rest. `logout` deletes this application's local copy; it does not
 revoke other TIDAL clients or cancel a subscription.
 
+A running daemon checks the saved session before each source request. A new
+login is loaded on the next request; logout invalidates cached authorization
+without restarting the daemon. Credential reads, atomic replacements, and
+logout share a private, persistent `session.json.lock` file. A request may save
+refreshed credentials only if the session file still has the identity it read.
+If another process logs out or replaces the login during a service request, the
+old result is rejected and any prepared DASH file is removed. An HTTP request
+already in progress can finish, but cannot restore the deleted login or overwrite
+the new one. The filesystem lock is released during all network/browser work.
+
 Every service HTTP request has connect/read timeouts. Account restoration and
 stream resolution should run in the source worker rather than the desktop
 event loop. An unavailable TIDAL service does not own or stop tracker discovery,
@@ -116,7 +126,10 @@ Automated tests cover real manifest parsing and the provider's library boundary:
 clear E-AC-3 handoff, preserved DASH text, explicit stereo rejection, mixed codec
 rejection, encrypted/protected stream rejection, URL validation, session
 permissions, source failure isolation, login separation, and collection
-pagination. Fixtures describe protocol responses; they are not recorded proof
+pagination. Concurrent-session tests cover daemon logout, new-login reload,
+credential changes during restore/service requests, atomic save/logout ordering,
+overlapping source workers, and stale DASH cleanup. Fixtures describe protocol
+responses; they are not recorded proof
 that an account received Atmos.
 
 The `tidalapi 0.8.11` wheel was installed and its public auth/session interfaces

@@ -1,0 +1,99 @@
+name: CachyOS package and audio integration
+
+# This is the official CachyOS userspace on the hosted runner's kernel.
+# A successful run does not establish a booted CachyOS desktop or hardware support.
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cachyos-integration-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  packages-and-runtime:
+    name: Signed CachyOS packages, installed Qt cards, and real audio graph
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    container:
+      # Official baseline x86-64 image, published 2026-09-17.
+      # Upstream: https://github.com/CachyOS/docker
+      image: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_BUILD_JOBS: '2'
+      PYTHONUTF8: '1'
+      CACHYOS_IMAGE: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Prepare signed CachyOS repositories and native dependencies
+        run: |
+          bash tools/ci/package-check.sh cachyos-prepare dist/cachyos-evidence -- \
+            bash tools/ci/cachyos-prepare.sh
+      - name: Generate checksummed sources as the package builder
+        run: |
+          bash tools/ci/package-check.sh release-sources dist/cachyos-evidence -- \
+            runuser -u builder -- python tools/make-release.py
+      - name: Build, check, and install core, Companion, and patched renderer
+        run: |
+          for package in core companion orender; do
+            bash tools/ci/package-check.sh "cachyos-$package" dist/cachyos-evidence -- \
+              runuser -u builder -- bash tools/ci/cachyos-packages.sh "$package"
+          done
+      - name: Run the complete test suite against the installed Python package, with zero skips
+        run: |
+          bash tools/ci/package-check.sh installed-python dist/cachyos-evidence -- \
+            runuser -u builder -- env -u PYTHONPATH SPATIAL_TEST_DBUS=1 \
+              dbus-run-session -- python -I tools/ci/cachyos-installed-tests.py \
+              --report dist/cachyos-evidence/installed-python.json
+      - name: Run native Qt cards from the installed Companion package
+        run: |
+          bash tools/ci/package-check.sh installed-companion dist/cachyos-evidence -- \
+            runuser -u builder -- bash -eu -o pipefail -c '
+              cmake -S plasma/tests -B dist/cachyos-native-qml -G Ninja \
+                -DSPATIAL_COMPANION_QML_DIR=/usr/share/plasma/plasmoids/com.github.maniacx.BudsLink-Companion/contents/ui
+              cmake --build dist/cachyos-native-qml
+              runtime_dir=$(mktemp -d)
+              trap '\''rm -rf -- "$runtime_dir"'\'' EXIT
+              env XDG_RUNTIME_DIR="$runtime_dir" QT_QPA_PLATFORM=offscreen \
+                QT_QUICK_BACKEND=software SPATIAL_QML_PRIVATE_BUS=1 \
+                dbus-run-session -- dist/cachyos-native-qml/spatial-qml-smoke \
+                -o -,txt -o dist/cachyos-evidence/installed-companion.xml,junitxml
+              python -I -c '\''import xml.etree.ElementTree as E; root = E.parse("dist/cachyos-evidence/installed-companion.xml").getroot(); assert not root.findall(".//skipped"), "Native Qt tests must not skip"'\''
+            '
+      - name: Exercise the installed modules on real PipeWire and WirePlumber processes
+        timeout-minutes: 10
+        run: |
+          bash tools/ci/package-check.sh live-audio dist/cachyos-evidence -- \
+            runuser -u builder -- env -u PYTHONPATH \
+              dbus-run-session -- python -I tools/ci/audio-stack-smoke.py \
+              --report-dir "$GITHUB_WORKSPACE/dist/cachyos-evidence/audio"
+      - name: Record image, package, repository, and kernel provenance
+        if: always()
+        run: bash tools/ci/cachyos-provenance.sh dist/cachyos-evidence
+      - name: Preserve logs and evidence, including failed runs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cachyos-integration-evidence
+          path: dist/cachyos-evidence/
+          if-no-files-found: error
+          retention-days: 14
+      - name: Preserve the packages that passed all integration gates
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cachyos-checked-packages
+          path: |
+            dist/arch/core/*.pkg.tar.*
+            dist/arch/companion/*.pkg.tar.*
+            dist/arch/orender/*.pkg.tar.*
+          if-no-files-found: error
+          retention-days: 14

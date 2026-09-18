@@ -19,6 +19,10 @@ The live module requires the capability marker, writes the guard before setting
 serial as well as its current target metadata. For an active matching guard it
 selects only the recorded compatible target; if that target has disappeared or
 is incompatible it stops event processing before default/best-target selection.
+A second hook reasserts that exact input after stock smart-filter selection,
+which can otherwise replace an explicitly selected target with an associated
+filter. This runs before the stock link-preparation checks, so exclusive access
+and target availability can still prevent linking.
 A newer explicit user destination takes precedence. Ordinary streams and stale
 guards for reused node IDs are ignored. On deliberate cleanup the previous
 target is restored first, then the owned guard is cleared.

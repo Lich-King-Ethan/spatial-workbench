@@ -82,6 +82,8 @@ end
 '''
             assertions = r'''
 assert(hooks["spatiald/protect-live-target"].before == "linking/find-defined-target")
+assert(hooks["spatiald/verify-live-target"].after == "linking/get-filter-from-target")
+assert(hooks["spatiald/verify-live-target"].before == "linking/prepare-link")
 hooks["spatiald/announce-live-guard"].execute({})
 assert(entries["0|spatiald.live-guard"] == "1" and metadata.last_type == "Spa:String")
 function run()
@@ -102,6 +104,15 @@ target = {properties={ ["object.serial"]="47" }}
 local event = run()
 assert(not event.stopped and event.target == target)
 assert(flags.has_defined_target and not flags.has_node_defined_target)
+-- A stock smart-filter selection must not replace the protected input.
+event.target = {properties={ ["object.serial"]="99" }}
+hooks["spatiald/verify-live-target"].execute(event)
+assert(not event.stopped and event.target == target)
+-- The renderer can also disappear after the first selection hook.
+target = nil
+hooks["spatiald/verify-live-target"].execute(event)
+assert(event.stopped)
+target = {properties={ ["object.serial"]="47" }}
 -- Incompatibility also cannot turn into default-device playback.
 can_link = false
 assert(run().stopped)

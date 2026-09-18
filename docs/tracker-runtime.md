@@ -58,6 +58,7 @@ Sources checked:
 - [HID discovery and Android feature validation](https://github.com/kdani3/SonyTrackerLinux/blob/f5326577c4ae1949c6cbce3d8a4905107a86452d/hidraw.h)
 - [Wire output and report decode](https://github.com/kdani3/SonyTrackerLinux/blob/f5326577c4ae1949c6cbce3d8a4905107a86452d/main.c)
 - [Quaternion and axis math](https://github.com/kdani3/SonyTrackerLinux/blob/f5326577c4ae1949c6cbce3d8a4905107a86452d/quat.h)
+- [Android head-tracker rotation direction and axes](https://source.android.com/docs/core/interaction/sensors/head-tracker-hid-protocol#data-field-custom-value-1-0x0544)
 
 ## Optional SlimeVR nRF tracker
 
@@ -121,9 +122,16 @@ convert this frame to their own coordinate system and direction.
 
 Sony's UDP packet contains six native-endian doubles. The last three are the
 Euler output of upstream's Z-Y-X extraction, so we reconstruct
-`qz(yaw) * qy(pitch) * qx(roll)` and change basis from upstream's documented
-X-right/Y-forward/Z-up to the canonical frame: `(w,x,y,z) → (w,x,z,-y)`.
-Simply forwarding those Euler values to the renderer would swap physical axes.
+`qz(yaw) * qy(pitch) * qx(roll)`. Android reports a **reference-to-head**
+rotation vector in X-right/Y-forward/Z-up axes; the helper first remaps that
+vector to `(-ry, rx, -rz)`. Accounting for this remap, the transform direction,
+and the canonical basis gives **`(w,x,y,z) → (w,-y,z,-x)`** for the reconstructed
+helper quaternion. This final map is a proper basis rotation, so the helper's
+`inverse(reference) * current` remains the correct canonical relative pose even
+when its startup reference is not identity. Treating helper output as unmodified
+Android axes would swap physical nod and tilt. Tests compare packets generated
+by the pinned upstream C functions against independent Android rotation matrices,
+including combined rotations and nonidentity startup references.
 
 The Slime decoder applies the same world-axis correction as the upstream server:
 −90° about X, multiplied on the left of the decoded device quaternion. It does

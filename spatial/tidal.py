@@ -8,16 +8,20 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import fcntl
 import json
 import os
 import re
 import stat
 import sys
 import tempfile
+import threading
 import webbrowser
 import xml.etree.ElementTree as ET
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+from functools import wraps
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
 
@@ -42,7 +46,36 @@ def _private_directory(path: Path) -> Path:
     return path
 
 
-def _save_session(path: Path, session) -> None:
+@contextmanager
+def _session_lock(path: Path):
+    """Serialize local credential transactions, never HTTP or browser work.
+
+    Keep the lock inode after logout so every process uses the same flock.
+    """
+    _private_directory(path.parent)
+    try:
+        fd = os.open(path.with_name(path.name + ".lock"),
+                     os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK,
+                     0o600)
+    except OSError:
+        raise TidalError("Cannot safely lock TIDAL session") from None
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise TidalError("TIDAL session lock must be owned by this user with permissions 600")
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
+
+
+_UNCONDITIONAL = object()
+
+
+def _save_session(path: Path, session, *, expected=_UNCONDITIONAL) -> tuple:
     expiry = session.expiry_time
     data = {"schema": 1, "token_type": session.token_type,
             "access_token": session.access_token, "refresh_token": session.refresh_token,
@@ -50,22 +83,34 @@ def _save_session(path: Path, session) -> None:
             "is_pkce": bool(getattr(session, "is_pkce", False))}
     if not data["access_token"] or not data["token_type"]:
         raise TidalError("TIDAL did not return a usable session")
-    _private_directory(path.parent)
-    fd, name = tempfile.mkstemp(prefix=".session-", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as handle:
-            json.dump(data, handle)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(name, path)
-    finally:
-        if os.path.exists(name):
-            os.unlink(name)
+    with _session_lock(path):
+        if expected is not _UNCONDITIONAL:
+            _, current = _read_session_record(path)
+            if current != expected:
+                raise TidalError("TIDAL sign-in changed during this request; retry")
+        fd, name = tempfile.mkstemp(prefix=".session-", dir=path.parent)
+        try:
+            with os.fdopen(fd, "w") as handle:
+                json.dump(data, handle)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(name, path)
+            # Capture the committed inode while locked; rename can change ctime.
+            return _read_session_record(path)[1]
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
 
 
 def _read_session(path: Path) -> dict:
+    with _session_lock(path):
+        return _read_session_record(path)[0]
+
+
+def _read_session_record(path: Path) -> tuple[dict, tuple]:
+    """Read credentials and their exact file generation under _session_lock."""
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK)
     except FileNotFoundError:
         raise TidalError("TIDAL is not signed in; run spatialctl tidal login") from None
     except OSError:
@@ -90,8 +135,10 @@ def _read_session(path: Path) -> dict:
                 raise ValueError()
             if data.get("expiry_time"):
                 data["expiry_time"] = datetime.fromisoformat(data["expiry_time"])
-            return {key: data.get(key) for key in (
+            credentials = {key: data.get(key) for key in (
                 "token_type", "access_token", "refresh_token", "expiry_time", "is_pkce")}
+            identity = (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+            return credentials, identity
         except (ValueError, TypeError, AttributeError):
             raise TidalError("Invalid TIDAL session; run spatialctl tidal login") from None
 
@@ -277,11 +324,23 @@ def prepare_stream(stream, metadata=None, *, require_atmos=True) -> PreparedTrac
     return PreparedTrack(media, details, directory)
 
 
+def _serialized(method):
+    @wraps(method)
+    def call(self, *args, **kwargs):
+        # A cancelled asyncio.to_thread worker can outlive its caller. Keep a
+        # second worker from replacing this provider's session mid-request.
+        with self._operation_lock:
+            return method(self, *args, **kwargs)
+    return call
+
+
 class TidalProvider:
     def __init__(self, state_path=None, *, session=None):
         self.state_path = Path(state_path) if state_path else default_state_path()
         self._session = session
         self._authenticated = False
+        self._generation = None
+        self._operation_lock = threading.RLock()
 
     @property
     def session(self):
@@ -303,17 +362,36 @@ class TidalProvider:
             return TidalError(f"TIDAL {action} could not reach the service; check the connection and retry")
         return TidalError(f"TIDAL {action} failed ({name}); check subscription, track availability, and authorization")
 
-    def restore(self) -> bool:
-        credentials = _read_session(self.state_path)
+    def _invalidate(self):
+        self._authenticated = False
+        self._generation = None
+        if self._session is not None:
+            self._session.access_token = None
+            self._session.refresh_token = None
+
+    def _restore(self, credentials, generation):
+        self._invalidate()
         try:
             if not self.session.load_oauth_session(**credentials):
                 raise TidalError("TIDAL session expired; run spatialctl tidal login")
-            _save_session(self.state_path, self.session)
+            self._generation = _save_session(self.state_path, self.session, expected=generation)
             self._authenticated = True
             return True
         except Exception as exc:
+            self._invalidate()
             raise self._failure("session restore", exc) from None
 
+    @_serialized
+    def restore(self) -> bool:
+        try:
+            with _session_lock(self.state_path):
+                credentials, generation = _read_session_record(self.state_path)
+            return self._restore(credentials, generation)
+        except Exception as exc:
+            self._invalidate()
+            raise self._failure("session restore", exc) from None
+
+    @_serialized
     def login(self, show_url=print, *, open_browser=True) -> bool:
         try:
             session = self.session
@@ -331,18 +409,21 @@ class TidalProvider:
                 webbrowser.open(url)
             if not session.process_link_login(link) or not session.check_login():
                 raise TidalError("TIDAL sign-in did not finish; run spatialctl tidal login again")
-            _save_session(self.state_path, session)
+            # An explicit completed login is the only unconditional replacement.
+            self._generation = _save_session(self.state_path, session)
             self._authenticated = True
             return True
         except Exception as exc:
+            self._invalidate()
             raise self._failure("sign-in", exc) from None
 
+    @_serialized
     def logout(self):
-        self.state_path.unlink(missing_ok=True)
-        self._authenticated = False
-        if self._session is not None:
-            self._session.access_token = None
-            self._session.refresh_token = None
+        try:
+            with _session_lock(self.state_path):
+                self.state_path.unlink(missing_ok=True)
+        finally:
+            self._invalidate()
 
     def close(self):
         if self._session is not None:
@@ -351,8 +432,21 @@ class TidalProvider:
                 transport.close()
 
     def _ready(self):
-        if not self._authenticated:
-            self.restore()
+        try:
+            with _session_lock(self.state_path):
+                credentials, generation = _read_session_record(self.state_path)
+            if not self._authenticated or generation != self._generation:
+                self._restore(credentials, generation)
+        except Exception as exc:
+            self._invalidate()
+            raise self._failure("session restore", exc) from None
+
+    def _save_authenticated(self):
+        try:
+            self._generation = _save_session(self.state_path, self.session, expected=self._generation)
+        except Exception:
+            self._invalidate()
+            raise
 
     @staticmethod
     def track_metadata(track):
@@ -361,17 +455,20 @@ class TidalProvider:
                 "album": str(getattr(getattr(track, "album", None), "name", "")),
                 "catalogue_atmos": bool(getattr(track, "is_dolby_atmos", False))}
 
+    @_serialized
     def search(self, query: str, limit=20) -> list[dict]:
         if not query.strip() or len(query) > 512 or not 1 <= limit <= 100:
             raise TidalError("Search requires a nonempty query and limit between 1 and 100")
         self._ready()
         try:
             results = self.session.search(query, limit=limit)
-            _save_session(self.state_path, self.session)
-            return [self.track_metadata(track) for track in results.get("tracks", [])]
+            tracks = [self.track_metadata(track) for track in results.get("tracks", [])]
+            self._save_authenticated()
+            return tracks
         except Exception as exc:
             raise self._failure("search", exc) from None
 
+    @_serialized
     def track_ids(self, reference: str) -> list[str]:
         kind, identifier = parse_reference(reference)
         if kind == "track":
@@ -389,24 +486,29 @@ class TidalProvider:
                 offset += len(batch)
                 if offset >= 10000:
                     raise TidalError("This collection exceeds the supported 10,000-track queue")
-            _save_session(self.state_path, self.session)
+            self._save_authenticated()
             return tracks
         except Exception as exc:
             raise self._failure("collection lookup", exc) from None
 
+    @_serialized
     def prepare(self, track_id: str, require_atmos=True) -> PreparedTrack:
         kind, identifier = parse_reference(track_id)
         if kind != "track":
             raise TidalError("Choose a track for playback, or expand the album/playlist into a queue")
         self._ready()
+        prepared = None
         try:
             session = self.session
             session.config.quality = "DOLBY_ATMOS" if require_atmos else "HI_RES_LOSSLESS"
             track = session.track(identifier)
             stream = track.get_stream()
-            _save_session(self.state_path, session)
-            return prepare_stream(stream, self.track_metadata(track), require_atmos=require_atmos)
+            prepared = prepare_stream(stream, self.track_metadata(track), require_atmos=require_atmos)
+            self._save_authenticated()
+            return prepared
         except Exception as exc:
+            if prepared is not None:
+                prepared.cleanup()
             raise self._failure("stream request", exc) from None
 
 

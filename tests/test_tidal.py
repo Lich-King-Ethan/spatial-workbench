@@ -1,10 +1,12 @@
 import base64
+import fcntl
 import io
 import json
 import os
 import tempfile
+import threading
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -33,10 +35,34 @@ MPD = '''<MPD xmlns="urn:mpeg:dash:schema:mpd:2011"><Period>
 </Period></MPD>'''
 
 
-def session():
-    return SimpleNamespace(token_type="Bearer", access_token="access-secret", refresh_token="refresh-secret",
-                           expiry_time=datetime(2030, 1, 1, tzinfo=timezone.utc), is_pkce=False,
-                           config=SimpleNamespace(quality="HIGH"))
+def session(token="access-secret"):
+    value = SimpleNamespace(token_type="Bearer", access_token=token, refresh_token="refresh-" + token,
+                            expiry_time=datetime(2030, 1, 1, tzinfo=timezone.utc), is_pkce=False,
+                            config=SimpleNamespace(quality="HIGH"))
+
+    def restore(**credentials):
+        for key, item in credentials.items():
+            setattr(value, key, item)
+        return True
+
+    value.load_oauth_session = Mock(side_effect=restore)
+    return value
+
+
+def login(path, token="new-access-secret"):
+    fake = session(token)
+    fake.get_link_login = Mock(return_value=SimpleNamespace(verification_uri_complete="link.tidal.com/ABCD"))
+    fake.process_link_login = Mock(return_value=True)
+    fake.check_login = Mock(return_value=True)
+    TidalProvider(path, session=fake).login(lambda _: None, open_browser=False)
+
+
+def restored_provider(path):
+    fake = session()
+    _save_session(path, fake)
+    provider = TidalProvider(path, session=fake)
+    provider.restore()
+    return provider, fake
 
 
 class ManifestChecks(unittest.TestCase):
@@ -148,6 +174,241 @@ class Authentication(unittest.TestCase):
             with patch("spatial.tidal._new_session", side_effect=AssertionError("not required")):
                 TidalProvider(path).logout()
             self.assertFalse(path.exists())
+            lock = path.with_name(path.name + ".lock")
+            self.assertEqual(lock.stat().st_mode & 0o777, 0o600)
+            inode = lock.stat().st_ino
+            _save_session(path, session())
+            self.assertEqual(lock.stat().st_ino, inode)
+
+    def test_unsafe_lock_files_are_refused(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            lock = path.with_name(path.name + ".lock")
+            target = Path(temp) / "unrelated"
+            target.write_text("keep")
+            lock.symlink_to(target)
+            with self.assertRaisesRegex(TidalError, "lock"):
+                _save_session(path, session())
+            self.assertEqual(target.read_text(), "keep")
+            lock.unlink()
+            lock.write_text("")
+            lock.chmod(0o644)
+            with self.assertRaisesRegex(TidalError, "600"):
+                TidalProvider(path).logout()
+
+    def test_logout_invalidates_warm_provider_before_another_service_request(self):
+        for operation in ("search", "prepare", "album"):
+            with self.subTest(operation=operation), tempfile.TemporaryDirectory() as temp:
+                path = Path(temp) / "session.json"
+                provider, fake = restored_provider(path)
+                fake.search, fake.track, fake.album = Mock(), Mock(), Mock()
+                TidalProvider(path).logout()
+                with self.assertRaisesRegex(TidalError, "tidal login"):
+                    if operation == "search":
+                        provider.search("song")
+                    elif operation == "prepare":
+                        provider.prepare("123")
+                    else:
+                        provider.track_ids("tidal:album:123")
+                fake.search.assert_not_called()
+                fake.track.assert_not_called()
+                fake.album.assert_not_called()
+                self.assertFalse(path.exists())
+                self.assertFalse(provider._authenticated)
+                self.assertIsNone(fake.access_token)
+                self.assertIsNone(fake.refresh_token)
+
+    def test_new_login_reloads_warm_provider_instead_of_overwriting_new_tokens(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            provider, fake = restored_provider(path)
+            fake.search = Mock(return_value={"tracks": []})
+            login(path)
+            provider.search("song")
+            self.assertEqual(fake.load_oauth_session.call_count, 2)
+            self.assertEqual(fake.access_token, "new-access-secret")
+            self.assertEqual(_read_session(path)["access_token"], "new-access-secret")
+            provider.search("song")
+            self.assertEqual(fake.load_oauth_session.call_count, 2)
+
+    def test_changed_permissions_invalidate_warm_provider(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            provider, fake = restored_provider(path)
+            fake.search = Mock()
+            path.chmod(0o644)
+            with self.assertRaisesRegex(TidalError, "600"):
+                provider.search("song")
+            fake.search.assert_not_called()
+            self.assertFalse(provider._authenticated)
+
+    def test_external_login_or_logout_during_service_work_rejects_stale_results(self):
+        for operation in ("restore", "search", "prepare", "album"):
+            for change in ("logout", "login"):
+                with self.subTest(operation=operation, change=change), tempfile.TemporaryDirectory() as temp:
+                    path = Path(temp) / "session.json"
+                    provider, fake = restored_provider(path)
+
+                    def change_login(result):
+                        if change == "logout":
+                            TidalProvider(path).logout()
+                        else:
+                            login(path)
+                        return result
+
+                    if operation == "restore":
+                        load = fake.load_oauth_session.side_effect
+                        fake.load_oauth_session.side_effect = lambda **kw: change_login(load(**kw))
+                        request = provider.restore
+                    elif operation == "search":
+                        fake.search = Mock(side_effect=lambda *a, **kw: change_login({"tracks": []}))
+                        request = lambda: provider.search("song")
+                    elif operation == "prepare":
+                        track = SimpleNamespace(id=123, name="Song", get_stream=Mock(
+                            side_effect=lambda: change_login(bts())))
+                        fake.track = Mock(return_value=track)
+                        request = lambda: provider.prepare("123")
+                    else:
+                        collection = SimpleNamespace(tracks=Mock(
+                            side_effect=lambda **kw: change_login([SimpleNamespace(id=123)])))
+                        fake.album = Mock(return_value=collection)
+                        request = lambda: provider.track_ids("tidal:album:123")
+                    with self.assertRaises(TidalError):
+                        request()
+                    self.assertFalse(provider._authenticated)
+                    self.assertIsNone(fake.access_token)
+                    if change == "logout":
+                        self.assertFalse(path.exists())
+                    else:
+                        self.assertEqual(_read_session(path)["access_token"], "new-access-secret")
+                    self.assertEqual(list(path.parent.glob(".session-*")), [])
+
+    def test_logout_during_dash_preparation_removes_stale_manifest(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            provider, fake = restored_provider(path)
+            fake.track = Mock(return_value=SimpleNamespace(
+                id=123, name="Song", get_stream=Mock(return_value=stream(MPD))))
+            artifacts = []
+
+            def prepare_then_logout(*args, **kwargs):
+                prepared = prepare_stream(*args, **kwargs)
+                artifacts.append(Path(prepared.media))
+                TidalProvider(path).logout()
+                return prepared
+
+            with patch("spatial.tidal.prepare_stream", side_effect=prepare_then_logout):
+                with self.assertRaisesRegex(TidalError, "tidal login"):
+                    provider.prepare("123")
+            self.assertEqual(len(artifacts), 1)
+            self.assertFalse(artifacts[0].exists())
+            self.assertFalse(artifacts[0].parent.exists())
+            self.assertFalse(path.exists())
+
+    def test_logout_cannot_slip_between_generation_check_and_atomic_replace(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            provider, fake = restored_provider(path)
+            fake.search = Mock(return_value={"tracks": []})
+            attempting = threading.Event()
+            finished = threading.Event()
+            failures = []
+            original_flock, original_replace = fcntl.flock, os.replace
+
+            def logout():
+                try:
+                    TidalProvider(path).logout()
+                except Exception as exc:
+                    failures.append(exc)
+                finally:
+                    finished.set()
+
+            worker = threading.Thread(target=logout, name="test-tidal-logout")
+
+            def flock(fd, operation):
+                if threading.current_thread() is worker and operation == fcntl.LOCK_EX:
+                    attempting.set()
+                return original_flock(fd, operation)
+
+            def replace(source, destination):
+                worker.start()
+                self.assertTrue(attempting.wait(2), "logout did not attempt the shared lock")
+                self.assertFalse(finished.is_set(), "logout bypassed the credential transaction")
+                return original_replace(source, destination)
+
+            try:
+                with patch("spatial.tidal.fcntl.flock", side_effect=flock), \
+                        patch("spatial.tidal.os.replace", side_effect=replace):
+                    provider.search("song")
+            finally:
+                if worker.ident is not None:
+                    worker.join(2)
+            self.assertTrue(finished.is_set())
+            self.assertEqual(failures, [])
+            self.assertFalse(path.exists())
+
+    def test_overlapping_workers_do_not_replace_an_inflight_requests_session(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "session.json"
+            provider, fake = restored_provider(path)
+            started, release, second_entered = (threading.Event() for _ in range(3))
+            results = {}
+            observed_tokens = []
+            operation_lock = provider._operation_lock
+
+            @contextmanager
+            def observed_lock():
+                if threading.current_thread() is second:
+                    second_entered.set()
+                with operation_lock:
+                    yield
+
+            # Observe arrival without scheduler sleeps; each thread's context
+            # still acquires the real provider mutex.
+            contexts = threading.local()
+
+            class WorkerLock:
+                def __enter__(self):
+                    contexts.lock = observed_lock()
+                    return contexts.lock.__enter__()
+
+                def __exit__(self, *args):
+                    return contexts.lock.__exit__(*args)
+
+            provider._operation_lock = WorkerLock()
+
+            def search(query, **kwargs):
+                observed_tokens.append(fake.access_token)
+                if query == "old request":
+                    started.set()
+                    self.assertTrue(release.wait(2))
+                return {"tracks": []}
+
+            def request(query):
+                try:
+                    results[query] = provider.search(query)
+                except Exception as exc:
+                    results[query] = exc
+
+            fake.search = Mock(side_effect=search)
+            first = threading.Thread(target=request, args=("old request",), daemon=True)
+            second = threading.Thread(target=request, args=("new request",), daemon=True)
+            try:
+                first.start()
+                self.assertTrue(started.wait(2))
+                login(path)
+                second.start()
+                self.assertTrue(second_entered.wait(2))
+                self.assertEqual(observed_tokens, ["access-secret"])
+            finally:
+                release.set()
+                first.join(2)
+                if second.ident is not None:
+                    second.join(2)
+            self.assertIsInstance(results["old request"], TidalError)
+            self.assertEqual(results["new request"], [])
+            self.assertEqual(observed_tokens, ["access-secret", "new-access-secret"])
+            self.assertEqual(_read_session(path)["access_token"], "new-access-secret")
 
     def test_missing_login_does_not_start_a_browser_or_access_service(self):
         with tempfile.TemporaryDirectory() as temp, patch("spatial.tidal._new_session") as create:
@@ -195,7 +456,6 @@ class SourceRequests(unittest.TestCase):
     def test_stream_request_uses_library_and_never_falls_back(self):
         with tempfile.TemporaryDirectory() as temp:
             fake = session()
-            fake.load_oauth_session = Mock(return_value=True)
             track = SimpleNamespace(id=123, name="Song", is_dolby_atmos=True, get_stream=Mock(return_value=bts()))
             fake.track = Mock(return_value=track)
             path = Path(temp) / "session.json"
@@ -211,22 +471,20 @@ class SourceRequests(unittest.TestCase):
             self.assertEqual(track.get_stream.call_count, 2)
 
     def test_errors_never_include_response_body_or_tokenized_url(self):
-        fake = session()
-        fake.track = Mock(side_effect=RuntimeError("https://cdn.example?token=secret"))
-        provider = TidalProvider(session=fake)
-        provider._authenticated = True
-        with self.assertRaises(TidalError) as failure:
-            provider.prepare("123")
-        self.assertNotIn("secret", str(failure.exception))
+        with tempfile.TemporaryDirectory() as temp:
+            provider, fake = restored_provider(Path(temp) / "session.json")
+            fake.track = Mock(side_effect=RuntimeError("https://cdn.example?token=secret"))
+            with self.assertRaises(TidalError) as failure:
+                provider.prepare("123")
+            fake.track.assert_called_once()
+            self.assertNotIn("secret", str(failure.exception))
 
     def test_album_pagination(self):
         with tempfile.TemporaryDirectory() as temp:
-            fake = session()
+            provider, fake = restored_provider(Path(temp) / "session.json")
             first = [SimpleNamespace(id=x) for x in range(100)]
             collection = SimpleNamespace(tracks=Mock(side_effect=[first, [SimpleNamespace(id=100)]]))
             fake.album = Mock(return_value=collection)
-            provider = TidalProvider(Path(temp) / "session.json", session=fake)
-            provider._authenticated = True
             self.assertEqual(len(provider.track_ids("tidal:album:123")), 101)
             collection.tracks.assert_any_call(limit=100, offset=100)
 
