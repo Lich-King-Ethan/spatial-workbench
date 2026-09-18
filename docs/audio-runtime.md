@@ -30,8 +30,9 @@ returned stream; this module performs its own decoder and object checks too.
 ## Startup and evidence
 
 1. A usable A2DP sink must already exist; idle and suspended sinks are valid.
-2. `mpv --ad=help` and `--list-options` must advertise the actual `orender`
-   decoder and required options. Stock mpv is rejected.
+2. `mpv --list-options` must succeed and advertise the exact compiled
+   `ad-orender` controls. Stock mpv is rejected. Upstream's opt-in decoder is
+   absent from `--ad=help`, so that generic list is not a capability requirement.
 3. The configured bridge must exist. A child process checks the engine library's
    `orender_spatial_loopback_supported()` marker; a plugin is never loaded into
    spatiald. mpv is given that exact library and performs upstream's ABI handshake.
