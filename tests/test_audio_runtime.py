@@ -5,6 +5,7 @@ import os
 import socket
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -209,6 +210,46 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
             result = await AudioRuntime(binary=binary, bridge_path=bridge).probe()
             self.assertFalse(result["available"])
             self.assertIn("lacks", result["reason"])
+
+    async def test_opt_in_orender_is_detected_without_public_decoder_entry(self):
+        # mpv-omniphony 0.5.2 registers orender inside reinit_decoder(), while
+        # --ad=help uses audio_decoder_list(), which advertises only lavc.
+        names = ("ad-orender-config", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
+                 "ad-orender-osc-port", "ad-orender-osc-monitor-target",
+                 "input-ipc-server", "ad-orender-library")
+        listing = "Options:\n\n" + "".join(f" --{name:<30} String (default: )\n" for name in names)
+        with tempfile.TemporaryDirectory() as root:
+            binary, bridge, library = (Path(root) / name for name in ("mpv", "bridge.so", "engine.so"))
+            bridge.touch()
+            library.touch()
+            binary.write_text(
+                f"#!{sys.executable}\nimport sys\n"
+                f"print({listing!r} if '--list-options' in sys.argv else "
+                "'Audio decoders:\\n    truehd - TrueHD\\n    eac3 - E-AC-3')\n")
+            binary.chmod(0o700)
+            with patch("spatial.audio_runtime.library_supports_loopback", AsyncMock(return_value=True)) as marker:
+                result = await AudioRuntime(binary=binary, bridge_path=bridge, library_path=library).probe()
+            self.assertTrue(result["available"], result)
+            marker.assert_awaited_once_with(library)
+
+            # The option-group check must not replace the library guarantee.
+            with patch("spatial.audio_runtime.library_supports_loopback", AsyncMock(return_value=False)):
+                result = await AudioRuntime(binary=binary, bridge_path=bridge, library_path=library).probe()
+            self.assertFalse(result["available"])
+            self.assertIn("localhost-only", result["reason"])
+
+            for output, code, explanation in (
+                (listing.replace("--ad-orender-library ", "--ad-orender-library-old "), 0,
+                 "--ad-orender-library"),
+                (listing, 1, "exited 1"),
+            ):
+                binary.write_text(f"#!{sys.executable}\nimport sys\nprint({output!r})\nsys.exit({code})\n")
+                with self.subTest(explanation=explanation), patch(
+                        "spatial.audio_runtime.library_supports_loopback", AsyncMock(return_value=True)) as marker:
+                    result = await AudioRuntime(binary=binary, bridge_path=bridge, library_path=library).probe()
+                    self.assertFalse(result["available"])
+                    self.assertIn(explanation, result["reason"])
+                    marker.assert_not_awaited()
 
     async def test_disconnected_or_replaced_sink_stops_only_owned_player(self):
         audio = AudioRuntime()
