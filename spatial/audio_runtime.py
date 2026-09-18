@@ -277,17 +277,30 @@ class AudioRuntime:
                     process.kill()
                 await process.wait()
                 raise
-            return output.decode("utf-8", "replace")
+            return process.returncode, output.decode("utf-8", "replace")
 
         try:
-            decoders, options = await asyncio.gather(inspect("--ad=help"), inspect("--list-options"))
+            returncode, options = await inspect("--list-options")
         except (OSError, asyncio.TimeoutError):
             return {"available": False, "reason": "The player capability check failed"}
+        if returncode != 0:
+            return {"available": False,
+                    "reason": f"The player capability check failed (--list-options exited {returncode})"}
+        # mpv-omniphony 0.5.2 selects orender only inside reinit_decoder when
+        # explicitly requested. Its public --ad=help list contains lavc's
+        # decoders and does not advertise this working opt-in decoder. The
+        # ad-orender option group is compiled only with HAVE_ORENDER; require
+        # its exact controls here, then verify the actual decoder/ABI/objects
+        # through the playback handshake below.
         required = ("ad-orender-config", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
                     "ad-orender-osc-port", "ad-orender-osc-monitor-target", "input-ipc-server",
                     "ad-orender-library")
-        if not re.search(r"\borender\b", decoders) or any(key not in options for key in required):
-            return {"available": False, "reason": "This mpv build lacks the required Omniphony decoder/control options"}
+        advertised = set(re.findall(r"^\s*--([a-zA-Z0-9][a-zA-Z0-9-]*)(?=\s|$)", options, re.MULTILINE))
+        missing = [key for key in required if key not in advertised]
+        if missing:
+            return {"available": False,
+                    "reason": "This mpv build lacks required Omniphony decoder/control options: "
+                              + ", ".join("--" + key for key in missing)}
         bridge = self._bridge()
         if bridge is None or not bridge.is_file():
             return {"available": False, "reason": "Install the decoder bridge or configure its shared-library path"}
