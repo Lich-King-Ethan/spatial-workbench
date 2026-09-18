@@ -26,93 +26,25 @@ independent capabilities. See [architecture](docs/architecture.md).
 
 ## Evidence available
 
-[GitHub CI run 35357627564](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627564)
-passed for commit `cc73670`: all **253 tests**, with **zero skips**, on Python
-3.11, 3.12, 3.13 and the Arch package's `makepkg check()` against extracted
-sources. This includes native D-Bus.
-The native Qt/Plasma check also passed all three card cases; Qt Test reports
-five passes including setup and cleanup. The local development environment
-still prohibits the sockets needed by seven D-Bus checks; the hosted runs
-provide their execution evidence.
+Hosted software validation is complete for commit [9d573ea](https://github.com/Lich-King-Ethan/spatial-workbench/commit/9d573ea2589fce99d4e1dee20b065545e1603938).
 
-The suite covers policy, real UDP and child-process transports, source
-validation, graph audits, reconnection races, playback request ownership,
-native presentation logic and independent failures. Sony fixtures exercise the
-upstream axis map and nonidentity recentering. TIDAL tests cover concurrent
-login/logout, stale source rejection and temporary manifest cleanup. Service
-and hardware fixtures are identified as test data.
+- [CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113) passed on Python 3.11, 3.12, 3.13 and the Arch package lane. Each lane ran 256 tests with zero skips; the native Qt/Plasma smoke test reported five passes including setup and cleanup.
+- [CachyOS integration run 35379035086](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035086) passed the installed package suite, genuine Harletty bridge build, native Qt cards, real PipeWire 1.6.8/WirePlumber 0.5.17 routing, WirePlumber guard policy, device-scoped EQ and SWH limiter, and 18 captured 48 kHz stereo PCM windows. The production route was exercised as renderer → EQ/limiter → synthetic WF-1000XM5 sink monitor, while actual Sony-helper UDP packets drove the production tracker/Engine/OSC path. Acoustic checks cover position, yaw, pitch, roll, recenter and mirror behavior.
+- [Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340) passed in a freshly booted minimal CachyOS guest. It ran the unchanged installer, real systemd/udev/PipeWire services, package ownership checks, daemon verification and the complete media route. The real E-AC-3 JOC Atmos fixture was decoded by mpv and the pinned orender/Harletty bridge, rendered to the post-EQ synthetic earbud monitor, and captured for neutral/repeat/yaw poses. Stop/restore checks returned the original source route and preserved the global default.
+- The full installer artifact also records the intentional boundary: no physical headphones, XM5 HID or Slime receiver were attached, so hardware fields remain WAIT rather than being misreported as passes. The hosted endpoint is synthetic and headless; it proves the software chain, not listening quality or physical sensor axis orientation.
 
-The [CachyOS integration run 35357627508](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35357627508)
-also passed all 253 installed-package tests and the native Qt checks. Its audio
-harness failed during setup, so **that run did not pass the complete audio
-integration gate**. Updated audio checks and the full installer/media-route
-checks are pending execution; their implementation is not completion evidence.
+The runtime remains modular: discovery, tracker providers, playback/live PCM, renderer ownership, EQ, diagnostics and the native Companion are independently supervised and failure-scoped. The complete evidence artifacts are retained on the linked GitHub runs.
 
-Additional checks performed include source-matched Companion/engine patch checks,
-checksummed source archive and wheel construction, isolated wheel installation,
-and package/script validation. The actual Arch SWH limiter library processed
-sample buffers through its LADSPA ABI: its ports, quiet-signal gain, overload
-sample ceiling and 240-sample delay at 48 kHz were checked. These results establish
-that plugin's DSP behavior, not the complete desktop audio path.
-
-The actual pinned, patched Omniphony CLI and matching FFI library compiled with
-Rust/Cargo 1.98.1. The package's two Rust bind-policy tests, CLI probes and exported
-marker checks passed, as did the application's real child-process library probe
-and package staging. The build exposed and fixed the upstream archive's missing
-lockfile, unusable version stamp and help/version failure exit codes. See
-[native renderer evidence](docs/orender-loopback.md).
-
-A separate local check ran the genuine **Harletty 0.7.3 decoder bridge** through
-the real **Omniphony 0.5.2 FFI** with a pinned E-AC-3 JOC fixture. It decoded
-**15 objects and 72,192 frames**, verified twelve speaker channels and two
-binaural channels, and measured a binaural waveform change after an acknowledged
-OSC head rotation. This establishes the decoder/renderer path; the complete
-mpv/PipeWire/EQ/simulated-sink route remains pending. See
-[decoder validation](docs/decoder-validation.md).
-
-The core package's real `build()` and `package()` stages and Companion's real
-`prepare()` and `package()` stages also passed against exported source. These are
-actual staging checks on Ubuntu; they are not a completed Arch installation.
-
-Hosted Arch builds also passed: [core and Companion](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337361174)
-and the [patched native renderer](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337138960).
-These runs produced actual pacman package artifacts and ran the package checks.
-Installing the full stack and connecting physical hardware on the target PC
-remain separate acceptance steps.
-
-The native Qt/Plasma checks use a real private D-Bus fixture and inspect tracker
-delegates and plain names, playback format updates, and exact application
-identifiers. They establish offscreen component and state behavior; the user's
-live desktop appearance and hardware remain separate acceptance checks.
-
-A real unauthenticated TIDAL device-authorization request succeeded. No account
-was signed in and no media entitlement or Atmos playback was tested.
+The user's Companion compatibility confirmation is recorded for September 17, 2026, Arch Linux, Midwest USA. Its upstream comment submission was rejected by GitHub with HTTP 403; maintainers have not received it through this session. The ready-to-submit report is in [upstream-report.md](docs/upstream-report.md).
 
 ## Checks still required on the target PC
 
-- **Target-PC installation:** core, Companion and renderer `makepkg` builds are
-  verified on hosted Arch. The complete installer, including AUR dependencies,
-  service activation and existing desktop configuration, still needs the target PC.
-- **Live desktop services and appearance:** hosted native D-Bus and offscreen
-  Qt/Plasma checks pass. Physical-session PipeWire/mpv routing, keyboard operation,
-  theme appearance and visual layout still need the target desktop. The local
-  development environment continues to prohibit Unix-domain sockets.
-- **Actual sensors:** no XM5 or Slime receiver is attached. WF-1000XM5 HID exposure,
-  firmware layout, physical axes and concurrent SlimeVR use require hardware tests.
-  Working Companion controls alone do not prove motion-sensor support.
-- **Audio graph and listening:** verify the exact physical final sink, object
-  metadata, binaural tracking, EQ insertion, channel negotiation and reconnects.
-  Test selected-application stop/failure recovery, including abrupt renderer loss;
-  a graph fixture is not proof of the desktop policy's behavior.
-- **TIDAL account:** authorize your account, choose an entitled Atmos track, and
-  verify the actual clear E-AC-3 manifest and decoded objects. Unsupported formats,
-  encrypted streams and stereo substitution are rejected rather than mislabelled.
+These are the remaining physical/account acceptance checks; they are deliberately not represented by synthetic hosted evidence.
 
-Run `spatial-verify` after installation, then the explicit media test described in
-[installation](docs/install.md). The full acceptance procedure and environmental
-evidence are in [validation-environment.md](docs/validation-environment.md).
+- **Target-PC install and desktop acceptance:** build/install the packages on the intended Arch/CachyOS machine, confirm package ownership/uninstall behavior, start the user service, and inspect KDE Plasma appearance, keyboard navigation and theme integration.
+- **Physical XM5:** connect the actual WF-1000XM5, confirm BlueZ/HID exposure, A2DP sink identity, reconnects and the real final PipeWire route. Confirm listening localization, clipping behavior and recovery after stopping/restarting the renderer.
+- **Physical SlimeVR (optional):** connect the receiver, check all three axes and recentering while the XM5 tracker is present, and verify independent provider failures/restarts do not disturb ordinary playback.
+- **TIDAL account and entitlement:** authorize the account on the target machine and test an entitled Atmos track. Verify the returned manifest is genuinely E-AC-3/JOC and that unsupported/encrypted/stereo fallback paths are rejected.
+- **Listening and desktop behavior:** select a real application stream, verify only that stream moves, and test deliberate output changes, disconnect/reconnect and renderer-crash recovery on the user's session.
 
-The user's Companion compatibility confirmation is recorded for September 17,
-2026, Arch Linux, Midwest USA. Its upstream comment submission was rejected by
-GitHub with HTTP 403; maintainers have **not** received it through this session.
-The ready-to-submit report is in [upstream-report.md](docs/upstream-report.md).
+Run 'spatial-verify' after installation for a read-only report. For an explicit media check, use 'spatial-verify --media /path/to/known-atmos-sample.mka --require-spatial'. The command preserves existing playback unless '--replace' is explicitly supplied and reports waiting/failed checks instead of substituting fixtures.
