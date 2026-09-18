@@ -32,6 +32,7 @@ target/
 /deliverables/
 spatial-diagnostics-*.json
 spatial-verification-*.json
+/test-results.txt
 
 # Local credentials and state; keep examples and checked-in profiles
 .env

@@ -6,12 +6,14 @@ daemon. The target-PC acceptance test must still kill the actual renderer.
 import ctypes
 import ctypes.util
 import json
+import os
 from pathlib import Path
 import unittest
 
 
-LUA = next((path for name in ("lua5.4", "lua5.3", "lua")
-            if (path := ctypes.util.find_library(name))), None)
+LUA = os.environ.get("SPATIAL_TEST_LUA_LIBRARY") or next(
+    (path for name in ("lua5.5", "lua5.4", "lua5.3", "lua")
+     if (path := ctypes.util.find_library(name))), None)
 SCRIPT = Path(__file__).resolve().parents[1] / "wireplumber/scripts/spatial-live-guard.lua"
 
 
@@ -20,7 +22,16 @@ class GuardTests(unittest.TestCase):
     def test_real_lua_policy_protects_only_current_explicit_session(self):
         lib = ctypes.CDLL(LUA)
         lib.luaL_newstate.restype = ctypes.c_void_p
-        lib.luaL_openlibs.argtypes = [ctypes.c_void_p]
+        # Lua 5.5 makes luaL_openlibs a header macro. ctypes must call the
+        # exported function underlying it, with the same all-libraries mask.
+        openlibs = getattr(lib, "luaL_openlibs", None)
+        if openlibs is not None:
+            openlibs.argtypes = [ctypes.c_void_p]
+            openlibs.restype = None
+        else:
+            lib.luaL_openselectedlibs.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int]
+            lib.luaL_openselectedlibs.restype = None
+            openlibs = lambda state: lib.luaL_openselectedlibs(state, ~0, 0)
         lib.luaL_loadstring.argtypes = [ctypes.c_void_p, ctypes.c_char_p]
         lib.luaL_loadstring.restype = ctypes.c_int
         lib.lua_pcallk.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_int,
@@ -32,7 +43,7 @@ class GuardTests(unittest.TestCase):
         state = lib.luaL_newstate()
         self.assertTrue(state)
         try:
-            lib.luaL_openlibs(state)
+            openlibs(state)
             harness = r'''
 hooks = {}
 props = { ["media.class"] = "Stream/Output/Audio", ["node.id"] = "8", ["object.serial"] = "31" }

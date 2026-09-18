@@ -106,7 +106,7 @@ More detail: [architecture](docs/architecture.md), [audio](docs/audio-runtime.md
 [dependencies and source pins](docs/dependencies.md), and
 [additional XM5 controls](docs/feature-modules.md).
 
-To publish this source as a new public GitHub repository under your signed-in
+To publish an extracted source archive as a new public GitHub repository under your signed-in
 account, run `bash tools/publish-github.sh`. Use `--dry-run` to inspect the source
 file list first. See [publishing instructions](docs/publishing.md) for account
 selection and authentication; existing repositories are never overwritten.
