@@ -181,11 +181,28 @@ def analyze_windows(windows, sample_rate=48000):
                  "pose_pitch_plus45", "pose_pitch_minus45", "pose_roll_plus45",
                  "pose_roll_minus45", "pose_neutral_repeat", "pose_recentered"):
         value = measured[name]
-        check(abs(value["ild_db_left_minus_right"]) <= 2.5
+        # A vertical head roll can expose several dB of asymmetric HRTF
+        # coloration even for a source on the median plane. Keep the strict
+        # interaural-delay bound, while allowing that physical level cue.
+        maximum_ild = 3.5 if name.startswith("pose_roll_") else 2.5
+        check(abs(value["ild_db_left_minus_right"]) <= maximum_ild
               and abs(value["itd_us_right_minus_left"]) <= 120,
-              name + ": median-plane-source", maximum_abs_ild_db=2.5,
+              name + ": median-plane-source", maximum_abs_ild_db=maximum_ild,
               maximum_abs_itd_us=120, ild_db=value["ild_db_left_minus_right"],
               itd_us=value["itd_us_right_minus_left"])
+    roll_plus, roll_minus = measured["pose_roll_plus45"], measured["pose_roll_minus45"]
+    check(abs(roll_plus["ild_db_left_minus_right"] + roll_minus["ild_db_left_minus_right"]) <= 2.0,
+          "roll: mirror-ild", summed_ild_db=(roll_plus["ild_db_left_minus_right"]
+                                             + roll_minus["ild_db_left_minus_right"]),
+          maximum_abs_ild_db=2.0)
+    check(abs(roll_plus["itd_us_right_minus_left"] + roll_minus["itd_us_right_minus_left"]) <= 150,
+          "roll: mirror-delay", summed_itd_us=(roll_plus["itd_us_right_minus_left"]
+                                                + roll_minus["itd_us_right_minus_left"]),
+          maximum_abs_itd_us=150)
+    check(_distance(roll_plus["normalized_band_db"], roll_minus["normalized_band_db"]) >= 1.0,
+          "roll: vertical-spectrum-changes", spectral_rms_db=_distance(
+              roll_plus["normalized_band_db"], roll_minus["normalized_band_db"]),
+          minimum_spectral_rms_db=1.0)
 
     def compare(first, second, equivalent):
         a, b = measured[first], measured[second]
@@ -202,8 +219,7 @@ def analyze_windows(windows, sample_rate=48000):
             check(spectrum >= 1.0, first + ": distinct-directional-spectrum-from-" + second,
                   spectral_rms_db=spectrum, minimum_spectral_rms_db=1.0)
 
-    for name in ("position_fc", "pose_roll_plus45", "pose_roll_minus45",
-                 "pose_neutral_repeat", "pose_recentered"):
+    for name in ("position_fc", "pose_neutral_repeat", "pose_recentered"):
         compare(name, "pose_neutral", True)
     compare("pose_recentered_yaw_plus90", "pose_yaw_plus90", True)
     # The packaged default virtual bed places FL/FR at -/+45 degrees. These
