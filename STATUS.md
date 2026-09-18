@@ -26,9 +26,10 @@ independent capabilities. See [architecture](docs/architecture.md).
 
 ## Evidence available
 
-The local suite ran 240 tests: 233 passed and 7 native D-Bus checks were skipped
-because this environment prohibits their sockets. Downloaded release archives
-include the exact `test-results.txt`; GitHub Actions records subsequent CI checks.
+GitHub CI passed all 240 tests on Python 3.11, 3.12, 3.13 and Arch's 3.14,
+including native D-Bus. The local suite passed 233 and skipped the 7 D-Bus checks
+because this development environment prohibits their sockets. Generated release
+archives include local `test-results.txt`; GitHub Actions records the hosted checks.
 The suite covers policy, real UDP and
 child-process transports, source validation, graph audits, reconnection races,
 playback request ownership, native presentation logic and independent failures.
@@ -52,14 +53,20 @@ The core package's real `build()` and `package()` stages and Companion's real
 `prepare()` and `package()` stages also passed against exported source. These are
 actual staging checks on Ubuntu; they are not a completed Arch installation.
 
+Hosted Arch builds also passed: [core and Companion](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337361174)
+and the [patched native renderer](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337138960).
+These runs produced actual pacman package artifacts and ran the package checks.
+Installing the full stack and connecting physical hardware on the target PC
+remain separate acceptance steps.
+
 A real unauthenticated TIDAL device-authorization request succeeded. No account
 was signed in and no media entitlement or Atmos playback was tested.
 
 ## Checks still required on the target PC
 
-- **Arch package installation:** native renderer compilation is verified on
-  Ubuntu. A complete Arch `makepkg`/`pacman` installation remains pending; the
-  provided recipes run their own checks on the target machine.
+- **Target-PC installation:** core, Companion and renderer `makepkg` builds are
+  verified on hosted Arch. The complete installer, including AUR dependencies,
+  service activation and existing desktop configuration, still needs the target PC.
 - **Session services and native UI:** AF_UNIX socket creation fails here with
   `Operation not permitted`. Real D-Bus, PipeWire and mpv IPC tests cannot run.
   Qt/Plasma rendering and keyboard/theme behavior also remain untested.

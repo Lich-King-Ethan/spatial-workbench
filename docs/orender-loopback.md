@@ -56,11 +56,12 @@ accepted the compiled Rust library. The package's `package()` also staged the
 CLI, library, header, layouts and license successfully; the shared library's
 SONAME was checked as `liborender.so.0`.
 
-These checks establish native compilation and packaging-function behavior. They
-do not establish an Arch `makepkg` installation or live PipeWire/Bluetooth/audio
-operation: the development environment still has no headset, decoder bridge,
-running audio server or usable Unix-domain audio/session socket. The normal
-local `makepkg` build/check stage and desktop acceptance checks remain required.
+The subsequent [hosted Arch renderer build](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337138960)
+also passed the actual `makepkg` build and check stages and produced its package.
+These checks establish native compilation and package construction. They do not
+establish live PipeWire/Bluetooth/audio operation: the development environment
+still has no headset, decoder bridge, running audio server or usable Unix-domain
+audio/session socket. Target-PC installation and desktop acceptance remain required.
 
 Source references:
 

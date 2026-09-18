@@ -8,17 +8,43 @@ url='https://github.com/maniacx/BudsLink-Companion'
 license=('GPL-3.0-or-later')
 depends=('plasma-workspace' 'kirigami' 'bluez-qt' 'qt6-declarative' 'qt6-5compat')
 makedepends=('patch')
+checkdepends=('cmake' 'ninja' 'dbus' 'ki18n' 'ttf-dejavu')
 optdepends=('flatpak: upstream BudsLink service'
             'spatial-workbench: independent spatial tracking daemon')
 _commit=31c6b3802071a6efc6fbd5a821e9c97f97240fd7
 _id=com.github.maniacx.BudsLink-Companion
 source=("BudsLink-Companion-${_commit}.tar.gz::https://codeload.github.com/maniacx/BudsLink-Companion/tar.gz/${_commit}"
-        'companion.patch' 'PROVENANCE.md')
-sha256sums=('@UPSTREAM_SHA256@' '@PATCH_SHA256@' '@PROVENANCE_SHA256@')
+        'companion.patch' 'PROVENANCE.md'
+        'native-qml-CMakeLists.txt' 'native-qml-smoke.cpp')
+sha256sums=('@UPSTREAM_SHA256@' '@PATCH_SHA256@' '@PROVENANCE_SHA256@'
+            '@QML_CMAKE_SHA256@' '@QML_SMOKE_SHA256@')
 
 prepare() {
     cd "$srcdir/BudsLink-Companion-$_commit"
     patch --batch --forward -p1 -i "$srcdir/companion.patch"
+}
+
+check() {
+    local test_source="$srcdir/native-qml-test"
+    local test_build="$srcdir/native-qml-build"
+    local runtime_dir result
+    install -d "$test_source"
+    install -m644 "$srcdir/native-qml-CMakeLists.txt" "$test_source/CMakeLists.txt"
+    install -m644 "$srcdir/native-qml-smoke.cpp" "$test_source/qml-smoke.cpp"
+    cmake -S "$test_source" -B "$test_build" -G Ninja \
+        -DSPATIAL_COMPANION_QML_DIR="$srcdir/BudsLink-Companion-$_commit/contents/ui"
+    cmake --build "$test_build"
+    runtime_dir=$(mktemp -d "$srcdir/qml-runtime.XXXXXXXX")
+    chmod 0700 "$runtime_dir"
+    if env XDG_RUNTIME_DIR="$runtime_dir" QT_QPA_PLATFORM=offscreen \
+        QT_QUICK_BACKEND=software SPATIAL_QML_PRIVATE_BUS=1 \
+        dbus-run-session -- "$test_build/spatial-qml-smoke"; then
+        result=0
+    else
+        result=$?
+    fi
+    rm -rf -- "$runtime_dir"
+    return "$result"
 }
 
 package() {

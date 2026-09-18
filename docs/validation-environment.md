@@ -24,6 +24,34 @@ PYTHONPATH=../test-deps:. \
 Use the release's test report for the final count. Tests were added while the
 implementation was being integrated.
 
+## Completed hosted CI checks
+
+[CI run 35337361174](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337361174)
+passed for commit `cbc9d7db505216b37cc6350f6aa1d97edd307493` on September 18, 2026.
+The Python 3.11, 3.12 and 3.13 jobs ran the suite with a real private D-Bus
+session and installed native Lua, compiler, JavaScript and limiter dependencies;
+these jobs reject skipped tests.
+
+The Arch job used Python 3.14.7 and Lua 5.5.1. Its actual `makepkg` check ran
+all 240 tests successfully, including the seven D-Bus tests that cannot run in
+the development sandbox. It produced `spatial-workbench 0.2.1-1` and
+`plasma-budslink-companion-spatial 0.2.0.spatial0.2.1-1` package artifacts.
+The Lua test harness supports both the older exported `luaL_openlibs` function
+and Lua 5.5's `luaL_openselectedlibs` API; the same guard assertions also passed
+locally against actual Lua 5.3, 5.4.8 and 5.5.1 libraries.
+
+These are real package builds and native service tests. They do not establish
+physical Bluetooth/HID behavior, a rendered Plasma widget, a running PipeWire
+audio graph, or acoustic playback. The local environment restrictions below
+still apply to the development sandbox.
+
+The separate [renderer run 35337138960](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35337138960)
+also completed successfully: clean Arch `makepkg` compiled the pinned patched CLI
+and FFI library, passed the two Rust bind-policy tests and package CLI/ABI checks,
+and uploaded the actual `orender-spatial` package artifact.
+
+## Completed local checks
+
 Independent packaging checks generated a source archive, verified its recipe
 checksum, checked required service/rules/diagnostics/source files and executable
 permissions, built the Python wheel, and installed that wheel into an isolated

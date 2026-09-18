@@ -56,10 +56,14 @@ def release(output):
     (core / "PKGBUILD").write_text(recipe.replace("@SOURCE_SHA256@", digest(source)))
     shutil.copyfile(ROOT / "plasma/companion.patch", companion / "companion.patch")
     shutil.copyfile(ROOT / "packaging/companion-PROVENANCE.md", companion / "PROVENANCE.md")
+    shutil.copyfile(ROOT / "plasma/tests/CMakeLists.txt", companion / "native-qml-CMakeLists.txt")
+    shutil.copyfile(ROOT / "plasma/tests/qml-smoke.cpp", companion / "native-qml-smoke.cpp")
     replacements = {
         "@VERSION@": version, "@UPSTREAM_SHA256@": UPSTREAM_SHA256,
         "@PATCH_SHA256@": digest(companion / "companion.patch"),
         "@PROVENANCE_SHA256@": digest(companion / "PROVENANCE.md"),
+        "@QML_CMAKE_SHA256@": digest(companion / "native-qml-CMakeLists.txt"),
+        "@QML_SMOKE_SHA256@": digest(companion / "native-qml-smoke.cpp"),
     }
     recipe = (ROOT / "packaging/companion-PKGBUILD.in").read_text()
     for token, value in replacements.items():

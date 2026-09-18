@@ -87,6 +87,9 @@ plasma/PlaybackState.js
 plasma/README.md
 plasma/SpatialControls.qml
 plasma/companion.patch
+plasma/tests/CMakeLists.txt
+plasma/tests/README.md
+plasma/tests/qml-smoke.cpp
 pyproject.toml
 spatial/__init__.py
 spatial/__main__.py
