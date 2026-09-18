@@ -7,14 +7,15 @@ owning Sony controls; separate modules own sources, sensors, rendering, and EQ.
 
 ## Build and install
 
-Clone this repository or download and extract its source ZIP. With Git installed:
+From a fresh directory in Konsole on Arch/CachyOS:
 
 ```sh
-git clone https://github.com/Lich-King-Ethan/spatial-workbench.git
-cd spatial-workbench
+(command -v git >/dev/null || sudo pacman -S --needed git) && \
+  git clone https://github.com/Lich-King-Ethan/spatial-workbench.git && \
+  cd spatial-workbench && bash install.sh
 ```
 
-From this directory in your normal KDE terminal:
+If you already cloned the repository or extracted its source ZIP, run from that directory:
 
 ```sh
 bash install.sh
@@ -90,10 +91,11 @@ automatically. Reports stay private on your computer; nothing is uploaded.
 See [automatic diagnostics](docs/automatic-diagnostics.md) for recovery behavior,
 report locations and the configuration switch.
 
-The implementation and automated tests are included. **Arch installation, Plasma
-rendering, physical XM5/receiver behavior and authenticated TIDAL Atmos have not
-been verified in this development environment.** Its Unix-socket restriction
-prevents a real PipeWire/session-bus test. See [release status](STATUS.md) and
+The implementation and automated tests are included. **Target-PC installation,
+visual behavior in your Plasma session, physical XM5/receiver behavior and
+authenticated TIDAL Atmos still need verification on your setup.** Hosted checks
+have passed native D-Bus, Arch package builds and actual Qt/Plasma card loading.
+See [release status](STATUS.md) and
 [validation evidence](docs/validation-environment.md) for precise limits.
 
 The patched Rust renderer and matching shared library have compiled successfully;

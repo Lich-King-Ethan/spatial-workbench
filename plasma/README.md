@@ -17,16 +17,24 @@ requires fresh provider data and disappears on loss. The earbud switch permits
 only the earbud fallback. The integration matches the current BudsLink device's
 exact manager-reported D-Bus path; automatic discovery replaces manual path setup.
 
-The patch passes `git apply --check` against that revision. It is not yet
-visually/runtime tested in Plasma: this development runner has neither Plasma 6
-QML modules nor permission to create a session D-Bus socket. Do not mistake patch
-application or unit tests for hardware validation.
+The patch passes `git apply --check` against that revision. On September 18, 2026,
+the [Arch package check](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187/job/105577902132)
+compiled and ran the native smoke harness with Qt 6.11.2: all three card cases
+passed, with five total passes including setup/cleanup and no failures or skips.
+It instantiated the patched cards and upstream `WidgetCard` with real Plasma,
+Kirigami, KI18n, and D-Bus modules, checked state bindings, and reported no QML
+engine warnings. The Companion package then built successfully.
+
+The harness runs offscreen with explicitly declared state fixtures on a private
+D-Bus session. Container platform/icon/portal diagnostics remain visible; this
+does not establish visual appearance, full Plasma-shell interaction, or headset
+compatibility. See [tests/README.md](tests/README.md) for its exact scope.
 
 Daemon registration refreshes properties, loss clears cached state, stale pending
 replies are ignored, and reply objects are released after use. Checkboxes show
 backend-accepted state. Errors do not silently change the saved preference.
 
-Required native UI checks: light/dark theme, narrow popup, long device identifier,
+Remaining interactive UI checks: light/dark theme, narrow popup, long device identifier,
 keyboard navigation, accessible checkbox name, daemon loss/restart, D-Bus errors,
 late tracker arrival, and no controls appearing on another headphone's tab.
 See `docs/desktop-runtime.md` for the live API and verification boundaries.

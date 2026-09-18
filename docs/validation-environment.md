@@ -21,8 +21,8 @@ PYTHONPATH=../test-deps:. \
   python3 -m unittest discover -s tests -v
 ```
 
-Use the release's test report for the final count. Tests were added while the
-implementation was being integrated.
+Use the hosted CI links below for exact tested commits and counts. Local
+developer runs may also save `test-results.txt`; that generated log is not tracked.
 
 ## Completed hosted CI checks
 
@@ -49,6 +49,16 @@ The separate [renderer run 35337138960](https://github.com/Lich-King-Ethan/spati
 also completed successfully: clean Arch `makepkg` compiled the pinned patched CLI
 and FFI library, passed the two Rust bind-policy tests and package CLI/ABI checks,
 and uploaded the actual `orender-spatial` package artifact.
+
+The subsequent [native card run 35338214187](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187)
+passed all three actual Companion components under Arch Qt 6.11.2. The offscreen
+test uses real Qt/Plasma imports, KI18n and a private D-Bus State fixture. It
+checks tracker delegate creation/plain names, playback format updates, and
+application selection/disappearance with an exact large stream identifier.
+All three card cases passed, with no QML-engine warnings; Qt Test reports five
+passes including setup/cleanup. No Bluetooth device, audio renderer or real
+desktop interaction is represented by that fixture. Visual theme/layout,
+keyboard behavior and physical playback remain target-PC checks.
 
 ## Completed local checks
 

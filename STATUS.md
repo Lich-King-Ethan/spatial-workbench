@@ -28,8 +28,8 @@ independent capabilities. See [architecture](docs/architecture.md).
 
 GitHub CI passed all 240 tests on Python 3.11, 3.12, 3.13 and Arch's 3.14,
 including native D-Bus. The local suite passed 233 and skipped the 7 D-Bus checks
-because this development environment prohibits their sockets. Generated release
-archives include local `test-results.txt`; GitHub Actions records the hosted checks.
+because this development environment prohibits their sockets. Local test output
+is saved as `test-results.txt`; GitHub Actions records the hosted checks.
 The suite covers policy, real UDP and
 child-process transports, source validation, graph audits, reconnection races,
 playback request ownership, native presentation logic and independent failures.
@@ -59,6 +59,12 @@ These runs produced actual pacman package artifacts and ran the package checks.
 Installing the full stack and connecting physical hardware on the target PC
 remain separate acceptance steps.
 
+The [native Qt/Plasma check](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187)
+passed all three cards on Qt 6.11.2, with a real private D-Bus fixture and no
+QML-engine warnings. It checks tracker delegates and plain names, playback
+format updates, and exact application identifiers. This is offscreen component
+and state validation, not a review of the user's live desktop or hardware.
+
 A real unauthenticated TIDAL device-authorization request succeeded. No account
 was signed in and no media entitlement or Atmos playback was tested.
 
@@ -67,9 +73,10 @@ was signed in and no media entitlement or Atmos playback was tested.
 - **Target-PC installation:** core, Companion and renderer `makepkg` builds are
   verified on hosted Arch. The complete installer, including AUR dependencies,
   service activation and existing desktop configuration, still needs the target PC.
-- **Session services and native UI:** AF_UNIX socket creation fails here with
-  `Operation not permitted`. Real D-Bus, PipeWire and mpv IPC tests cannot run.
-  Qt/Plasma rendering and keyboard/theme behavior also remain untested.
+- **Live desktop services and appearance:** hosted native D-Bus and offscreen
+  Qt/Plasma checks pass. Physical-session PipeWire/mpv routing, keyboard operation,
+  theme appearance and visual layout still need the target desktop. The local
+  development environment continues to prohibit Unix-domain sockets.
 - **Actual sensors:** no XM5 or Slime receiver is attached. WF-1000XM5 HID exposure,
   firmware layout, physical axes and concurrent SlimeVR use require hardware tests.
   Working Companion controls alone do not prove motion-sensor support.

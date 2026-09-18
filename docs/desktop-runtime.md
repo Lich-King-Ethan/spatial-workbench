@@ -77,7 +77,8 @@ key; discovery adds its own `runtime.discovery` subkey.
 ## Native Companion integration
 
 `plasma/companion.patch` targets BudsLink Companion's inspected Plasma revision
-`31c6b3802071a6efc6fbd5a821e9c97f97240fd7`. It adds separate playback and tracking `WidgetCard` sections using
+`31c6b3802071a6efc6fbd5a821e9c97f97240fd7`. It adds separate playback, application-audio,
+and tracking `WidgetCard` sections using
 the existing checkbox, Plasma label/button controls, Kirigami theme spacing,
 and KDE session D-Bus module. The playback file chooser uses the standard
 `QtQuick.Dialogs` module. No new icons or rendering framework are added.
@@ -108,13 +109,27 @@ Real D-Bus integration tests are available with:
 SPATIAL_TEST_DBUS=1 dbus-run-session -- python -m unittest discover -s tests -p test_desktop.py -v
 ```
 
-This development runner refuses D-Bus socket creation with `Operation not
-permitted`, so those tests could not run here. Qt/Plasma QML tooling is absent;
-installing it was also blocked by the runner's user/group permission restrictions.
-The patch is checked against upstream source, but native Plasma rendering,
-keyboard interaction, light/dark themes, and real hardware reconnect behavior
-still require the actual Arch/Plasma environment. These limitations are not
-recorded as successful runtime tests.
+These tests run on a real private session bus in GitHub CI. The local development
+runner still lacks Qt/Plasma and refuses D-Bus socket creation; that limitation
+does not apply to the Arch CI environment.
+
+On September 18, 2026, the [Arch Companion check](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187/job/105577902132)
+at commit `49cd288d67f2ad47fcfccdf236e614667e4bbe6a` compiled and ran
+`plasma/tests/qml-smoke.cpp` against the actual patched upstream tree using Qt
+6.11.2. Tracking, playback, and application-audio cases passed; totals were five
+passes including setup/cleanup, zero failures, and zero skips. The package built
+successfully afterward. Real Qt/Plasma/Kirigami imports, KI18n translation context,
+card creation, tracker delegates and plain names, playback format changes, and
+application selection invalidation were exercised. Every QML-engine warning is
+a failure; none occurred.
+
+The smoke harness uses a deliberately declared D-Bus state fixture, an offscreen
+window, and software rendering. General container platform/icon/portal/GL
+diagnostics remain visible. It does not establish full Plasma-shell behavior,
+file-picker interaction, visual layout, keyboard accessibility, light/dark themes,
+physical audio, or hardware reconnect behavior. Those checks still require the
+actual Arch/Plasma desktop and devices. See [the harness documentation](../plasma/tests/README.md)
+for reproduction and precise test boundaries.
 
 Source contracts inspected: BudsLink's `data/dbus-interfaces` XML and
 `src/appLibs/dbusService.js` at the audited revision, upstream Companion's
@@ -134,8 +149,9 @@ controls reuse system media icons, Plasma controls, and the existing card style.
 The shared JavaScript presentation code has executable tests. Its Atmos label
 requires a running, loaded renderer with decoded objects and the matching
 observed format. Capabilities, filenames, and a TIDAL Atmos badge alone cannot
-produce that label. Native QML construction and rendering remain unverified in
-this runner for the permission/tooling reasons described above.
+produce that label. Native QML construction and these format-state bindings passed
+the Arch smoke gate described above; visual review and real playback interaction
+remain separate checks.
 
 
 ## Application audio card
