@@ -101,6 +101,7 @@ mounted=0
 docker rm "$container_name"
 
 printf 'Booting 4 vCPU / 10GiB minimal CachyOS guest with its own kernel and udev.\n'
+: > "$evidence_dir/serial.log"
 # NAT supplies outbound package/source downloads. There are no forwarded ports,
 # host filesystem shares, SSH credentials, Bluetooth devices or audio hardware.
 sudo timeout --signal=TERM --kill-after=20s 75m qemu-system-x86_64 \

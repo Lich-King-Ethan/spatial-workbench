@@ -38,7 +38,7 @@ application routing remains unavailable until the guard advertises readiness.
 | `python-dbus-next` | Official Arch repositories | Desktop D-Bus communication |
 | `python-tidalapi` | Official Arch Extra | Optional TIDAL account and stream API |
 | `mpv-omniphony` | AUR, through yay/paru or reviewed makepkg | Actual spatial playback; depends on `orender` |
-| `orender-spatial` | Pinned Omniphony 0.5.2 plus included patch | Matching CLI/library with verifiable local-only OSC control |
+| `orender-spatial` | Pinned Omniphony 0.5.2 plus included patches | Matching CLI/library with local OSC control and positioned 7.1 input |
 | `harletty-bridge` | AUR, through yay/paru or reviewed makepkg | Renderer format-decoding plugin |
 | `sony-tracker` | AUR, through yay/paru or reviewed makepkg | Sony HID orientation helper |
 | `swh-plugins` | Official Arch Extra | Limiter for the optional headphone equalizer |
@@ -49,9 +49,10 @@ on libmpv. The installer does not suppress conflict review or use `--overwrite`.
 
 `orender-spatial` provides `orender=0.5.2` and is installed before the mpv AUR
 transaction. A small included upstream patch adds an explicit loopback control
-binding and a capability marker; the renderer and DSP implementation remain
-upstream. Both its CLI and matching library are built together. The package runs
-the actual Rust bind-policy tests and checks the CLI/library markers during its
+binding and a capability marker. A second patch declares the native 7.1 capture
+positions so WirePlumber can preserve application channels; the renderer DSP
+remains upstream. Both CLI and matching library are built together. The package runs
+actual Rust bind-policy and serialized channel-format tests, and checks CLI/library markers during its
 build. Its included checksummed lockfile fixes the Rust dependencies missing from
 the upstream release archive. The runtime refuses an unpatched or mismatched engine, including a separate
 Studio library, instead of starting network control on all interfaces. Compiling
@@ -94,6 +95,11 @@ dependencies. It does not install the resulting application packages, start the
 service, or edit your user configuration. Built packages and checksummed recipes
 are under `dist/arch/core/` and `dist/arch/companion/`.
 The additional renderer recipe is under `dist/arch/orender/`.
+
+Without `--with-audio`, installation runs `spatial-verify --core-only`: configuration,
+the running daemon and PipeWire must pass; optional audio checks explicitly report
+`OFF`. Run `spatial-verify` without that flag for the full configured audio check.
+This verification scope does not disable or reconfigure existing audio modules.
 
 Core source archives are deterministic and include the actual build scripts,
 tests, service, docs and configuration. Companion is pinned to

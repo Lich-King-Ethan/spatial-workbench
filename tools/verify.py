@@ -151,15 +151,18 @@ async def snapshot(interface):
     return value
 
 
-async def capture_graph(report, state):
+async def capture_graph(report, state, *, core_only=False):
     from spatial import pipewire
     try:
         objects = await pipewire.capture()
         if not isinstance(objects, list):
             raise ValueError("pw-dump did not return an object list")
         add(report, "pipewire_graph", "pass", f"Read {len(objects)} actual PipeWire objects")
-        status, detail = audit_playback_graph(state, objects)
-        add(report, "playback_route", status, detail)
+        if core_only:
+            add(report, "playback_route", "off", "Audio playback is outside this core installation check")
+        else:
+            status, detail = audit_playback_graph(state, objects)
+            add(report, "playback_route", status, detail)
     except Exception as exc:
         add(report, "pipewire_graph", "fail", f"Cannot inspect the real graph: {type(exc).__name__}: {exc}")
 
@@ -243,8 +246,10 @@ async def playback_test(report, interface, args, settings):
 
 
 async def verify(args):
+    core_only = getattr(args, "core_only", False)
     report = {"schema": 1, "created_utc": datetime.now(timezone.utc).isoformat(),
               "mode": "audible-test" if args.media else "read-only", "checks": {},
+              "selection": "core" if core_only else "all",
               "scope": "Actual local service, devices and graph; no synthetic events or simulated renderer"}
     try:
         from spatial.settings import Settings, config_directory
@@ -255,25 +260,32 @@ async def verify(args):
     except Exception as exc:
         add(report, "configuration", "fail", f"Cannot load configuration: {type(exc).__name__}: {exc}")
         return report
-    for tool in ("pw-dump", settings.mpv_binary, settings.sony_binary if settings.sony_enabled else None):
+    required_tools = ["pw-dump"]
+    if not core_only:
+        required_tools.extend((settings.mpv_binary, settings.sony_binary if settings.sony_enabled else None))
+    for tool in required_tools:
         if tool:
             add(report, "tool:" + tool, "pass" if shutil.which(tool) else "fail",
                 "Executable available" if shutil.which(tool) else "Required configured executable is missing")
-    try:
-        from spatial.audio_runtime import AudioRuntime
-        probe = await AudioRuntime(binary=settings.mpv_binary, bridge_path=settings.resolve_bridge(),
-                                   library_path=settings.library_path).probe()
-        add(report, "decoder_features", "pass" if probe.get("available") else "fail", probe.get("reason", "No result"))
-    except Exception as exc:
-        add(report, "decoder_features", "fail", f"Capability query failed: {type(exc).__name__}: {exc}")
-    if getattr(settings, "live_enabled", False):
+    if core_only:
+        for name in ("decoder_features", "live_features", "equalizer_features", "audio_modules"):
+            add(report, name, "off", "Not selected for this core installation check; run spatial-verify for full host verification")
+    else:
+        try:
+            from spatial.audio_runtime import AudioRuntime
+            probe = await AudioRuntime(binary=settings.mpv_binary, bridge_path=settings.resolve_bridge(),
+                                       library_path=settings.library_path).probe()
+            add(report, "decoder_features", "pass" if probe.get("available") else "fail", probe.get("reason", "No result"))
+        except Exception as exc:
+            add(report, "decoder_features", "fail", f"Capability query failed: {type(exc).__name__}: {exc}")
+    if not core_only and getattr(settings, "live_enabled", False):
         try:
             from spatial.live_audio import LiveAudio
             await LiveAudio(binary=settings.orender_binary, bridge_path=settings.resolve_bridge()).probe()
             add(report, "live_features", "pass", "Pinned live renderer, local-control marker, bridge and PipeWire tools available")
         except Exception as exc:
             add(report, "live_features", "fail", f"Live capability query failed: {type(exc).__name__}: {exc}")
-    if getattr(settings, "equalizer_enabled", False):
+    if not core_only and getattr(settings, "equalizer_enabled", False):
         try:
             from spatial.equalizer import Equalizer, read_profile
             equalizer = Equalizer(settings.equalizer_profile, enabled=True)
@@ -287,14 +299,15 @@ async def verify(args):
         bus, interface = await connect()
         state = await snapshot(interface)
         add(report, "daemon", "pass", "Live org.spatiald.Control1 responded")
-        assess_state(report, state, settings)
-        await capture_graph(report, state)
+        if not core_only:
+            assess_state(report, state, settings)
+        await capture_graph(report, state, core_only=core_only)
         if args.media:
             state = await playback_test(report, interface, args, settings)
         report["observed_state"] = state
     except Exception as exc:
         add(report, "daemon", "fail", f"Live verification failed: {type(exc).__name__}: {exc}")
-        await capture_graph(report, {})
+        await capture_graph(report, {}, core_only=core_only)
     finally:
         if bus is not None:
             bus.disconnect()
@@ -304,6 +317,8 @@ async def verify(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", type=Path)
+    parser.add_argument("--core-only", action="store_true",
+                        help="check configuration, daemon and PipeWire only; optional audio checks are explicitly OFF")
     parser.add_argument("--media", type=Path, help="play this real local sample through the daemon, then conditionally stop only that player")
     parser.add_argument("--replace", action="store_true", help="explicitly allow replacing existing playback for the audible test")
     parser.add_argument("--require-spatial", action="store_true", help="require actual decoded objects and binaural rendering during --media")
@@ -311,6 +326,8 @@ def main(argv=None):
     parser.add_argument("--seconds", type=float, default=2, help="loaded playback observation interval (0.5-30 seconds)")
     parser.add_argument("--output", type=Path, default=Path(f"spatial-verification-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}.json"))
     args = parser.parse_args(argv)
+    if args.core_only and args.media is not None:
+        parser.error("--core-only cannot be combined with --media")
     if (args.replace or args.require_spatial) and args.media is None:
         parser.error("--replace and --require-spatial require --media")
     if not 1 <= args.timeout <= 300 or not 0.5 <= args.seconds <= 30:

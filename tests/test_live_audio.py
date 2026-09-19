@@ -18,6 +18,9 @@ from spatial.live_audio import (GUARD_KEY, LiveAudio, LiveTelemetry, Route,
                                 _metadata, audit_snapshot, available_streams, live_config)
 
 
+SURROUND_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
+
+
 SINK = Sink("AA:BB:CC:DD:EE:FF", "bluez_output.AA_BB_CC_DD_EE_FF.1", "75", "a2dp", "idle")
 
 
@@ -39,25 +42,41 @@ def entry(key, value, subject=10, type="Spa:String"):
 def link(number, source, target, port, state="active"):
     return {"id": number, "type": "PipeWire:Interface:Link", "info": {
         "output-node-id": source, "input-node-id": target,
-        "output-port-id": port, "state": state}}
+        "output-port-id": port, "input-port-id": port + 100 if target == 20 else port + 1000,
+        "state": state}}
 
 
-def graph():
-    return [
+def pcm_format(channels):
+    return {"mediaType": "audio", "mediaSubtype": "raw", "format": "F32LE",
+            "rate": 48000, "channels": len(channels), "position": list(channels)}
+
+
+def graph(channels=("FL", "FR")):
+    objects = [
         obj("Client", 3, **{"application.process.id": 999}),
         obj("Node", 5, **{"media.class": "Audio/Sink", "node.name": SINK.name, "object.serial": "75"}),
         obj("Node", 10, **{"media.class": "Stream/Output/Audio", "application.name": "Actual game", "object.serial": "100"}),
         obj("Node", 20, **{"media.class": "Audio/Sink", "node.name": "spatial-live-test", "object.serial": "200", "client.id": 3}),
         obj("Node", 30, **{"media.class": "Stream/Output/Audio", "node.name": "omniphony", "object.serial": "300", "client.id": 3,
                           "target.object": SINK.name, "node.dont-fallback": True, "node.dont-move": True}),
-        obj("Port", 101, **{"node.id": 10, "port.direction": "out"}),
-        obj("Port", 102, **{"node.id": 10, "port.direction": "out"}),
+        obj("Port", 101, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[0]}),
+        obj("Port", 102, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[1]}),
         obj("Port", 301, **{"node.id": 30, "port.direction": "out"}),
         obj("Port", 302, **{"node.id": 30, "port.direction": "out"}),
         metadata(entry("target.object", "200", type="Spa:Id"), entry(GUARD_KEY, "100:200")),
-        link(401, 10, 20, 101), link(402, 10, 20, 102),
-        link(403, 30, 5, 301), link(404, 30, 5, 302),
     ]
+    objects[2]["info"]["params"] = {"Format": [pcm_format(channels)]}
+    objects[3]["info"]["params"] = {"Format": [pcm_format(SURROUND_CHANNELS)]}
+    objects.extend(obj("Port", 201 + index, **{"node.id": 20, "port.direction": "in",
+                                               "audio.channel": channel})
+                   for index, channel in enumerate(SURROUND_CHANNELS))
+    objects.extend(obj("Port", 101 + index, **{"node.id": 10, "port.direction": "out",
+                                               "audio.channel": channel})
+                   for index, channel in enumerate(channels) if index > 1)
+    objects.extend(link(401 + index, 10, 20, 101 + index)
+                   for index in range(len(channels)))
+    objects.extend([link(450, 30, 5, 301), link(451, 30, 5, 302)])
+    return objects
 
 
 def ready():
@@ -113,6 +132,15 @@ class LivePureTests(unittest.TestCase):
         telemetry.last_seen = time.monotonic() - 5
         self.assertFalse(telemetry.ready)
 
+    def test_renderer_failure_and_shutdown_invalidate_live_input(self):
+        telemetry = ready()
+        telemetry.error = "live PCM failed"
+        self.assertFalse(telemetry.ready)
+        telemetry = ready()
+        telemetry.accept("/omniphony/state/shutdown", [])
+        self.assertEqual(telemetry.input, {})
+        self.assertFalse(telemetry.ready)
+
     def test_entire_owned_channel_graph_and_guard_are_required(self):
         live, objects = running(), graph()
         self.assertEqual(live.audit(objects)["state"], "ready")
@@ -124,6 +152,44 @@ class LivePureTests(unittest.TestCase):
         objects[9]["metadata"] = []
         self.assertEqual(live.audit(objects)["state"], "violation")
         self.assertEqual(live.pending_input_ids(objects), set())
+
+    def test_surround_native_channels_must_survive_before_the_renderer(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        self.assertEqual(live.audit(objects)["state"], "ready")
+        # Real regression: pw-cat's client format stayed 7.1 while its adapter
+        # retained the previous stereo sink's two graph ports and links.
+        downmixed = graph()
+        downmixed[2]["info"]["params"]["Format"] = [pcm_format(SURROUND_CHANNELS)]
+        self.assertEqual(live.audit(downmixed)["state"], "violation")
+        self.assertIn("lost before", live.audit(downmixed)["reason"])
+        live._state = "starting"
+        self.assertEqual(live.audit(downmixed)["state"], "waiting")
+
+    def test_renderer_node_properties_do_not_prove_native_channel_positions(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        objects[3]["info"]["props"].update({"audio.channels": 8,
+            "audio.position": "FL,FR,FC,LFE,SL,SR,RL,RR"})
+        del objects[3]["info"]["params"]["Format"][0]["position"]
+        self.assertEqual(live.audit(objects)["state"], "violation")
+        self.assertIn("positioned 7.1", live.audit(objects)["reason"])
+
+    def test_unknown_capture_ports_and_crossed_channel_links_are_rejected(self):
+        for mutate in (
+            lambda g: next(o for o in g if o["id"] == 201)["info"]["props"].update({"audio.channel": "UNK"}),
+            lambda g: next(o for o in g if o["id"] == 401)["info"].update({"input-port-id": 207}),
+            lambda g: g.append(link(499, 10, 20, 101)),
+        ):
+            objects = graph(SURROUND_CHANNELS)
+            mutate(objects)
+            self.assertEqual(running().audit(objects)["state"], "violation")
+
+    def test_missing_native_format_never_claims_spatial_readiness(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        objects[2]["info"]["params"]["Format"] = []
+        self.assertEqual(live.audit(objects)["state"], "violation")
+        objects = graph(SURROUND_CHANNELS)
+        objects[3]["info"]["params"]["Format"] = []
+        self.assertEqual(live.audit(objects)["state"], "waiting")
 
     def test_unsafe_edges_sink_replacement_and_missing_guards_reject(self):
         for mutate in (

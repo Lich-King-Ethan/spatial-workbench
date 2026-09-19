@@ -1,6 +1,6 @@
 # Spatial workbench
 
-Version 0.2.2 provides native spatial playback, headphone tracking, application audio,
+Version 0.2.3 provides native spatial playback, headphone tracking, application audio,
 and device-wide reference EQ to BudsLink Companion on Arch/CachyOS and KDE Plasma.
 The ordinary **WF-1000XM5 remains the final audio output**. BudsLink continues
 owning Sony controls; separate modules own sources, sensors, rendering, and EQ.

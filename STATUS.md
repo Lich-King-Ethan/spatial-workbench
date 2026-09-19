@@ -1,4 +1,4 @@
-# Release status — 0.2.2
+# Release status — 0.2.3
 
 This release contains operational modules and a single-command Arch installation
 workflow. It is ready for building and desktop acceptance testing; it is **not
@@ -26,14 +26,30 @@ independent capabilities. See [architecture](docs/architecture.md).
 
 ## Evidence available
 
-Hosted software validation is complete for commit [9d573ea](https://github.com/Lich-King-Ethan/spatial-workbench/commit/9d573ea2589fce99d4e1dee20b065545e1603938).
+The September 19 audit withdrew the earlier **complete PCM spatial validation**
+claim. The supposedly 7.1 source had only two graph outputs; the renderer exposed
+eight unpositioned inputs. Front and rear source captures were effectively
+identical because WirePlumber retained a stereo downmix. Earlier assertions had
+incorrectly been changed to accept that result. A phase-sensitive spectral
+estimator also introduced false differences between repeated captures.
 
-- [CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113) passed on Python 3.11, 3.12, 3.13 and the Arch package lane. Each lane ran 256 tests with zero skips; the native Qt/Plasma smoke test reported five passes including setup and cleanup.
-- [CachyOS integration run 35379035086](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035086) passed the installed package suite, genuine Harletty bridge build, native Qt cards, real PipeWire 1.6.8/WirePlumber 0.5.17 routing, WirePlumber guard policy, device-scoped EQ and SWH limiter, and 18 captured 48 kHz stereo PCM windows. The production route was exercised as renderer → EQ/limiter → synthetic WF-1000XM5 sink monitor, while actual Sony-helper UDP packets drove the production tracker/Engine/OSC path. Acoustic checks cover position, yaw, pitch, roll, recenter and mirror behavior.
-- [Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340) passed in a freshly booted minimal CachyOS guest. It ran the unchanged installer, real systemd/udev/PipeWire services, package ownership checks, daemon verification and the complete media route. The real E-AC-3 JOC Atmos fixture was decoded by mpv and the pinned orender/Harletty bridge, rendered to the post-EQ synthetic earbud monitor, and captured for neutral/repeat/yaw poses. Stop/restore checks returned the original source route and preserved the global default.
-- The full installer artifact also records the intentional boundary: no physical headphones, XM5 HID or Slime receiver were attached, so hardware fields remain WAIT rather than being misreported as passes. The hosted endpoint is synthetic and headless; it proves the software chain, not listening quality or physical sensor axis orientation.
+Version 0.2.3 repairs the native SPA position declaration, rejects lost or swapped
+channels in production, and measures complete stimulus periods. The integration
+gate now requires eight matching channel links and records eight independently
+frequency-tagged input lanes before running the spatial position/rotation checks.
+Regression tests deliberately reject downmix, tracking/roll/recenter no-ops,
+wrong rotation signs, and swapped ears. Fresh native validation of these changes
+is pending; historical green runs do not certify this corrected path.
 
-The runtime remains modular: discovery, tracker providers, playback/live PCM, renderer ownership, EQ, diagnostics and the native Companion are independently supervised and failure-scoped. The complete evidence artifacts are retained on the linked GitHub runs.
+Historical evidence remains useful within its actual scope:
+
+- [CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113) ran 256 tests without skips on Python 3.11–3.13 and the Arch lane; native Qt cards loaded.
+- [CachyOS integration run 35382912735](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35382912735) retained real PipeWire graphs and PCM which exposed the channel-loss defect. Its green spatial verdict is invalid.
+- [Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340) ran the installer and real systemd/udev/PipeWire services in a booted CachyOS guest. Its separate encoded Atmos path decoded genuine E-AC-3 JOC through mpv/orender/Harletty and captured post-EQ audio. It checked package presence, not file ownership or repeat-install preservation; those stronger checks are now included for the next run. Its live PCM spatial verdict has the same invalid downmix assumptions.
+
+No physical headphones, XM5 HID, Slime receiver or TIDAL account were available.
+The synthetic endpoint establishes only the software behavior actually tested.
+See [the audit and validation details](docs/validation-environment.md).
 
 The user's Companion compatibility confirmation is recorded for September 17, 2026, Arch Linux, Midwest USA. Its upstream comment submission was rejected by GitHub with HTTP 403; maintainers have not received it through this session. The ready-to-submit report is in [upstream-report.md](docs/upstream-report.md).
 

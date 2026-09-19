@@ -39,31 +39,44 @@ native presentation logic and independent provider failures. These fixtures prov
 the client behavior and package checks; they are not physical Bluetooth or
 listening tests.
 
-## Completed hosted integration checks
+## September 19 channel-preservation audit
 
-[CachyOS integration run 35379035086](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035086)
-passed the installed packages and native Qt cards, built the pinned Harletty bridge,
-and exercised real PipeWire 1.6.8 and WirePlumber 0.5.17 processes. The production
-route applied the device-scoped WF-1000XM5 EQ and SWH limiter to the synthetic
-headphone sink, while actual Sony-helper UDP packets drove the production tracker,
-Engine and OSC path. It captured and analyzed 18 48 kHz stereo windows covering
-positions, yaw, pitch, roll, recenter and mirror checks. The captured endpoint is
-synthetic/headless, and the report explicitly keeps hardware validation false.
+The earlier claim that the hosted PCM test proved a complete 7.1 spatial path is
+withdrawn. Saved artifacts from [run 35382912735](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35382912735)
+showed native eight-channel source PCM adapted into only two graph ports, linked
+to the first two of eight **unpositioned** renderer inputs. The pinned upstream
+capture code omitted SPA channel positions. WirePlumber kept the source's
+existing stereo format because the new target was unpositioned.
 
-[Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340)
-passed in a freshly booted minimal CachyOS guest with a CachyOS kernel and KVM.
-The unchanged installer, package ownership, systemd/udev/PipeWire services and
-daemon verification all passed. The guest then decoded the pinned real E-AC-3 JOC
-fixture through mpv and the orender/Harletty bridge, rendered to the post-EQ
-synthetic earbud monitor, captured neutral/repeat/yaw Atmos windows, and passed
-stop/restore route checks. Its retained result is exit code 0. The same artifact
-records the expected WAIT state for physical XM5, BlueZ HID, SlimeVR and KDE
-headphone acceptance because no physical hardware was attached.
+Reanalysis using complete 100 ms stimulus periods measured rear/front spectral
+differences of only 0.000044 dB (left) and 0.000229 dB (right). The earlier Hann
+window estimator was phase-sensitive for this repeating fixture, adding about
+0.239 dB artificial variation in a cyclic-shift check. Restored geometric checks
+reject those old captures on seven assertions. Assertions accepting rear/front
+equality and removed roll/compound-pose equivalences were incorrect.
 
-Both runs retain machine-readable reports, package hashes, PipeWire graph snapshots,
-Sony pose evidence and PCM artifacts. They establish a complete software and
-synthetic-audio route; they do not establish physical axis orientation, subjective
-localization, or TIDAL account entitlement.
+Version 0.2.3 adds the native position declaration and validates it by parsing the
+exact serialized SPA format in Rust tests. The Python auditor requires named,
+matching source-to-renderer links and preservation of the source's native channel
+set. The hosted gate must reproduce a source initially downmixed to stereo, then
+prove it reconfigures into eight channels after selection. Eight different tones
+are recorded from the renderer input monitor and checked for missing, swapped,
+duplicated or mixed lanes. Post-EQ broadband recordings separately test actual
+spatial DSP with restored position, yaw, pitch, roll and recenter assertions.
+
+Fresh native validation of these changes is pending. The [prior booted VM run](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340)
+did establish installation and real service startup, plus a separate genuine
+encoded Atmos route through mpv, the bridge, renderer and EQ into a synthetic
+headphone monitor. It did not establish correct live 7.1 rendering. It queried
+package presence rather than ownership; the next VM run checks actual installed
+file ownership, retained user configuration/preferences and Companion backup,
+and repeats the core installer over the full installation.
+
+Media evidence now records verified routing/tracking snapshots and actual pose
+acknowledgements instead of retaining only initial player state, and cleanup must
+succeed before that report can pass. Renderer shutdown, bridge failure and IPC
+loss cannot retain stale readiness. None of these software checks establishes
+physical sensor orientation, listening quality or TIDAL entitlement.
 
 ## Completed local checks
 

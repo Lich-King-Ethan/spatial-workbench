@@ -70,14 +70,16 @@ def release(output):
         recipe = recipe.replace(token, value)
     (companion / "PKGBUILD").write_text(recipe)
     shutil.copyfile(ROOT / "packaging/orender-loopback.patch", orender / "orender-loopback.patch")
+    shutil.copyfile(ROOT / "packaging/orender-live-channels.patch", orender / "orender-live-channels.patch")
     shutil.copyfile(ROOT / "packaging/orender-Cargo.lock", orender / "orender-Cargo.lock")
     recipe = (ROOT / "packaging/orender-PKGBUILD.in").read_text().replace(
         "@PATCH_SHA256@", digest(orender / "orender-loopback.patch")).replace(
+        "@LIVE_PATCH_SHA256@", digest(orender / "orender-live-channels.patch")).replace(
         "@LOCK_SHA256@", digest(orender / "orender-Cargo.lock"))
     (orender / "PKGBUILD").write_text(recipe)
     print(f"{source}: sha256 {digest(source)}")
     print(f"{companion / 'PKGBUILD'}: pinned upstream {COMMIT}")
-    print(f"{orender / 'PKGBUILD'}: pinned Omniphony 0.5.2 with local OSC bind patch")
+    print(f"{orender / 'PKGBUILD'}: pinned Omniphony 0.5.2 with local OSC and positioned PCM input patches")
 
 
 if __name__ == "__main__":

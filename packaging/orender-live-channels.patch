@@ -1,0 +1,133 @@
+diff --git a/omniphony-renderer/src/cli/decode/live_input.rs b/omniphony-renderer/src/cli/decode/live_input.rs
+index c33301e..7def175 100644
+--- a/omniphony-renderer/src/cli/decode/live_input.rs
++++ b/omniphony-renderer/src/cli/decode/live_input.rs
+@@ -548,7 +548,7 @@ fn run_pipewire_pcm_capture_loop(
+     props.insert("node.description", config.node_description.clone());
+     props.insert("media.name", config.node_description.clone());
+     props.insert("audio.channels", config.channels.to_string());
+-    props.insert("audio.position", "FL,FR,FC,LFE,SL,SR,RL,RR");
++    props.insert("audio.position", "[ FL FR FC LFE SL SR RL RR ]");
+     let requested_latency_frames =
+         ((config.target_latency_ms as u64 * config.sample_rate_hz as u64) / 1000).max(1) as u32;
+     let requested_latency = format!("{}/{}", requested_latency_frames, config.sample_rate_hz);
+@@ -652,22 +652,7 @@ fn run_pipewire_pcm_capture_loop(
+         .register()
+         .map_err(|e| anyhow!("Failed to register PipeWire live input listeners: {e:?}"))?;
+ 
+-    let mut audio_info = spa::param::audio::AudioInfoRaw::new();
+-    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
+-    audio_info.set_rate(config.sample_rate_hz);
+-    audio_info.set_channels(config.channels as u32);
+-    let obj = spa::pod::Object {
+-        type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
+-        id: spa::param::ParamType::EnumFormat.as_raw(),
+-        properties: audio_info.into(),
+-    };
+-    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
+-        std::io::Cursor::new(Vec::new()),
+-        &spa::pod::Value::Object(obj),
+-    )
+-    .map_err(|e| anyhow!("Failed to serialize PipeWire live input format pod: {e:?}"))?
+-    .0
+-    .into_inner();
++    let values = build_live_input_format_pod(config.sample_rate_hz, config.channels)?;
+     let pod = Pod::from_bytes(&values).ok_or_else(|| anyhow!("Invalid PipeWire format pod"))?;
+     let mut params = [pod];
+ 
+@@ -695,6 +680,45 @@ fn run_pipewire_pcm_capture_loop(
+     Ok(())
+ }
+ 
++// The live decoder below assigns fixed 7.1 labels to interleaved PCM. Publish
++// that same order in the SPA format: audio.position alone does not position a
++// pw_stream's format, and WirePlumber cannot adopt an unpositioned target layout.
++#[cfg(target_os = "linux")]
++fn build_live_input_format_pod(sample_rate_hz: u32, channels: u16) -> Result<Vec<u8>> {
++    if channels != DEFAULT_LIVE_INPUT_CHANNELS {
++        anyhow::bail!("PipeWire live input currently supports only 8-channel 7.1 mode");
++    }
++    let mut positions = [spa::sys::SPA_AUDIO_CHANNEL_UNKNOWN; 64];
++    positions[..8].copy_from_slice(&[
++        spa::sys::SPA_AUDIO_CHANNEL_FL,
++        spa::sys::SPA_AUDIO_CHANNEL_FR,
++        spa::sys::SPA_AUDIO_CHANNEL_FC,
++        spa::sys::SPA_AUDIO_CHANNEL_LFE,
++        spa::sys::SPA_AUDIO_CHANNEL_SL,
++        spa::sys::SPA_AUDIO_CHANNEL_SR,
++        spa::sys::SPA_AUDIO_CHANNEL_RL,
++        spa::sys::SPA_AUDIO_CHANNEL_RR,
++    ]);
++    let mut audio_info = spa::param::audio::AudioInfoRaw::new();
++    audio_info.set_format(spa::param::audio::AudioFormat::F32LE);
++    audio_info.set_rate(sample_rate_hz);
++    audio_info.set_channels(channels as u32);
++    audio_info.set_position(positions);
++    let obj = spa::pod::Object {
++        type_: spa::utils::SpaTypes::ObjectParamFormat.as_raw(),
++        id: spa::param::ParamType::EnumFormat.as_raw(),
++        properties: audio_info.into(),
++    };
++    let values: Vec<u8> = spa::pod::serialize::PodSerializer::serialize(
++        std::io::Cursor::new(Vec::new()),
++        &spa::pod::Value::Object(obj),
++    )
++    .map_err(|e| anyhow!("Failed to serialize PipeWire live input format pod: {e:?}"))?
++    .0
++    .into_inner();
++    Ok(values)
++}
++
+ #[cfg(target_os = "linux")]
+ fn run_pipewire_bridge_capture_loop(
+     tx: mpsc::SyncSender<Result<DecoderMessage>>,
+@@ -922,6 +946,49 @@ mod tests {
+         samples.iter().flat_map(|s| s.to_le_bytes()).collect()
+     }
+ 
++    // Parse the exact serialized pod passed to Stream::connect. This fails for
++    // the upstream format even when its audio.position property lists 8 names.
++    #[test]
++    fn spatial_live_channels_format_pod_has_positioned_seven_one_layout() {
++        let values = build_live_input_format_pod(48_000, 8).unwrap();
++        let pod = Pod::from_bytes(&values).unwrap();
++        let mut parsed = spa::param::audio::AudioInfoRaw::new();
++        parsed.parse(pod).unwrap();
++
++        assert_eq!(parsed.format(), spa::param::audio::AudioFormat::F32LE);
++        assert_eq!(parsed.rate(), 48_000);
++        assert_eq!(parsed.channels(), 8);
++        assert!(!parsed.flags().contains(spa::param::audio::AudioInfoRawFlags::UNPOSITIONED));
++        assert_eq!(&parsed.position()[..8], &[
++            spa::sys::SPA_AUDIO_CHANNEL_FL,
++            spa::sys::SPA_AUDIO_CHANNEL_FR,
++            spa::sys::SPA_AUDIO_CHANNEL_FC,
++            spa::sys::SPA_AUDIO_CHANNEL_LFE,
++            spa::sys::SPA_AUDIO_CHANNEL_SL,
++            spa::sys::SPA_AUDIO_CHANNEL_SR,
++            spa::sys::SPA_AUDIO_CHANNEL_RL,
++            spa::sys::SPA_AUDIO_CHANNEL_RR,
++        ]);
++    }
++
++    #[test]
++    fn spatial_live_channels_pcm_lanes_match_the_advertised_bed_order() {
++        let labels = [
++            RChannelLabel::L, RChannelLabel::R, RChannelLabel::C, RChannelLabel::LFE,
++            RChannelLabel::Ls, RChannelLabel::Rs, RChannelLabel::Lb, RChannelLabel::Rb,
++        ];
++        for (lane, label) in labels.iter().enumerate() {
++            let mut samples = [0.0; 8];
++            samples[lane] = 0.5;
++            let frame = build_live_input_frame(&interleaved_f32(&samples), 48_000, 8);
++            assert_eq!(frame.channel_labels.as_slice(), labels.as_slice());
++            assert_eq!(&frame.channel_labels[lane], label);
++            for index in 0..8 {
++                assert_eq!(frame.pcm[index], if index == lane { I32_PCM_FULL_SCALE / 2 } else { 0 });
++            }
++        }
++    }
++
+     /// Live PCM has to arrive in the same integer domain as every decoded
+     /// frame — unity at 2^23, which is what both `AudioSamples::to_f32` and the
+     /// renderer's `fill_pcm_f32_drc` divide by. Scaling to `i32::MAX` instead

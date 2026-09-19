@@ -38,13 +38,15 @@ package provides `orender=0.5.2`, conflicts with the unpatched `orender` package
 and installs its matching shared library. No script overwrites another package's
 files. See [installation](install.md) and [packaging](../packaging/README.md).
 
-The engine patch adds an explicit OSC bind policy and CLI/library capability
+The control patch adds an explicit OSC bind policy and CLI/library capability
 markers. The runtime requests IPv4 loopback, refuses an unpatched engine, and
 pins the library path to avoid accidentally loading a separate Studio library.
 Renderer DSP and the existing bridge ABI remain upstream. Source archives and
-patches are checksummed; the package build runs the Rust bind-policy tests and
-checks the resulting markers. Actual Rust/Arch compilation is pending on the
-target environment. [Patch details](orender-loopback.md).
+patches are checksummed. The additional live-input patch declares the native SPA
+channel positions; without it, an existing stereo downmix could survive rerouting
+and erase surround channels. Package checks include Rust bind-policy, serialized
+channel-format and PCM lane tests. See [patch details](orender-loopback.md) and
+[current validation evidence](validation-environment.md).
 
 ## Pinned and inspected source
 

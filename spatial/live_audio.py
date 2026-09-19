@@ -88,6 +88,31 @@ async def _command(*args, timeout=5):
 
 
 GUARD_KEY = "spatiald.live-target"
+LIVE_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
+
+
+def _raw_positions(objects, node):
+    """Read the negotiated client format, never infer it from adapted ports.
+
+    PipeWire exposes an application's native PCM as Format and its possibly
+    downmixed graph layout separately as PortConfig. Node audio.position is
+    only a property; it cannot prove that the actual format is positioned.
+    """
+    for obj in objects:
+        if (isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node"
+                and str(obj.get("id")) == str(node)):
+            formats = (obj.get("info") or {}).get("params", {}).get("Format", [])
+            raw = [value for value in formats if isinstance(value, dict)
+                   and value.get("mediaType") == "audio" and value.get("mediaSubtype") == "raw"]
+            if len(raw) != 1:
+                return None
+            positions, channels = raw[0].get("position"), raw[0].get("channels")
+            if (not isinstance(positions, list) or not positions
+                    or len(positions) != channels or not all(isinstance(p, str) for p in positions)
+                    or len(set(positions)) != len(positions)):
+                return ()
+            return tuple(positions)
+    return None
 
 
 def _guard_available(objects):
@@ -192,6 +217,10 @@ class LiveTelemetry(RendererTelemetry):
         self.input_node = input_node
         self.input = {}
 
+    def invalidate(self):
+        super().invalidate()
+        self.input = {}
+
     def accept(self, address, args):
         if address == "/omniphony/state/input" and len(args) == 1:
             value = json.loads(args[0])
@@ -205,6 +234,7 @@ class LiveTelemetry(RendererTelemetry):
         applied = self.input.get("applied") or {}
         binaural = self.renderer.get("binaural") or {}
         return (self.capabilities.get("producer") == "renderer"
+                and not self.error
                 and self.capabilities.get("variant") == "standalone"
                 and self.capabilities.get("host") == "cli"
                 and isinstance(binaural, dict) and binaural.get("outputMode") == "binaural"
@@ -412,6 +442,10 @@ class LiveAudio:
             return result("violation", "Ambiguous live capture input")
         if self._input_serial and any(str(nodes[node].get("object.serial")) != self._input_serial for node in inputs):
             return result("violation", "The live capture input was replaced")
+        for node in inputs:
+            positions = _raw_positions(objects, node)
+            if positions is not None and positions != LIVE_CHANNELS:
+                return result("violation", "The renderer input does not expose the fixed positioned 7.1 PCM format")
         try:
             selected, _ = _stream(objects, self._stream_serial)
         except AudioError:
@@ -434,14 +468,26 @@ class LiveAudio:
                     or str(props.get("node.dont-fallback")).lower() != "true"
                     or str(props.get("node.dont-move")).lower() != "true"):
                 return result("violation", "Renderer output routing protections are missing")
-        output_ports = {}
+        output_ports, ports, input_ports = {}, {}, {}
         for obj in objects:
             if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Port":
                 props = _props(obj)
+                if str(props.get("port.control", "false")).lower() == "true":
+                    continue
+                ports[str(obj.get("id"))] = props
                 if props.get("port.direction") == "out" and str(props.get("port.control", "false")).lower() != "true":
                     output_ports.setdefault(str(props.get("node.id")), set()).add(str(obj.get("id")))
+                if props.get("port.direction") == "in" and str(props.get("node.id")) in inputs:
+                    input_ports[str(obj.get("id"))] = props
+        capture_channels = [props.get("audio.channel") for props in input_ports.values()]
+        capture_positioned = (len(capture_channels) == len(LIVE_CHANNELS)
+                              and set(capture_channels) == set(LIVE_CHANNELS)
+                              and all(_raw_positions(objects, node) == LIVE_CHANNELS for node in inputs))
+        if input_ports and (any(channel not in LIVE_CHANNELS for channel in capture_channels)
+                            or len(set(capture_channels)) != len(capture_channels)):
+            return result("violation", "The renderer capture ports have unknown or duplicate channel positions")
         incoming, outgoing, selected_targets = False, set(), set()
-        linked_ports = set()
+        linked_ports, linked_inputs = set(), set()
         for obj in objects:
             if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
                 continue
@@ -457,7 +503,19 @@ class LiveAudio:
                     return result("violation", "An unselected stream is entering the live capture input")
                 incoming = incoming or established
                 if established:
-                    linked_ports.add(str(info.get("output-port-id")))
+                    source_port = str(info.get("output-port-id"))
+                    target_port = str(info.get("input-port-id"))
+                    source_props, target_props = ports.get(source_port), input_ports.get(target_port)
+                    if (source_props is None or target_props is None
+                            or str(source_props.get("node.id")) != selected
+                            or source_props.get("port.direction") != "out"
+                            or source_props.get("audio.channel") not in LIVE_CHANNELS
+                            or source_props.get("audio.channel") != target_props.get("audio.channel")):
+                        return result("violation", "An application channel is not linked to its matching renderer input")
+                    if source_port in linked_ports or target_port in linked_inputs:
+                        return result("violation", "Application channels are duplicated in the renderer input")
+                    linked_ports.add(source_port)
+                    linked_inputs.add(target_port)
             if source in outputs:
                 if target not in allowed | pending:
                     return result("violation", "Renderer output is linked outside the selected headphones")
@@ -469,7 +527,24 @@ class LiveAudio:
                 return result("violation", "Application routing changed while spatial audio was active")
         complete = (bool(output_ports.get(selected)) and all(output_ports.get(node) for node in outputs)
                     and all(output_ports.get(node, set()) <= linked_ports for node in outputs | {selected}))
+        source_positioned = False
+        if incoming and selected_targets <= inputs:
+            native = _raw_positions(objects, selected)
+            exposed = [ports[port].get("audio.channel") for port in output_ports.get(selected, ())]
+            # Mono can legitimately be placed in FC or duplicated to FL/FR by
+            # the source adapter. Named multichannel PCM must preserve every
+            # native speaker instead of silently collapsing it to stereo.
+            if native is not None and (not native or (native != ("MONO",)
+                                                     and not set(native) <= set(LIVE_CHANNELS))):
+                return result("violation", "The application's native PCM channel positions are unsupported or unknown")
+            source_positioned = (native is not None and bool(exposed)
+                                 and len(set(exposed)) == len(exposed)
+                                 and set(exposed) <= set(LIVE_CHANNELS)
+                                 and (native == ("MONO",) or set(native) <= set(exposed)))
+            if not source_positioned and self._state == "playing":
+                return result("violation", "The application's native PCM channels were lost before the renderer")
         if (incoming and selected_targets <= inputs and outputs and complete
+                and capture_positioned and source_positioned
                 and outgoing == outputs and self.telemetry.ready):
             return result("ready", "Selected application → binaural renderer → physical headphones")
         return result("waiting", "Waiting for the selected application's complete audio path")
