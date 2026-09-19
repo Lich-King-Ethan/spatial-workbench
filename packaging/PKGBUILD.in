@@ -7,7 +7,7 @@ arch=('any')
 license=('MIT')
 depends=('python>=3.11' 'python-dbus-next' 'pipewire' 'pipewire-audio' 'wireplumber' 'bluez')
 makedepends=('python-build' 'python-installer' 'python-setuptools' 'python-wheel')
-checkdepends=('dbus' 'nodejs' 'lua')
+checkdepends=('dbus' 'nodejs' 'lua' 'python-numpy' 'swh-plugins')
 optdepends=('mpv-omniphony: spatial media playback using the upstream orender decoder'
             'orender-spatial: pinned renderer with verified local-only OSC control'
             'harletty-bridge: Atmos format decoder bridge for orender'

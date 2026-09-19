@@ -1,10 +1,10 @@
-# Omniphony 0.5.2 with one downstream OSC bind-policy patch.
+# Omniphony 0.5.2 with downstream OSC bind-policy and live-channel patches.
 # Based on upstream packaging/arch/orender/PKGBUILD. Renderer/DSP and bridge ABI
 # are unchanged; this package supplies both the CLI and its matching library.
 pkgname=orender-spatial
 pkgver=0.5.2
-pkgrel=1
-pkgdesc='Omniphony renderer with verifiable per-process OSC bind-address support'
+pkgrel=2
+pkgdesc='Omniphony renderer with local OSC controls and positioned 7.1 live input'
 arch=('x86_64')
 url='https://github.com/mgth/Omniphony'
 license=('GPL-3.0-only')
@@ -15,9 +15,9 @@ provides=("orender=$pkgver" 'liborender.so=0-64')
 conflicts=('orender')
 options=('!lto')
 source=("omniphony-$pkgver.tar.gz::https://github.com/mgth/Omniphony/archive/refs/tags/v$pkgver.tar.gz"
-        'orender-loopback.patch' 'orender-Cargo.lock')
+        'orender-loopback.patch' 'orender-live-channels.patch' 'orender-Cargo.lock')
 sha256sums=('e0c1915f94fd8ce6367517169cfba27b7f6d976622b808aafab6376f868a474a'
-            '@PATCH_SHA256@' '@LOCK_SHA256@')
+            '@PATCH_SHA256@' '@LIVE_PATCH_SHA256@' '@LOCK_SHA256@')
 
 _src="Omniphony-$pkgver"
 _workspace="$_src/omniphony-renderer"
@@ -25,6 +25,7 @@ _workspace="$_src/omniphony-renderer"
 prepare() {
     cd "$srcdir/$_src"
     patch --forward --batch -Np1 < "$srcdir/orender-loopback.patch"
+    patch --forward --batch -Np1 < "$srcdir/orender-live-channels.patch"
     # The tagged archive omits this workspace's lockfile. Ship the dependency
     # resolution we compile and test, then require it for every downstream build.
     install -m644 "$srcdir/orender-Cargo.lock" omniphony-renderer/Cargo.lock
@@ -40,6 +41,8 @@ check() {
     cd "$srcdir/$_workspace"
     OMNIPHONY_OSC_BIND=127.0.0.1 cargo test --release --locked -p orender_engine \
         spatial_loopback -- --test-threads=1
+    cargo test --release --locked -p omniphony-renderer \
+        spatial_live_channels -- --test-threads=1
     local version
     version=$(target/release/orender --version)
     [[ "$version" == *"$pkgver+spatial-loopback1"* ]]
@@ -72,4 +75,6 @@ package() {
     install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "$srcdir/orender-loopback.patch" \
         "$pkgdir/usr/share/doc/$pkgname/orender-loopback.patch"
+    install -Dm644 "$srcdir/orender-live-channels.patch" \
+        "$pkgdir/usr/share/doc/$pkgname/orender-live-channels.patch"
 }

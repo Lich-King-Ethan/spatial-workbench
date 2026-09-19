@@ -270,7 +270,12 @@ passed 'Live daemon control interface is ready'
 verification_report="$spatial_install_dir/verification-$(date -u +%Y%m%dT%H%M%S)-$$.json"
 spatial_current_step='Verify the real host installation'
 message '[RUN ] Verify the real host installation'
-if spatial-verify --output "$verification_report" 2>&1 | tee -a "$spatial_install_log"; then
+verification_arguments=(--output "$verification_report")
+if (( ! with_audio )); then
+    verification_arguments+=(--core-only)
+    message '[INFO] Verifying the selected core installation; optional audio checks will be OFF. Run spatial-verify for full host verification.'
+fi
+if spatial-verify "${verification_arguments[@]}" 2>&1 | tee -a "$spatial_install_log"; then
     passed 'Host acceptance checks passed'
 else
     verification_result=$?

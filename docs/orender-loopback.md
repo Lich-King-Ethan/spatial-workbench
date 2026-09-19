@@ -1,4 +1,4 @@
-# The downstream Omniphony bind-address patch
+# The downstream Omniphony bind-address and live-channel patches
 
 The owned renderer accepts head pose, volume and other controls over OSC. Its
 control socket must remain on localhost. In upstream 0.5.2, the embedded host's
@@ -44,6 +44,33 @@ omits the renderer workspace lockfile; `prepare()` installs our reviewed depende
 resolution so build and test can use `--locked`. The player and decoder bridge
 stay separate packages.
 
+Package release `0.5.2-2` also applies the separate
+`packaging/orender-live-channels.patch`. The pinned standalone live capture path
+in `src/cli/decode/live_input.rs` created an eight-channel `AudioInfoRaw` without
+calling `set_position()`. In libspa 0.9.2, a new raw format starts with the
+`UNPOSITIONED` flag; its serializer omits `SPA_FORMAT_AUDIO_position` while that
+flag is set. The node's `audio.position` text property did not repair the actual
+format. In the audited graph the renderer therefore exposed eight `UNK` input
+ports, and the purported 7.1 source was still configured with two FL/FR output
+ports. That graph could produce audible output without proving channel identity
+or front/rear separation.
+
+The live-channel patch serializes the position array `FL FR FC LFE SL SR RL RR`
+in the exact raw format pod passed to `Stream::connect`, and writes the node
+property using PipeWire's bracketed array syntax. This order matches the live
+decoder's existing `L R C LFE Ls Rs Lb Rb` labels. The DSP and channel sample
+conversion remain unchanged. Advertising a positioned target lets WirePlumber
+adopt its layout when configuring a positioned source adapter; the accepted
+graph must still be checked for eight distinct correctly labelled links.
+
+The package check includes two `spatial_live_channels` native regression tests
+in the `omniphony-renderer` crate. One parses the exact production format pod
+and asserts eight positions in order, F32LE/48 kHz, and no `UNPOSITIONED` flag.
+The other sends a separate single-lane impulse through the live frame builder
+for each of the eight labels and verifies that no lane is copied or swapped.
+Native build/check results and the live graph/PCM evidence are separate gates;
+the earlier bind-only build below predates this channel fix.
+
 On September 18, 2026, both native release artifacts were compiled successfully
 with Rust/Cargo 1.98.1 on Ubuntu 24.04 x86_64, using privately extracted official
 PipeWire 1.0.5 and libclang 18 development packages. The official archive's
@@ -68,3 +95,5 @@ Source references:
 * [v0.5.2 OSC binding implementation](https://github.com/mgth/Omniphony/blob/v0.5.2/omniphony-renderer/orender_engine/src/osc.rs)
 * [v0.5.2 embedded engine OSC startup](https://github.com/mgth/Omniphony/blob/v0.5.2/omniphony-renderer/orender_engine/src/engine.rs)
 * [v0.5.2 standalone listener startup](https://github.com/mgth/Omniphony/blob/v0.5.2/omniphony-renderer/src/cli/decode/bootstrap.rs)
+* [v0.5.2 standalone live PCM capture and fixed channel labels](https://github.com/mgth/Omniphony/blob/v0.5.2/omniphony-renderer/src/cli/decode/live_input.rs)
+* [libspa 0.9.2 raw-format flags and position serialization](https://docs.rs/libspa/0.9.2/src/libspa/param/audio/raw.rs.html)

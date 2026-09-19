@@ -8,6 +8,7 @@ on:
     paths:
       - 'packaging/orender-PKGBUILD.in'
       - 'packaging/orender-loopback.patch'
+      - 'packaging/orender-live-channels.patch'
       - 'packaging/orender-Cargo.lock'
       - 'tools/make-release.py'
       - '.github/workflows/renderer-build.yml'
@@ -15,6 +16,7 @@ on:
     paths:
       - 'packaging/orender-PKGBUILD.in'
       - 'packaging/orender-loopback.patch'
+      - 'packaging/orender-live-channels.patch'
       - 'packaging/orender-Cargo.lock'
       - 'tools/make-release.py'
       - '.github/workflows/renderer-build.yml'

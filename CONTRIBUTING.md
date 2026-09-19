@@ -16,7 +16,7 @@ LADSPA limiter. On Arch, install the test dependencies with:
 sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install -e '.[tidal]' build
+python -m pip install -e '.[tidal]' build numpy
 SPATIAL_TEST_DBUS=1 dbus-run-session -- python -m unittest discover -s tests -v
 luac -p wireplumber/scripts/spatial-live-guard.lua
 python -m build

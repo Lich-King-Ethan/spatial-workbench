@@ -75,7 +75,26 @@ desktop_user systemctl --user start pipewire.service wireplumber.service
 desktop_user systemctl --user is-active pipewire.service wireplumber.service
 desktop_user pw-dump > /ci-output/pipewire-before.json
 
+install -d -o builder -g builder /ci-output/install-state
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py seed
 desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
+    --report /ci-output/install-state/first-install.json
+python - <<'PY'
+from pathlib import Path
+import shutil
+
+reports = sorted(Path('/home/builder/.local/state/spatiald/install').glob('verification-*.json'))
+assert reports, 'Installer did not produce its actual host acceptance report'
+shutil.copyfile(reports[-1], '/ci-output/full-install-verification.json')
+PY
+
+# Re-run the real reduced installer over the live full installation. This
+# exercises package replacement, configuration preservation and service restart
+# without spending another renderer build on the same pinned source.
+desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py --core-only
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
+    --report /ci-output/install-state/repeat-core-install.json
 
 desktop_user systemctl --user is-enabled spatiald.service
 desktop_user systemctl --user is-active spatiald.service pipewire.service wireplumber.service
@@ -99,9 +118,7 @@ python - <<'PY'
 import json
 from pathlib import Path
 
-reports = sorted(Path('/home/builder/.local/state/spatiald/install').glob('verification-*.json'))
-assert reports, 'Installer did not produce its actual host acceptance report'
-report = json.loads(reports[-1].read_text())
+report = json.loads(Path('/ci-output/full-install-verification.json').read_text())
 checks = report['checks']
 failed = {name: check for name, check in checks.items() if check['status'] == 'fail'}
 assert not failed, failed
@@ -109,8 +126,14 @@ for name in ('configuration', 'decoder_features', 'daemon', 'pipewire_graph'):
     assert checks[name]['status'] == 'pass', (name, checks[name])
 for name in ('headphones', 'headphone_output', 'renderer_abi'):
     assert checks[name]['status'] == 'wait', (name, checks[name])
+reports = sorted(Path('/home/builder/.local/state/spatiald/install').glob('verification-*.json'))
+repeat = json.loads(reports[-1].read_text())
+assert repeat['selection'] == 'core' and repeat['result'] == 'pass', repeat
+assert repeat['checks']['audio_modules']['status'] == 'off', repeat
 acceptance = {
     'installer': 'pass',
+    'repeat_core_install': 'pass; existing settings, permissions and Companion backup preserved',
+    'package_file_ownership': 'pass; installed files belong to the expected pacman packages',
     'environment': 'Minimal CachyOS userspace and CachyOS kernel, booted with KVM',
     'systemd_udev_pipewire': 'real running services',
     'physical_headphones_and_spatial_playback': 'waiting; no physical hardware is attached',

@@ -25,6 +25,11 @@ REQUIRED = (
 )
 BANDS = ((200, 400), (400, 800), (800, 1600), (1600, 3200),
          (3200, 6400), (6400, 10000), (10000, 16000))
+# Engineering regression bounds, not universal anatomical constants. Keep a
+# gap between equivalent and distinct responses; do not fit these to a failed
+# renderer capture. Geometry supplies the equivalences independently of PCM.
+MAXIMUM_EQUIVALENT_SPECTRAL_DB = 0.8
+MINIMUM_DISTINCT_SPECTRAL_DB = 1.0
 
 
 class SpatialMetricsError(RuntimeError):
@@ -34,19 +39,20 @@ class SpatialMetricsError(RuntimeError):
 
 
 def _spectrum(samples, rate):
-    # A 100 ms block matches the stimulus period; overlapping Hann windows
-    # tolerate a capture starting anywhere inside that period.
+    # The fixture repeats exactly every 100 ms. Any complete period has the
+    # same DFT magnitude regardless of where recording began (DFT shift
+    # theorem). A Hann taper breaks that property: 50% overlap samples only
+    # two phases of this *same* noise period, not independent noise records.
+    # This estimator is specific to the periodic fixture, not arbitrary PCM.
+    if rate % 10:
+        raise ValueError("sample rate must represent an integral 100 ms period")
     size = rate // 10
-    taper = np.hanning(size)
-    power = []
-    for start in range(0, len(samples) - size + 1, size // 2):
-        block = samples[start:start + size]
-        block = block - block.mean(axis=0)
-        spectrum = np.fft.rfft(block * taper[:, None], axis=0)
-        power.append(np.abs(spectrum) ** 2)
-    if not power:
+    periods = len(samples) // size
+    if not periods:
         raise ValueError("capture is too short for a 100 ms analysis window")
-    power = np.mean(power, axis=0)
+    blocks = samples[:periods * size].reshape(periods, size, 2)
+    blocks = blocks - blocks.mean(axis=1, keepdims=True)
+    power = np.mean(np.abs(np.fft.rfft(blocks, axis=1)) ** 2, axis=0)
     frequencies = np.fft.rfftfreq(size, 1 / rate)
     band_power = np.array([power[(frequencies >= lo) & (frequencies < hi)].mean(axis=0)
                            for lo, hi in BANDS])
@@ -128,18 +134,29 @@ def analyze_windows(windows, sample_rate=48000):
     report = {"status": "failed", "sample_rate": sample_rate,
               "format": "stereo f32le", "windows": {}, "checks": [],
               "spectrum_bands_hz": [list(band) for band in BANDS],
+              "spectral_estimator": {"window": "rectangular complete stimulus periods",
+                                     "period_frames": sample_rate // 10,
+                                     "stimulus_period_ms": 100},
+              "spectral_regression_bounds_db": {
+                  "maximum_equivalent": MAXIMUM_EQUIVALENT_SPECTRAL_DB,
+                  "minimum_distinct": MINIMUM_DISTINCT_SPECTRAL_DB},
               "convention": {"positive_ild": "left ear louder",
                              "positive_itd": "right ear later (source on left)"},
               "scope": "synthetic broadband signal, real software audio path; no subjective or hardware localization claim"}
 
     def check(condition, name, **evidence):
         report["checks"].append({"name": name, "passed": bool(condition), **evidence})
-        if not condition:
-            raise SpatialMetricsError(f"Acoustic check failed: {name}: {evidence}", report)
+
+    def fail_if_needed():
+        failed = [value["name"] for value in report["checks"] if not value["passed"]]
+        if failed:
+            report["error"] = "Acoustic checks failed: " + ", ".join(failed)
+            raise SpatialMetricsError(report["error"], report)
 
     check(sample_rate == 48000, "capture-rate", actual=sample_rate, expected=48000)
     check(all(name in windows for name in REQUIRED), "all-source-and-pose-captures-present",
           missing=[name for name in REQUIRED if name not in windows])
+    fail_if_needed()
     for name in REQUIRED:
         try:
             measurement = measure_window(windows[name], sample_rate)
@@ -181,28 +198,12 @@ def analyze_windows(windows, sample_rate=48000):
                  "pose_pitch_plus45", "pose_pitch_minus45", "pose_roll_plus45",
                  "pose_roll_minus45", "pose_neutral_repeat", "pose_recentered"):
         value = measured[name]
-        # A vertical head roll can expose several dB of asymmetric HRTF
-        # coloration even for a source on the median plane. Keep the strict
-        # interaural-delay bound, while allowing that physical level cue.
-        maximum_ild = 3.5 if name.startswith("pose_roll_") else 2.5
+        maximum_ild = 2.5
         check(abs(value["ild_db_left_minus_right"]) <= maximum_ild
               and abs(value["itd_us_right_minus_left"]) <= 120,
               name + ": median-plane-source", maximum_abs_ild_db=maximum_ild,
               maximum_abs_itd_us=120, ild_db=value["ild_db_left_minus_right"],
               itd_us=value["itd_us_right_minus_left"])
-    roll_plus, roll_minus = measured["pose_roll_plus45"], measured["pose_roll_minus45"]
-    check(abs(roll_plus["ild_db_left_minus_right"] + roll_minus["ild_db_left_minus_right"]) <= 2.0,
-          "roll: mirror-ild", summed_ild_db=(roll_plus["ild_db_left_minus_right"]
-                                             + roll_minus["ild_db_left_minus_right"]),
-          maximum_abs_ild_db=2.0)
-    check(abs(roll_plus["itd_us_right_minus_left"] + roll_minus["itd_us_right_minus_left"]) <= 150,
-          "roll: mirror-delay", summed_itd_us=(roll_plus["itd_us_right_minus_left"]
-                                                + roll_minus["itd_us_right_minus_left"]),
-          maximum_abs_itd_us=150)
-    check(_distance(roll_plus["normalized_band_db"], roll_minus["normalized_band_db"]) >= 1.0,
-          "roll: vertical-spectrum-changes", spectral_rms_db=_distance(
-              roll_plus["normalized_band_db"], roll_minus["normalized_band_db"]),
-          minimum_spectral_rms_db=1.0)
 
     def compare(first, second, equivalent):
         a, b = measured[first], measured[second]
@@ -210,35 +211,39 @@ def analyze_windows(windows, sample_rate=48000):
         ild = abs(a["ild_db_left_minus_right"] - b["ild_db_left_minus_right"])
         delay = abs(a["itd_us_right_minus_left"] - b["itd_us_right_minus_left"])
         if equivalent:
-            check(spectrum <= 0.8 and ild <= 0.6 and delay <= 50,
+            check(spectrum <= MAXIMUM_EQUIVALENT_SPECTRAL_DB and ild <= 0.6 and delay <= 50,
                   first + ": matches-" + second, spectral_rms_db=spectrum,
                   ild_difference_db=ild, itd_difference_us=delay,
-                  maximum_spectral_rms_db=0.8, maximum_ild_difference_db=0.6,
+                  maximum_spectral_rms_db=MAXIMUM_EQUIVALENT_SPECTRAL_DB,
+                  maximum_ild_difference_db=0.6,
                   maximum_itd_difference_us=50)
         else:
-            # A 0.8 dB RMS separation remains distinct from the <=0.8 dB
-            # equivalence gate while accommodating the weaker downward-pitch
-            # pinna cue observed across repeated real PipeWire captures.
-            minimum_spectral_rms_db = 0.8
-            check(spectrum >= minimum_spectral_rms_db,
+            check(spectrum >= MINIMUM_DISTINCT_SPECTRAL_DB,
                   first + ": distinct-directional-spectrum-from-" + second,
                   spectral_rms_db=spectrum,
-                  minimum_spectral_rms_db=minimum_spectral_rms_db)
+                  minimum_spectral_rms_db=MINIMUM_DISTINCT_SPECTRAL_DB)
 
-    for name in ("position_fc", "pose_neutral_repeat", "pose_recentered"):
+    # A front source lies on the roll axis: rotating around that axis cannot
+    # move it. Roll still has to work on an off-axis source, as tested by the
+    # pitch/roll compositions below. A stereo downmix of FC breaks this rule.
+    for name in ("position_fc", "pose_roll_plus45", "pose_roll_minus45",
+                 "pose_neutral_repeat", "pose_recentered"):
         compare(name, "pose_neutral", True)
     compare("pose_recentered_yaw_plus90", "pose_yaw_plus90", True)
-    # The diagonal pose captures are validated by the directional checks
-    # above. Their vertical HRTF coloration is not expected to be sample-
-    # identical to a separately rendered source-position window.
+    # Pinned Omniphony v0.5.2 virtual_bed.rs::fallback_virtual_bed_pose puts
+    # C at (0,1,0), FL/FR at (+/-1,1,0), BL/BR at (+/-1,-1,0) in ADM axes.
+    # Qz(-90) Qx(-/+45) in core axes transforms front to relative FL/FR at
+    # -/+45 degrees and zero elevation. Equal relative source directions
+    # must produce equal binaural cues, regardless of tracker/source route.
+    compare("pose_pitch_plus45_roll_plus90", "position_fl", True)
+    compare("pose_pitch_minus45_roll_plus90", "position_fr", True)
     for name in ("pose_yaw_180", "pose_pitch_plus45", "pose_pitch_minus45"):
         compare(name, "pose_neutral", False)
     compare("pose_pitch_plus45", "pose_pitch_minus45", False)
-    # The pinned VBAP bed intentionally shares the front/rear lateral
-    # cues for these paired channels; verify that the rear positions remain
-    # coherent and stable rather than inventing a depth cue the bed omits.
-    compare("position_rl", "position_fl", True)
-    compare("position_rr", "position_fr", True)
+    # Rear channels must retain independent spatial responses. Requiring
+    # equality here would certify an upstream stereo downmix as correct.
+    compare("position_rl", "position_fl", False)
+    compare("position_rr", "position_fr", False)
     for left, right in (("position_fl", "position_fr"), ("position_rl", "position_rr"),
                         ("pose_yaw_minus90", "pose_yaw_plus90"),
                         ("pose_pitch_plus45_roll_plus90", "pose_pitch_minus45_roll_plus90")):
@@ -249,6 +254,7 @@ def analyze_windows(windows, sample_rate=48000):
     # Absolute ITD ordering between the yaw fixture and a diagonal bed
     # channel is renderer/HRTF dependent. The lateral() checks above already
     # require both directions to carry the expected sign and delay magnitude.
+    fail_if_needed()
     report["status"] = "passed"
     return report
 
