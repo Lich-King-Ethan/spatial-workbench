@@ -427,6 +427,8 @@ class LiveAudio:
             return result("idle", "Not enabled")
         if self.process.returncode is not None:
             return result("violation", "The live renderer stopped")
+        if self._state == "error":
+            return result("violation", self._error or self._reason)
         nodes = _nodes(objects)
         physical = {node for node, props in nodes.items()
                     if props.get("node.name") == self._sink.name
@@ -488,6 +490,10 @@ class LiveAudio:
             return result("violation", "The renderer capture ports have unknown or duplicate channel positions")
         incoming, outgoing, selected_targets = False, set(), set()
         linked_ports, linked_inputs = set(), set()
+        renderer_links = {node: set() for node in outputs}
+        renderer_targets = {node: set() for node in outputs}
+        renderer_inputs = set()
+        pending_output = False
         for obj in objects:
             if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
                 continue
@@ -519,14 +525,42 @@ class LiveAudio:
             if source in outputs:
                 if target not in allowed | pending:
                     return result("violation", "Renderer output is linked outside the selected headphones")
-                if established and target in allowed:
-                    outgoing.add(source)
-                    linked_ports.add(str(info.get("output-port-id")))
+                if target in pending and target not in allowed:
+                    # A smart filter may still be replacing direct links. Its
+                    # own bounded audit must finish before accepting this path.
+                    pending_output = True
+                    continue
+                if established:
+                    source_port = str(info.get("output-port-id"))
+                    target_port = str(info.get("input-port-id"))
+                    source_props, target_props = ports.get(source_port), ports.get(target_port)
+                    if source_props is None or target_props is None:
+                        continue  # Ports may follow links in a settling graph.
+                    if (str(source_props.get("node.id")) != source
+                            or str(target_props.get("node.id")) != target
+                            or source_props.get("port.direction") != "out"
+                            or target_props.get("port.direction") != "in"
+                            or source_props.get("audio.channel") not in ("FL", "FR")
+                            or source_props.get("audio.channel") != target_props.get("audio.channel")):
+                        return result("violation", "The renderer's stereo channels are not linked to matching input channels")
+                    if source_port in renderer_links[source] or target_port in renderer_inputs:
+                        return result("violation", "The renderer's stereo channels have duplicate links")
+                    renderer_links[source].add(source_port)
+                    renderer_inputs.add(target_port)
+                    renderer_targets[source].add(target)
+                    if len(renderer_targets[source]) > 1:
+                        return result("violation", "The renderer's stereo channels are split between inputs")
+                    if target in allowed:
+                        outgoing.add(source)
+                        linked_ports.add(source_port)
             if (self._state == "playing" and self._route and self._route.applied
                     and source == selected and target not in inputs):
                 return result("violation", "Application routing changed while spatial audio was active")
         complete = (bool(output_ports.get(selected)) and all(output_ports.get(node) for node in outputs)
                     and all(output_ports.get(node, set()) <= linked_ports for node in outputs | {selected}))
+        for node in outputs:
+            channels = [ports[port].get("audio.channel") for port in output_ports.get(node, ())]
+            complete = complete and len(channels) == 2 and set(channels) == {"FL", "FR"}
         source_positioned = False
         if incoming and selected_targets <= inputs:
             native = _raw_positions(objects, selected)
@@ -545,7 +579,7 @@ class LiveAudio:
                 return result("violation", "The application's native PCM channels were lost before the renderer")
         if (incoming and selected_targets <= inputs and outputs and complete
                 and capture_positioned and source_positioned
-                and outgoing == outputs and self.telemetry.ready):
+                and outgoing == outputs and not pending_output and self.telemetry.ready):
             return result("ready", "Selected application → binaural renderer → physical headphones")
         return result("waiting", "Waiting for the selected application's complete audio path")
 
@@ -605,6 +639,11 @@ class LiveAudio:
             await self.stop("headphones disconnected")
 
     async def _stop(self, reason):
+        def retain_capture(message):
+            self._state, self._reason = "error", "Capture retained for safe recovery"
+            self._error = message
+            self._audit = {"state": "violation", "reason": message}
+
         current = asyncio.current_task()
         monitor, self._monitor = self._monitor, None
         if monitor is not None and monitor is not current:
@@ -632,16 +671,20 @@ class LiveAudio:
                 # A destroyed source needs no restoration. A still-present
                 # source which cannot be muted must not be moved to speakers.
                 try:
-                    _stream(await pipewire.capture(), self._stream_serial)
-                except (AudioError, OSError):
-                    pass
-                else:
-                    self._state, self._reason = "error", "Capture retained for safe recovery"
-                    self._error = str(exc) + "; select the application's output or mute it in KDE Sound"
+                    recovery_graph = await pipewire.capture()
+                except Exception:
+                    # Losing graph access does not prove the stream ended.
+                    retain_capture("Could not verify application mute; capture was retained instead of restoring another output")
+                    return
+                # Absence is the only safe exception. An ambiguous snapshot
+                # with more than one match still contains a potentially live
+                # source and cannot justify restoring it without a mute.
+                if any(str(props.get("object.serial")) == self._stream_serial
+                       for props in _nodes(recovery_graph).values()):
+                    retain_capture(str(exc) + "; select the application's output or mute it in KDE Sound")
                     return
             except Exception:
-                self._state, self._reason = "error", "Capture retained for safe recovery"
-                self._error = "Could not verify application mute; capture was retained instead of restoring another output"
+                retain_capture("Could not verify application mute; capture was retained instead of restoring another output")
                 return
         if self._route is not None:
             try:
@@ -686,7 +729,8 @@ class LiveAudio:
     def status(self):
         running = self.process is not None and self.process.returncode is None
         return {"state": self._state, "running": running,
-                "renderer_ready": bool(running and self.telemetry.ready and self._audit.get("state") == "ready"),
+                "renderer_ready": bool(running and self._state == "playing"
+                                       and self.telemetry.ready and self._audit.get("state") == "ready"),
                 "source_mode": "pcm", "stream_serial": self._stream_serial,
                 "stream_name": self._stream_name, "input_node": self._input_node if running else "",
                 "process_id": self.process.pid if running else None,

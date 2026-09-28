@@ -61,8 +61,8 @@ def graph(channels=("FL", "FR")):
                           "target.object": SINK.name, "node.dont-fallback": True, "node.dont-move": True}),
         obj("Port", 101, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[0]}),
         obj("Port", 102, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[1]}),
-        obj("Port", 301, **{"node.id": 30, "port.direction": "out"}),
-        obj("Port", 302, **{"node.id": 30, "port.direction": "out"}),
+        obj("Port", 301, **{"node.id": 30, "port.direction": "out", "audio.channel": "FL"}),
+        obj("Port", 302, **{"node.id": 30, "port.direction": "out", "audio.channel": "FR"}),
         metadata(entry("target.object", "200", type="Spa:Id"), entry(GUARD_KEY, "100:200")),
     ]
     objects[2]["info"]["params"] = {"Format": [pcm_format(channels)]}
@@ -75,6 +75,9 @@ def graph(channels=("FL", "FR")):
                    for index, channel in enumerate(channels) if index > 1)
     objects.extend(link(401 + index, 10, 20, 101 + index)
                    for index in range(len(channels)))
+    objects.extend(obj("Port", 1301 + index, **{"node.id": 5, "port.direction": "in",
+                                                "audio.channel": channel})
+                   for index, channel in enumerate(("FL", "FR")))
     objects.extend([link(450, 30, 5, 301), link(451, 30, 5, 302)])
     return objects
 
@@ -191,6 +194,30 @@ class LivePureTests(unittest.TestCase):
         objects[3]["info"]["params"]["Format"] = []
         self.assertEqual(live.audit(objects)["state"], "waiting")
 
+    def test_renderer_stereo_channels_must_reach_matching_destination_ports(self):
+        for mutate in (
+            lambda g: next(o for o in g if o["id"] == 450)["info"].update({"input-port-id": 1302}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"audio.channel": "UNK"}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"node.id": 99}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"port.direction": "out"}),
+            lambda g: g.append(link(499, 30, 5, 301)),
+        ):
+            with self.subTest(mutate=mutate):
+                objects = graph()
+                mutate(objects)
+                self.assertEqual(running().audit(objects)["state"], "violation")
+
+    def test_renderer_missing_destination_ports_cannot_claim_ready(self):
+        objects = [o for o in graph() if o["id"] != 1302]
+        self.assertEqual(running().audit(objects)["state"], "waiting")
+
+    def test_renderer_stereo_cannot_split_between_physical_sink_and_equalizer(self):
+        objects = graph()
+        objects[-1]["info"]["input-node-id"] = 60
+        next(o for o in objects if o["id"] == 1302)["info"]["props"]["node.id"] = 60
+        live = running(authorized_filter_inputs=lambda _: {"60"})
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
     def test_unsafe_edges_sink_replacement_and_missing_guards_reject(self):
         for mutate in (
             lambda g: g.append(link(999, 30, 99, 301)),
@@ -217,11 +244,28 @@ class LivePureTests(unittest.TestCase):
         objects = graph()
         objects[-1]["info"]["input-node-id"] = 60
         objects[-2]["info"]["input-node-id"] = 60
+        for number in (1301, 1302):
+            next(o for o in objects if o["id"] == number)["info"]["props"]["node.id"] = 60
         live = running(pending_filter_inputs=lambda _: {"60"})
         self.assertEqual(live.audit(objects)["state"], "waiting")
         self.assertEqual(live.verified_input_ids(objects), set())
         live._authorized_filter_inputs = lambda _: {"60"}
         self.assertEqual(live.audit(objects)["state"], "ready")
+
+    def test_pending_eq_transition_does_not_claim_ready_from_old_direct_links(self):
+        objects = graph()
+        for index, channel in enumerate(("FL", "FR")):
+            objects.append(obj("Port", 601 + index, **{"node.id": 60, "port.direction": "in",
+                                                       "audio.channel": channel}))
+            edge = link(460 + index, 30, 60, 301 + index)
+            edge["info"]["input-port-id"] = 601 + index
+            objects.append(edge)
+        live = running(pending_filter_inputs=lambda _: {"60"})
+        self.assertEqual(live.audit(objects)["state"], "waiting")
+        # Once the EQ is verified, the source must have exactly one destination;
+        # retaining both routes then is a real duplicate, not a settling graph.
+        live._authorized_filter_inputs = lambda _: {"60"}
+        self.assertEqual(live.audit(objects)["state"], "violation")
 
     def test_external_diagnostics_reuse_graph_audit_and_reject_stale_session(self):
         live, objects = running(), graph()
@@ -315,8 +359,46 @@ class LiveAsyncTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_failed_mute_verification_retains_capture_and_route(self):
         live = running()
+        self.assertEqual(live.audit(graph())["state"], "ready")
+        self.assertTrue(live.status()["renderer_ready"])
         with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
                 patch("spatial.live_audio._command", AsyncMock(return_value="Volume: 1.00\n")), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
+                patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
+            await live.stop("headphones disconnected")
+            self.assertEqual(live.status()["state"], "error")
+            self.assertFalse(live.status()["renderer_ready"])
+            self.assertEqual(live.status()["routing"]["state"], "violation")
+            self.assertTrue(live._route.applied)
+            kill.assert_not_awaited()
+            restore.assert_not_awaited()
+            # A diagnostics refresh can see the retained graph again. It must
+            # not reactivate a session whose stop failed and needs user recovery.
+            self.assertEqual(live.audit(graph())["state"], "violation")
+            self.assertFalse(live.status()["renderer_ready"])
+
+    async def test_lost_graph_after_failed_mute_is_not_treated_as_destroyed_source(self):
+        live = running()
+        live.audit(graph())
+        # The stream remains alive, but the second observation fails. A later
+        # successful snapshot must not let cleanup restore an unmuted stream.
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(side_effect=[graph(), OSError("session busy"), graph()])), \
+                patch("spatial.live_audio._command", AsyncMock(side_effect=AudioError("mute failed"))), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
+                patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
+            await live.stop("headphones disconnected")
+            self.assertEqual(live.status()["state"], "error")
+            self.assertFalse(live.status()["renderer_ready"])
+            self.assertTrue(live._route.applied)
+            kill.assert_not_awaited()
+            restore.assert_not_awaited()
+
+    async def test_ambiguous_source_after_failed_mute_is_not_treated_as_destroyed(self):
+        live = running()
+        ambiguous = graph()
+        ambiguous.append(obj("Node", 11, **{"media.class": "Stream/Output/Audio", "object.serial": "100"}))
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(side_effect=[graph(), ambiguous, graph()])), \
+                patch("spatial.live_audio._command", AsyncMock(side_effect=AudioError("mute failed"))), \
                 patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
                 patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
             await live.stop("headphones disconnected")

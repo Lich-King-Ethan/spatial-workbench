@@ -10,16 +10,16 @@ connection recovery, routing ownership, tracker selection, or credential handlin
 
 Use Python 3.11 or later in a virtual environment. The complete suite needs a
 private session D-Bus, Node.js, a Lua shared library, a C compiler, and the SWH
-LADSPA limiter. On Arch, install the test dependencies with:
+LADSPA limiter. On Arch, install the dependencies and run the checks below.
+These commands work in fish and Bash without activating a shell-specific script:
 
 ```sh
 sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins
 python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[tidal]' build numpy
-SPATIAL_TEST_DBUS=1 dbus-run-session -- python -m unittest discover -s tests -v
+.venv/bin/python -m pip install -e '.[tidal]' build numpy
+env SPATIAL_TEST_DBUS=1 dbus-run-session -- .venv/bin/python -m unittest discover -s tests -v
 luac -p wireplumber/scripts/spatial-live-guard.lua
-python -m build
+.venv/bin/python -m build
 ```
 
 The D-Bus tests must use a private bus, not the active desktop session. The Lua,
@@ -27,7 +27,7 @@ JavaScript, native-library, and private-bus tests exercise real local runtimes.
 They do not validate a Bluetooth connection, a Plasma popup, or acoustic output.
 Read `STATUS.md` and the module documentation for outstanding hardware checks.
 
-Generate package sources with `python tools/make-release.py`. On Arch, build
+Generate package sources with `.venv/bin/python tools/make-release.py`. On Arch, build
 inside each generated `dist/arch/core` and `dist/arch/companion` directory using
 `makepkg --syncdeps --cleanbuild`. Run makepkg as an ordinary user. The separate
 `dist/arch/orender` recipe compiles the pinned renderer and runs its Rust tests

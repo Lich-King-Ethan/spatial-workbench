@@ -13,9 +13,9 @@ concurrency:
 
 jobs:
   installer:
-    name: Real install.sh, systemd, udev and PipeWire
+    name: CachyOS Plasma desktop, fish, native installer and audio
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       # Official baseline image, resolved 2026-09-18. Package updates retain
       # CachyOS/Arch signature verification and are recorded in the artifacts.
@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Provision and boot minimal CachyOS VM; run unchanged installer
+      - name: Boot CachyOS Plasma with fish and test the native installer and audio
         run: bash tools/ci/full-installer-host.sh
       - name: Retain installer and boot evidence, including failures
         if: always()

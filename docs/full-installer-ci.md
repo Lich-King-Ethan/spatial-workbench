@@ -1,20 +1,48 @@
 # Full installer integration test
 
 The manually dispatched **Full installer in a CachyOS VM** GitHub Actions workflow
-runs the unchanged `bash install.sh` as an ordinary user in a newly booted VM.
+runs `bash install.sh` from a login fish shell as an ordinary user in a newly
+booted VM. The application's Bash scripts keep their declared interpreter;
+fish is the desktop account's actual default shell.
 The guest has its own CachyOS kernel, systemd, udev, user manager, D-Bus and
 PipeWire/WirePlumber services. All local packages and the actual maintained AUR
 recipes are built and installed through the normal installer. The terminal
 driver answers only the expected package-manager and AUR review prompts and
 records the displayed recipes and actual upstream commit identities.
 
-The guest is a minimal system assembled from the pinned official
+The guest is assembled from the pinned official
 [`cachyos/cachyos` userspace image](https://github.com/CachyOS/docker) and current
-signed CachyOS/Arch packages. It is not the CachyOS desktop ISO or a graphical KDE
-session. Installation of the native Companion package is exercised; interactive
-widget behavior, Bluetooth, HID permissions on a physical receiver and headphone
-playback still require the desktop and actual devices. The acceptance artifact
-requires those absent hardware/playback checks to remain `WAIT`.
+signed CachyOS/Arch packages, including the complete `plasma-meta` desktop,
+SDDM, Konsole, Dolphin, Spectacle, Mesa, fish and nano. It boots to a real SDDM-autologin
+**Plasma Wayland session** on a virtual DRM display. Mesa software rendering is
+used because this runner has no passed-through GPU. This is a booted desktop
+system assembled from official packages, not a CachyOS ISO/Calamares installation
+or a physical GPU/driver test.
+
+Desktop acceptance requires an active local Wayland session on `seat0`, the
+desktop user's real KWin and plasmashell D-Bus owners, an existing Wayland
+socket, and a connected kernel DRM output. It does not substitute an offscreen
+Qt process, nested compositor or private D-Bus session. Before and after the
+installer, the guest opens actual Konsole windows, edits and saves a file with
+nano launched from login fish, and records Spectacle screenshots. After the
+package installation it also opens the installed Companion with
+`plasmawindowed`; premature exit or QML load/runtime errors fail the gate.
+Screenshots and per-window logs are retained under `desktop/`, alongside
+session details and KWin support information. Rendering a widget does not
+establish that every control works; control behavior has separate tests.
+
+`EDITOR` and `VISUAL` are set to nano in the disposable VM only. The product
+installer does not change the user's existing shell or preferred editor.
+Screen locking and idle display power-off are disabled in this unattended
+guest. No passwords, host credentials or physical devices are introduced.
+Bluetooth, HID permissions on a physical receiver and headphone playback still
+require actual devices. The acceptance artifact requires those absent hardware
+checks to remain `WAIT`.
+
+The full installation is followed by a real core-only reinstall, verifying
+package ownership, original user configuration content and permissions, the
+single Companion backup, and running services. Desktop verification runs again
+after both installations.
 
 After installation, the job also decodes a checksummed upstream E-AC-3 JOC
 fixture through the installed genuine decoder bridge and renderer, requiring
@@ -25,9 +53,10 @@ Its captured audio and metrics are software integration evidence, not proof of
 physical earbud playback.
 
 The job uses a standard public `ubuntu-24.04` runner and requires usable KVM,
-16GB host RAM and at least 22GiB free disk before provisioning. It gives the guest
-4 virtual CPUs, 10GiB RAM and an 18GiB disk, with a 90-minute workflow limit.
-The preflight can remove only the unused preinstalled Android SDK and GHC from
+16GB host RAM and at least 30GiB free disk before provisioning. It gives the guest
+4 virtual CPUs, 10GiB RAM and a 24GiB disk, with a 120-minute workflow limit
+(95 minutes for the VM, 90 minutes for its test service).
+The preflight can remove only the unused preinstalled Android SDK, GHC, .NET and PowerShell from
 the disposable runner to recover disk space. When the runner cannot meet the
 requirements the job fails explicitly as an unavailable test environment; it
 does not claim installation passed. Hardware acceleration is checked at runtime
@@ -36,8 +65,10 @@ because GitHub does not guarantee arbitrary nested-VM configurations.
 Only the checked-out Git commit enters the guest; repository credentials,
 secrets, host files and physical devices are not shared. QEMU uses outbound NAT
 with no forwarded ports. Serial boot output, exact package versions, package
-configuration, journals, installer logs and acceptance JSON are retained as a
-workflow artifact on success or failure. The VM disk is temporary.
+configuration, journals, installer logs, desktop screenshots and acceptance
+JSON are retained as a workflow artifact on success or failure. The VM disk is
+temporary. Network setup uses systemd-networkd and systemd-resolved; desktop
+installation does not replace these with competing network managers.
 
 The temporary image-assembly container receives `CAP_SYS_ADMIN` so pacman can
 create the network namespaces that isolate its installation hooks. Docker's
@@ -51,5 +82,6 @@ systemd operation and runs the actual installer without that environment.
 
 This complements the faster Arch packaging and CachyOS userspace checks. A
 successful VM job proves the real installer reaches service activation and
-passes its available software checks. It does not establish real headphone
-audio or Atmos rendering.
+passes its available software checks in the actual Plasma session. Encoded
+fixture and generated-pose tests establish only the tested software routes;
+they do not establish physical headphone playback or perceptual Atmos accuracy.

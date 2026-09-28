@@ -26,12 +26,12 @@ developer runs may also save `test-results.txt`; that generated log is not track
 
 ## Completed hosted CI checks
 
-[CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113)
-passed for commit 9d573ea. Python 3.11, 3.12 and 3.13 plus the Arch package lane
-each ran 256 tests with zero skips. The native Qt/Plasma smoke test reported five
-passes including setup and cleanup. The hosted jobs use a private D-Bus session and
-the native Lua, compiler, JavaScript and limiter dependencies that the development
-sandbox cannot provide.
+[CI run 35410414111](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414111)
+passed for commit `2f20be1`. Python 3.11, 3.12 and 3.13 plus the Arch package lane
+each ran 296 tests. The Python matrix requires zero skips; the native Qt/Plasma
+smoke reported five passes and zero skips. Hosted jobs supply the private D-Bus
+session, Lua, compiler, JavaScript and limiter dependencies unavailable together
+in the development sandbox.
 
 The suite covers Sony protocol/axis and recenter fixtures, TIDAL credential
 races, source validation, graph audits, reconnection races, playback ownership,
@@ -64,19 +64,47 @@ are recorded from the renderer input monitor and checked for missing, swapped,
 duplicated or mixed lanes. Post-EQ broadband recordings separately test actual
 spatial DSP with restored position, yaw, pitch, roll and recenter assertions.
 
-Fresh native validation of these changes is pending. The [prior booted VM run](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340)
-did establish installation and real service startup, plus a separate genuine
-encoded Atmos route through mpv, the bridge, renderer and EQ into a synthetic
-headphone monitor. It did not establish correct live 7.1 rendering. It queried
-package presence rather than ownership; the next VM run checks actual installed
-file ownership, retained user configuration/preferences and Companion backup,
-and repeats the core installer over the full installation.
+## Confirmed repaired software path
 
-Media evidence now records verified routing/tracking snapshots and actual pose
-acknowledgements instead of retaining only initial player state, and cleanup must
-succeed before that report can pass. Renderer shutdown, bridge failure and IPC
-loss cannot retain stale readiness. None of these software checks establishes
-physical sensor orientation, listening quality or TIDAL entitlement.
+The fresh native checks completed successfully after the September 19 handoff:
+
+- [Renderer build 35410414135](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414135), `2f20be1`, compiled the CLI and FFI library and passed two OSC bind-policy plus two native channel-format/PCM-lane tests.
+- [CachyOS integration 35410253252](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410253252), implementation `50d542b`, passed the installed suite, native Qt cards, real routing, EQ/limiter, independent lanes and spatial captures.
+- [Booted CachyOS installer 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), the same implementation, passed full installation, real file ownership, retained user settings/permissions/Companion backup and a repeat core install, followed by PCM and encoded Atmos routes.
+
+On September 28, both artifact archives were downloaded and their SHA256 digests
+checked against GitHub. Independent inspection found eight active matching
+FL/FR/FC/LFE/SL/SR/RL/RR input links. Direct sinusoid projection of actual PCM
+confirmed the input tones with maximum unwanted/wanted amplitude ratio
+2.70e-9. All eight source tones also survived the post-EQ stereo output; the
+smallest observed per-ear tone RMS was 0.003012. These are fixture measurements,
+not advertised hardware audio specifications.
+
+Raw-capture hashes were checked and all 18 windows/74 acoustic assertions rerun
+for each artifact. Rear/front spectral differences were 3.479 dB (left) and
+5.618 dB (right). Deliberately replacing rear captures with front captures,
+freezing head-pose captures, or reversing yaw caused the repaired analyzer to
+reject the recordings. The old incorrectly approved artifact still failed seven
+geometry checks.
+
+The booted VM's separate encoded Atmos route produced four real captures with
+15 decoded objects, tracking active and routing verified. Independent left/right
+energy measurements reproduced the reported opposite-yaw difference of 8.585 dB.
+The final cleanup graph contained no nodes belonging to the stopped media player.
+Media reports record actual pose acknowledgements and require cleanup before pass.
+
+These tests used a synthetic headphone endpoint and helper UDP telemetry. They do
+not establish physical Bluetooth/HID behavior, Slime receiver operation, listener
+translation, subjective localization or TIDAL account entitlement. The September
+19 VM was a minimal booted system, not a full graphical desktop.
+
+## September 28 continuation
+
+No changes from the user's local session had been pushed when the repository was
+inspected; the audit branch still pointed to `2f20be1` and main to `f490ac3`.
+The continuation preserves the verified fixes, tightens incomplete live/EQ output
+readiness and adds a real Plasma Wayland session with fish and nano to the VM.
+Fresh validation of these changes is pending. See [the VM procedure](full-installer-ci.md).
 
 ## Completed local checks
 

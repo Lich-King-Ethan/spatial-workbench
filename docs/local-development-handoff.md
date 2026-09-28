@@ -1,5 +1,9 @@
 # Local development handoff — September 19, 2026
 
+Historical handoff snapshot. The cloud audit resumed September 28; consult
+[STATUS.md](../STATUS.md) for current validation and work. The runs below that
+were running at handoff have since completed; this section records their original state.
+
 Continue the existing project on the user's CachyOS/KDE computer. Read STATUS.md,
 CONTRIBUTING.md and the relevant module docs before changing behavior. This is a
 working implementation being validated, not an invitation to replace it with a demo.

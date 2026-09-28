@@ -38,14 +38,18 @@ channels in production, and measures complete stimulus periods. The integration
 gate now requires eight matching channel links and records eight independently
 frequency-tagged input lanes before running the spatial position/rotation checks.
 Regression tests deliberately reject downmix, tracking/roll/recenter no-ops,
-wrong rotation signs, and swapped ears. Fresh native validation of these changes
-is pending; historical green runs do not certify this corrected path.
+wrong rotation signs, and swapped ears. The repaired native software path passed
+fresh hosted validation; its retained graphs and raw PCM were independently
+rechecked on September 28.
 
-Historical evidence remains useful within its actual scope:
+- [CI run 35410414111](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414111) passed at `2f20be1`: 296 tests without skips on each Python 3.11–3.13 lane, Arch core/Companion packages, and five native Qt test passes.
+- [Renderer run 35410414135](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414135) built the actual patched CLI and FFI library at `2f20be1`. Both bind-policy tests and both positioned-format/PCM-lane tests passed.
+- [CachyOS integration run 35410253252](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410253252), implementation `50d542b`, retained eight correctly named active source-to-renderer links and independent input tones. All 18 post-EQ capture windows passed 74 acoustic checks. Independent raw-audio reanalysis confirmed these results and rejected deliberately collapsed rear channels, frozen tracking and reversed yaw.
+- [Booted installer VM run 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), also `50d542b`, passed the full installer, actual file-ownership checks, and a repeat core install preserving settings and the Companion backup. Its separate genuine E-AC-3 JOC/mpv/renderer/EQ route retained 15 decoded objects, verified routing/tracking across four captures and successful player cleanup.
 
-- [CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113) ran 256 tests without skips on Python 3.11–3.13 and the Arch lane; native Qt cards loaded.
-- [CachyOS integration run 35382912735](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35382912735) retained real PipeWire graphs and PCM which exposed the channel-loss defect. Its green spatial verdict is invalid.
-- [Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340) ran the installer and real systemd/udev/PipeWire services in a booted CachyOS guest. Its separate encoded Atmos path decoded genuine E-AC-3 JOC through mpv/orender/Harletty and captured post-EQ audio. It checked package presence, not file ownership or repeat-install preservation; those stronger checks are now included for the next run. Its live PCM spatial verdict has the same invalid downmix assumptions.
+The September 28 continuation adds stricter live/EQ stereo-output audits and a
+full Plasma Wayland VM with fish and nano. Validation of those new changes is
+pending. Earlier minimal-VM evidence must not be described as a full desktop test.
 
 No physical headphones, XM5 HID, Slime receiver or TIDAL account were available.
 The synthetic endpoint establishes only the software behavior actually tested.

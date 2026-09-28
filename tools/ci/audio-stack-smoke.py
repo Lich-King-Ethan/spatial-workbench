@@ -31,6 +31,10 @@ SURROUND_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
 # Integral cycles in the same 100 ms period as the broadband fixture. A low
 # frequency tag exercises the LFE lane without requiring full-band LFE output.
 LANE_FREQUENCIES = (410, 610, 810, 90, 1010, 1210, 1410, 1610)
+# A digital presence floor, not an expected HRTF/EQ gain: each source tag must
+# exceed -100 dBFS RMS in at least one ear. Direction and relative ear response
+# are checked separately by the broadband geometry gate.
+MINIMUM_OUTPUT_TONE_RMS = 1e-5
 
 
 class Failure(RuntimeError):
@@ -158,6 +162,56 @@ def analyze_input_lanes(path, sample_rate=48000):
         exc = Failure("Actual renderer input loses, swaps, or mixes independent 7.1 source lanes")
         exc.report = evidence
         raise exc
+    evidence["status"] = "passed"
+    return evidence
+
+
+def analyze_output_lanes(path, sample_rate=48000):
+    """Prove every source tag survives the renderer and EQ into either ear."""
+    import numpy as np
+    raw = Path(path).read_bytes()
+    evidence = {"status": "failed", "channels": list(SURROUND_CHANNELS),
+                "output_channels": ["FL", "FR"],
+                "tone_frequencies_hz": list(LANE_FREQUENCIES),
+                "format": "stereo float32 little-endian",
+                "sample_rate": sample_rate, "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "minimum_tone_rms": MINIMUM_OUTPUT_TONE_RMS,
+                "minimum_tone_rms_dbfs": 20 * math.log10(MINIMUM_OUTPUT_TONE_RMS),
+                "criterion": "Each source tone exceeds the RMS floor in at least one output ear"}
+
+    def check(condition, message):
+        if not condition:
+            evidence["error"] = message
+            exc = Failure(message)
+            exc.report = evidence
+            raise exc
+
+    check(sample_rate == 48000, "Post-EQ lane capture must use 48 kHz")
+    check(len(raw) % 8 == 0, "Post-EQ lane capture contains incomplete stereo float32 frames")
+    samples = np.frombuffer(raw, dtype="<f4").reshape(-1, 2)
+    evidence["frames"] = len(samples)
+    size = sample_rate // 10
+    check(len(samples) >= 8 * size, "Post-EQ lane capture is too short")
+    check(np.isfinite(samples).all(), "Post-EQ lane capture contains non-finite PCM")
+    evidence["peak"] = float(np.max(np.abs(samples)))
+    check(evidence["peak"] < 0.999, "Post-EQ lane capture is clipped")
+    # The eight distinct tags each complete an integral number of cycles in
+    # 100 ms. Untapered complete periods prevent a loud surviving tag leaking
+    # into a missing tag's bin merely because the recorder started mid-cycle.
+    start = (len(samples) - 8 * size) // 2
+    blocks = samples[start:start + 8 * size].reshape(8, size, 2)
+    power = np.mean(np.abs(np.fft.rfft(blocks.astype(np.float64), axis=1)) ** 2, axis=0)
+    rms = np.sqrt(2 * power[np.asarray(LANE_FREQUENCIES) // 10]) / size
+    strongest = np.max(rms, axis=1)
+    missing = [channel for channel, value in zip(SURROUND_CHANNELS, strongest)
+               if value <= MINIMUM_OUTPUT_TONE_RMS]
+    evidence.update({"analyzed_frames": 8 * size, "period_frames": size,
+                     "spectral_window": "rectangular complete stimulus periods",
+                     "tone_rms_by_source_lane": rms.tolist(),
+                     "strongest_ear_rms_by_source_lane": strongest.tolist(),
+                     "missing_source_lanes": missing})
+    check(not missing, "Post-EQ audio loses source tones: " + ", ".join(missing))
     evidence["status"] = "passed"
     return evidence
 
@@ -628,9 +682,19 @@ class Gate:
             "fixture_sha256": hashlib.sha256(tags).hexdigest(),
             "fixture": "source-lane-fixture.f32le", "fixture_period_frames": 4800,
             "format": "8-channel interleaved float32 little-endian, 48 kHz"})
-        (self.report_dir / "source-lane-evidence.json").write_text(
-            json.dumps(lane_evidence, indent=2) + "\n")
+        try:
+            lane_evidence["post_eq"] = analyze_output_lanes(output_path)
+        except Failure as exc:
+            lane_evidence["status"] = "failed"
+            lane_evidence["error"] = str(exc)
+            lane_evidence["post_eq"] = exc.report
+            raise
+        finally:
+            (self.report_dir / "source-lane-evidence.json").write_text(
+                json.dumps(lane_evidence, indent=2) + "\n")
         self.passed("actual-eight-channel-input-has-independent-source-lanes",
+                    evidence="source-lane-evidence.json")
+        self.passed("all-eight-source-tones-survive-renderer-and-eq",
                     evidence="source-lane-evidence.json")
         input_recorder.process.terminate()
         await input_recorder.process.wait()

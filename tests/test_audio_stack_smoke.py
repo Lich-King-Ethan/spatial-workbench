@@ -189,5 +189,87 @@ class InputLaneEvidenceTests(unittest.TestCase):
             self.analyze(self.samples)
 
 
+class OutputLaneEvidenceTests(unittest.TestCase):
+    # Independent analytic mixer, not a renderer/HRTF model. A missing side
+    # or LFE channel leaves the other seven tones and both ears plainly loud.
+    tags = {"FL": 410, "FR": 610, "FC": 810, "LFE": 90,
+            "SL": 1010, "SR": 1210, "RL": 1410, "RR": 1610}
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.capture = Path(self.directory.name) / "post-eq.f32le"
+
+    def mixed(self, *, missing=(), phase=0, quiet=None):
+        time = (np.arange(48000) + phase) / 48000
+        samples = np.zeros((len(time), 2))
+        for index, (channel, frequency) in enumerate(self.tags.items()):
+            if channel in missing:
+                continue
+            # Different arbitrary gain per source; deliberately only one ear
+            # per tone so the gate cannot require identical ear amplitudes.
+            amplitude = (index + 1) * 0.002
+            if channel == quiet:
+                amplitude = smoke.MINIMUM_OUTPUT_TONE_RMS * 0.5 * np.sqrt(2)
+            samples[:, index % 2] += amplitude * np.sin(2 * np.pi * frequency * time)
+        return samples.astype("<f4")
+
+    def analyze(self, samples):
+        self.capture.write_bytes(samples.astype("<f4").tobytes())
+        return smoke.analyze_output_lanes(self.capture)
+
+    def test_all_tags_survive_with_arbitrary_gains_phase_and_single_ear_per_tag(self):
+        reference = self.analyze(self.mixed())
+        self.assertEqual(reference["status"], "passed")
+        self.assertEqual(reference["missing_source_lanes"], [])
+        self.assertEqual(reference["minimum_tone_rms_dbfs"], -100)
+        for phase in (177, 2399, 4799):
+            with self.subTest(phase=phase):
+                result = self.analyze(self.mixed(phase=phase))
+                np.testing.assert_allclose(result["tone_rms_by_source_lane"],
+                                           reference["tone_rms_by_source_lane"], atol=1e-10)
+
+    def test_missing_side_or_lfe_tag_fails_while_stereo_output_remains_loud(self):
+        for channel in ("SL", "SR", "LFE"):
+            with self.subTest(channel=channel):
+                samples = self.mixed(missing=(channel,), phase=791)
+                self.assertTrue(np.all(np.sqrt(np.mean(samples.astype(float) ** 2, axis=0)) > 0.008))
+                with self.assertRaisesRegex(smoke.Failure, "loses source tones") as caught:
+                    self.analyze(samples)
+                report = caught.exception.report
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["missing_source_lanes"], [channel])
+                self.assertEqual(len(report["tone_rms_by_source_lane"]), 8)
+                self.assertEqual(report["analyzed_frames"], 38400)
+                self.assertEqual(len(report["sha256"]), 64)
+
+    def test_nonzero_tag_below_presence_floor_does_not_pass(self):
+        with self.assertRaises(smoke.Failure) as caught:
+            self.analyze(self.mixed(quiet="LFE", phase=37))
+        report = caught.exception.report
+        self.assertEqual(report["missing_source_lanes"], ["LFE"])
+        self.assertGreater(report["strongest_ear_rms_by_source_lane"][3], 0)
+
+    def test_invalid_captures_fail_with_partial_evidence(self):
+        for kind in ("non-finite", "clipped", "short", "incomplete"):
+            with self.subTest(kind=kind):
+                samples = self.mixed()
+                if kind == "non-finite":
+                    samples[24000, 1] = np.nan
+                elif kind == "clipped":
+                    samples[24000, 1] = 1
+                elif kind == "short":
+                    samples = samples[:100]
+                raw = samples.tobytes()
+                if kind == "incomplete":
+                    raw = raw[:-1]
+                self.capture.write_bytes(raw)
+                with self.assertRaises(smoke.Failure) as caught:
+                    smoke.analyze_output_lanes(self.capture)
+                self.assertEqual(caught.exception.report["status"], "failed")
+                self.assertIn("error", caught.exception.report)
+                self.assertEqual(caught.exception.report["bytes"], len(raw))
+
+
 if __name__ == "__main__":
     unittest.main()

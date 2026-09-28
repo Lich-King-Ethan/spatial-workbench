@@ -54,13 +54,13 @@ PY
     printf 'ENVIRONMENT UNAVAILABLE: this job requires the public 16GB runner.\n' >&2
     exit 1
 }
-required_kib=$((22 * 1024 * 1024))
+required_kib=$((30 * 1024 * 1024))
 available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n1 | tr -d ' ')
 if (( available_kib < required_kib )); then
     # These unrelated SDKs are preinstalled on this disposable runner and are
     # never used by this job. Do not prune Docker globally or touch the checkout.
-    printf 'Reclaiming unused runner Android SDK and GHC installations.\n'
-    sudo rm -rf -- /usr/local/lib/android /opt/ghc
+    printf 'Reclaiming unused runner Android, GHC, .NET and PowerShell installations.\n'
+    sudo rm -rf -- /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/powershell
     available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n1 | tr -d ' ')
 fi
 printf 'VM disk preflight: available=%s KiB; required=%s KiB\n' "$available_kib" "$required_kib"
@@ -83,7 +83,7 @@ docker exec "$container_name" bash /prepare.sh
 docker stop "$container_name"
 
 # Export directly into the guest disk, avoiding a second unpacked rootfs.
-truncate -s 18G "$vm_dir/root.raw"
+truncate -s 24G "$vm_dir/root.raw"
 mkfs.ext4 -F -L spatial-ci "$vm_dir/root.raw"
 mkdir "$vm_root"
 sudo mount -o loop "$vm_dir/root.raw" "$vm_root"
@@ -100,16 +100,17 @@ sudo umount "$vm_root"
 mounted=0
 docker rm "$container_name"
 
-printf 'Booting 4 vCPU / 10GiB minimal CachyOS guest with its own kernel and udev.\n'
+printf 'Booting 4 vCPU / 10GiB CachyOS Plasma Wayland desktop with its own kernel and udev.\n'
 : > "$evidence_dir/serial.log"
 # NAT supplies outbound package/source downloads. There are no forwarded ports,
 # host filesystem shares, SSH credentials, Bluetooth devices or audio hardware.
-sudo timeout --signal=TERM --kill-after=20s 75m qemu-system-x86_64 \
+sudo timeout --signal=TERM --kill-after=20s 95m qemu-system-x86_64 \
     -machine q35,accel=kvm -cpu host -smp 4 -m 10G \
     -kernel "$vm_dir/vmlinuz" -initrd "$vm_dir/initramfs.img" \
-    -append 'root=/dev/vda rw console=ttyS0 systemd.unit=multi-user.target' \
+    -append 'root=/dev/vda rw console=ttyS0 systemd.unit=graphical.target' \
     -drive "file=$vm_dir/root.raw,format=raw,if=virtio,cache=writeback" \
     -netdev user,id=network -device virtio-net-pci,netdev=network \
+    -vga none -device virtio-vga,xres=1280,yres=800 -device qemu-xhci -device usb-tablet \
     -display none -monitor none -serial stdio -no-reboot \
     > "$evidence_dir/serial.log" 2>&1 &
 qemu_pid=$!
@@ -146,5 +147,5 @@ fi
     printf 'The actual installer or its acceptance checks failed.\n' >&2
     exit 1
 }
-printf 'PASS: full installer completed in the booted VM; physical headphone checks remain WAIT.\n'
+printf 'PASS: full installer completed from fish in the booted Plasma VM; physical headphone checks remain WAIT.\n'
 cat "$evidence_dir/acceptance.json"

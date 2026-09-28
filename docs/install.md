@@ -6,6 +6,16 @@ From the extracted project directory in your normal KDE terminal:
 bash install.sh
 ```
 
+This command also works from fish: Bash interprets the installer while fish stays
+your interactive shell. Do not `source install.sh` or run it with `fish install.sh`.
+The installer includes nano and uses it for package-review editing when `EDITOR`
+and `VISUAL` are unset. It preserves existing editor choices and does not change
+your login shell or shell configuration. To select nano explicitly for this run:
+
+```sh
+env EDITOR=nano VISUAL=nano bash install.sh
+```
+
 Run this as your desktop user in a running KDE session. Your user needs normal
 sudo access. The installer obtains missing official build tools, Python and Git
 with `pacman -S --needed`, then lets makepkg resolve official package dependencies.
@@ -73,8 +83,10 @@ package-manager prompts and AUR review remain visible. An existing AUR helper
 retains its own interactive output. Full build output is retained in a file under
 `~/.local/state/spatiald/install/` (or your `XDG_STATE_HOME`). On failure the
 installer reports the failed stage and attempts to save a redacted diagnostic
-report alongside the log. Existing packages and configuration are retained;
-correct the reported problem and rerun the same command.
+report alongside the log. Existing user configuration is preserved. Completed
+package transactions are not rolled back; for example, an accepted mpv replacement
+can remain installed if a later stage fails. Correct the reported problem and
+rerun the same command.
 
 After activation, `spatial-verify` records the actual module and PipeWire checks.
 Missing hardware or an idle player produces `WAIT`, without failing an otherwise

@@ -136,15 +136,20 @@ class RealGraphAuditIntegrationTests(unittest.TestCase):
             obj("Node", 30, **{"media.class": "Stream/Output/Audio", "node.name": "omniphony", "object.serial": "300",
                                "application.process.id": 999, "target.object": name,
                                "node.dont-fallback": True, "node.dont-move": True}),
-            obj("Port", 301, **{"node.id": 30, "port.direction": "out"}),
-            obj("Port", 302, **{"node.id": 30, "port.direction": "out"}),
+            obj("Port", 301, **{"node.id": 30, "port.direction": "out", "audio.channel": "FL"}),
+            obj("Port", 302, **{"node.id": 30, "port.direction": "out", "audio.channel": "FR"}),
             obj("Node", 40, **{"media.class": "Audio/Sink", "node.name": group + ".input", "application.process.id": 444,
                                "node.link-group": group, "filter.smart": True,
                                "filter.smart.target": {"node.name": name, "object.serial": "75"}}),
             obj("Node", 50, **{"media.class": "Stream/Output/Audio", "node.name": group + ".output",
                                "application.process.id": 444, "node.link-group": group, "target.object": "75",
                                "node.dont-fallback": True, "node.dont-reconnect": True}),
-            link(403, 30, 40, 301), link(404, 30, 40, 302), link(405, 50, 5, 501),
+            obj("Port", 1401, **{"node.id": 40, "port.direction": "in", "audio.channel": "FL"}),
+            obj("Port", 1402, **{"node.id": 40, "port.direction": "in", "audio.channel": "FR"}),
+            obj("Port", 1501, **{"node.id": 50, "port.direction": "out", "audio.channel": "FL"}),
+            obj("Port", 1502, **{"node.id": 50, "port.direction": "out", "audio.channel": "FR"}),
+            link(403, 30, 40, 301, 1401), link(404, 30, 40, 302, 1402),
+            link(405, 50, 5, 1501, 51), link(406, 50, 5, 1502, 52),
         ])
         metadata = obj("Metadata", 2, **{"metadata.name": "default"})
         metadata["metadata"] = [
@@ -164,7 +169,11 @@ class RealGraphAuditIntegrationTests(unittest.TestCase):
         state["runtime"]["equalizer"] = {"enabled": True, "process_id": 444, "link_group": group}
         result = verify.audit_playback_graph(state, graph)
         self.assertEqual(result[0], "pass", result[1])
-        graph.append(link(406, 30, 987, 301))
+        renderer_link = next(item for item in graph if item["id"] == 403)
+        renderer_link["info"]["input-port-id"] = 1402
+        self.assertEqual(verify.audit_playback_graph(state, graph)[0], "fail")
+        renderer_link["info"]["input-port-id"] = 1401
+        graph.append(link(407, 30, 987, 301))
         self.assertEqual(verify.audit_playback_graph(state, graph)[0], "fail")
 
 

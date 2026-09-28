@@ -21,9 +21,11 @@ def main():
     if os.geteuid() == 0 or os.environ.get('XDG_RUNTIME_DIR') != '/run/user/1000':
         raise SystemExit('Run as the integration VM desktop user with its real user manager')
     project = Path(__file__).resolve().parents[2]
-    command = ['build.sh', '--install', '--core-only'] if args.core_only else ['install.sh']
+    command = 'exec bash build.sh --install --core-only' if args.core_only else 'exec bash install.sh'
     budget_minutes = 5 if args.core_only else 65
-    child = pexpect.spawn('/usr/bin/bash', command, cwd=str(project),
+    # Match the user's Konsole/fish entry point while respecting the scripts'
+    # Bash implementation. Never ask fish to parse a Bash source file.
+    child = pexpect.spawn('/usr/bin/fish', ['--login', '--command', command], cwd=str(project),
                           encoding='utf-8', codec_errors='replace', timeout=60,
                           dimensions=(40, 160))
     child.logfile_read = sys.stdout

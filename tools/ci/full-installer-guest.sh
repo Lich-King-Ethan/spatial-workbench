@@ -15,6 +15,10 @@ finish() {
     set +e
     journalctl --no-pager -b > /ci-output/system-journal.log
     desktop_user journalctl --user --no-pager -b > /ci-output/user-journal.log
+    loginctl list-sessions --no-pager > /ci-output/login-sessions.txt
+    if [[ -f /home/builder/.local/share/sddm/wayland-session.log ]]; then
+        cp /home/builder/.local/share/sddm/wayland-session.log /ci-output/
+    fi
     pacman -Q > /ci-output/installed-packages.txt
     if [[ -d /home/builder/.local/state/spatiald/install ]]; then
         # Source worktrees/build objects are large and irrelevant to failure
@@ -27,10 +31,11 @@ finish() {
         # Read only CI build/service logs, never configuration or credentials.
         journalctl --no-pager -b -p warning -n 60 \
             -u systemd-udevd.service -u systemd-networkd.service \
-            -u user@1000.service -u spatial-installer-ci.service \
+            -u user@1000.service -u sddm.service -u spatial-installer-ci.service \
             > /ci-output/system-errors.log
         desktop_user journalctl --user --no-pager -b -p warning -n 60 \
             -u spatiald.service -u pipewire.service -u wireplumber.service \
+            -u plasma-kwin_wayland.service -u plasma-plasmashell.service \
             > /ci-output/user-errors.log
         printf '\n[CI failure] Exit %s; bounded, redacted diagnostic tails follow.\n' "$result"
         python - <<'PY'
@@ -74,6 +79,10 @@ desktop_user systemctl --user show-environment
 desktop_user systemctl --user start pipewire.service wireplumber.service
 desktop_user systemctl --user is-active pipewire.service wireplumber.service
 desktop_user pw-dump > /ci-output/pipewire-before.json
+systemctl is-active sddm.service
+install -d -o builder -g builder /ci-output/desktop
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+    --report-dir /ci-output/desktop/before
 
 install -d -o builder -g builder /ci-output/install-state
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py seed
@@ -103,6 +112,8 @@ desktop_user pw-dump > /ci-output/pipewire-after.json
 systemctl is-active systemd-udevd.service
 pacman -Q spatial-workbench plasma-budslink-companion-spatial orender-spatial \
     harletty-bridge mpv-omniphony sony-tracker python-tidalapi
+desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+    --installed --report-dir /ci-output/desktop/installed
 
 # Exercise the installed native decoder and complete software audio path. The
 # private PipeWire endpoints and head-pose packets remain explicit test inputs;
@@ -130,11 +141,18 @@ reports = sorted(Path('/home/builder/.local/state/spatiald/install').glob('verif
 repeat = json.loads(reports[-1].read_text())
 assert repeat['selection'] == 'core' and repeat['result'] == 'pass', repeat
 assert repeat['checks']['audio_modules']['status'] == 'off', repeat
+desktop_reports = {}
+for phase in ('before', 'installed'):
+    desktop = json.loads((Path('/ci-output/desktop') / phase / 'desktop.json').read_text())
+    assert desktop['status'] == 'pass', desktop
+    desktop_reports[phase] = desktop
 acceptance = {
     'installer': 'pass',
     'repeat_core_install': 'pass; existing settings, permissions and Companion backup preserved',
     'package_file_ownership': 'pass; installed files belong to the expected pacman packages',
-    'environment': 'Minimal CachyOS userspace and CachyOS kernel, booted with KVM',
+    'environment': 'CachyOS kernel and complete Plasma desktop, booted with KVM; SDDM Wayland login',
+    'desktop': desktop_reports,
+    'shell_and_editor': 'fish login shell, nano EDITOR/VISUAL; real installer invoked from fish',
     'systemd_udev_pipewire': 'real running services',
     'physical_headphones_and_spatial_playback': 'waiting; no physical hardware is attached',
     'host_checks': checks,

@@ -2,6 +2,10 @@
 # Arch/CachyOS package build and install. Run as the desktop user, never as root.
 set -Eeuo pipefail
 umask 077
+# Scope editor defaults to this invocation and its package-review subprocesses.
+# Do not rewrite the desktop account's shell or existing editor preferences.
+export EDITOR="${EDITOR:-nano}"
+export VISUAL="${VISUAL:-$EDITOR}"
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 install_packages=0
@@ -108,7 +112,7 @@ on_error() {
     if (( result == 130 )); then
         message '[STOP] Installation cancelled.'
     else
-        message "[FAIL] $spatial_current_step (exit $result). Previously installed packages and user configuration have been retained."
+        message "[FAIL] $spatial_current_step (exit $result). Completed package transactions have not been rolled back; existing user configuration has been preserved."
         failure_diagnostics
     fi
     message "[INFO] Full private build log: $spatial_install_log"
@@ -127,7 +131,7 @@ fi
 
 # No separate -Sy: use the user's existing coherent package databases. Ordinary
 # system updates remain under the user's package-management policy.
-run_step 'Ensure official build tools' sudo pacman -S --needed base-devel python git
+run_step 'Ensure official build tools and review editor' sudo pacman -S --needed base-devel python git nano
 if (( with_tidal || with_audio )); then
     distro_modules=()
     if (( with_tidal )); then distro_modules+=(python-tidalapi); fi
