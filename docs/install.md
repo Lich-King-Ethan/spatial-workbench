@@ -6,6 +6,16 @@ From the extracted project directory in your normal KDE terminal:
 bash install.sh
 ```
 
+This command also works from fish: Bash interprets the installer while fish stays
+your interactive shell. Do not `source install.sh` or run it with `fish install.sh`.
+The installer includes nano and uses it for package-review editing when `EDITOR`
+and `VISUAL` are unset. It preserves existing editor choices and does not change
+your login shell or shell configuration. To select nano explicitly for this run:
+
+```sh
+env EDITOR=nano VISUAL=nano bash install.sh
+```
+
 Run this as your desktop user in a running KDE session. Your user needs normal
 sudo access. The installer obtains missing official build tools, Python and Git
 with `pacman -S --needed`, then lets makepkg resolve official package dependencies.
@@ -17,6 +27,16 @@ packages, creates your user configuration, and enables `spatiald.service` for
 your desktop session, then runs the real host acceptance checks automatically.
 Standard package review and sudo prompts remain enabled. No system Python
 packages are installed with pip.
+
+Native source builds need substantial memory and free disk space. Prefer at least
+16 GiB RAM, or enough already-configured swap for a lower-memory machine; close
+other memory-heavy applications during compilation. Reducing build parallelism
+does not cap the memory used by one compiler process: the September 28 VM audit
+observed a single `rustc` use about 8.8 GiB while compiling the newer upstream
+decoder. That measurement is not a minimum established for this release's pinned
+decoder; the desktop and other build processes also need memory. The desktop test
+VM uses 12 GiB RAM plus 8 GiB guest-only swap. The installer does not create swap
+or change the host's memory configuration.
 
 Your existing BudsLink installation remains the Sony-controls provider. You have
 already confirmed it works with your WF-1000XM5. This project neither replaces
@@ -37,9 +57,9 @@ application routing remains unavailable until the guard advertises readiness.
 | `plasma-budslink-companion-spatial` | Pinned upstream Companion plus included patch | Native tracking rows in your existing Companion |
 | `python-dbus-next` | Official Arch repositories | Desktop D-Bus communication |
 | `python-tidalapi` | Official Arch Extra | Optional TIDAL account and stream API |
-| `mpv-omniphony` | AUR, through yay/paru or reviewed makepkg | Actual spatial playback; depends on `orender` |
-| `orender-spatial` | Pinned Omniphony 0.5.2 plus included patch | Matching CLI/library with verifiable local-only OSC control |
-| `harletty-bridge` | AUR, through yay/paru or reviewed makepkg | Renderer format-decoding plugin |
+| `mpv-omniphony` | Reviewed AUR recipe pinned to 0.5.2-1 | Actual spatial playback; depends on `orender` |
+| `orender-spatial` | Pinned Omniphony 0.5.2 plus included patches | Matching CLI/library with local OSC control and positioned 7.1 input |
+| `harletty-bridge` | Reviewed AUR recipe pinned to 0.7.3-1 | Compatible format-decoding plugin |
 | `sony-tracker` | AUR, through yay/paru or reviewed makepkg | Sony HID orientation helper |
 | `swh-plugins` | Official Arch Extra | Limiter for the optional headphone equalizer |
 
@@ -49,22 +69,40 @@ on libmpv. The installer does not suppress conflict review or use `--overwrite`.
 
 `orender-spatial` provides `orender=0.5.2` and is installed before the mpv AUR
 transaction. A small included upstream patch adds an explicit loopback control
-binding and a capability marker; the renderer and DSP implementation remain
-upstream. Both its CLI and matching library are built together. The package runs
-the actual Rust bind-policy tests and checks the CLI/library markers during its
+binding and a capability marker. A second patch declares the native 7.1 capture
+positions so WirePlumber can preserve application channels; the renderer DSP
+remains upstream. Both CLI and matching library are built together. The package runs
+actual Rust bind-policy and serialized channel-format tests, and checks CLI/library markers during its
 build. Its included checksummed lockfile fixes the Rust dependencies missing from
 the upstream release archive. The runtime refuses an unpatched or mismatched engine, including a separate
 Studio library, instead of starting network control on all interfaces. Compiling
 this Rust package is the longest part of the installation.
 
-If yay or paru is available, the installer uses its normal review workflow.
-Otherwise it clones each actual AUR repository, records the commit, shows the
-recipe for review, and builds it with makepkg as your ordinary user. Dependencies
-are installed in order: the patched renderer, format bridge, player and Sony
-tracker. AUR source builds require accepting the displayed review prompt.
-Repeat installs reuse an AUR package only when its exact package name is installed
-and pacman confirms its version satisfies the fetched recipe. Stock mpv does not
-stand in for mpv-omniphony.
+The renderer, decoder bridge and player form one compatible release set:
+Omniphony 0.5.2, Harletty 0.7.3 and mpv-omniphony 0.5.2. Their native audio route
+has been tested together. The installer checks out the exact reviewed AUR commits
+for the bridge and player and builds them with makepkg as your ordinary user,
+including when yay or paru is installed. It records provenance and shows the
+recipes for review; source checksums and package-manager prompts remain enabled.
+The Sony tracker can use your existing AUR helper.
+
+This pairing matters: upstream Omniphony 0.6.0 changes the decoder bridge ABI from
+0.3 to 0.4 and requires Harletty 0.8.0. A 0.8.0 bridge cannot load in this release's
+0.5.2 renderer. Current mpv-omniphony 0.6.0 also requires `orender>=0.6.0`.
+Upgrade the audio set together only after its renderer patches and complete audio
+tests have been updated. The pin preserves the verified native decoding and
+spatialization path; it does not remove a codec or substitute a test decoder.
+Repeat installations require the exact supported bridge and player versions;
+stock mpv does not stand in for mpv-omniphony.
+
+An installed incompatible bridge, player or newer renderer stops the installer
+before package transactions or compilation. It does not automatically downgrade
+an existing newer audio stack. Resolve the displayed version conflict by choosing
+a compatible set through a reviewed package-manager transaction, then rerun the
+installer. Reuse of an exact supported package also requires `pacman -Qk` to find
+its files intact. The renderer package declares version conflicts for unsupported
+bridge and player packages so later package-manager upgrades cannot silently mix
+the two ABI generations. The installer does not add global `IgnorePkg` rules.
 
 Each successful stage is marked `PASS` only after its command finishes. Local and
 direct AUR compilation/test output goes to the private log; source preparation,
@@ -72,8 +110,10 @@ package-manager prompts and AUR review remain visible. An existing AUR helper
 retains its own interactive output. Full build output is retained in a file under
 `~/.local/state/spatiald/install/` (or your `XDG_STATE_HOME`). On failure the
 installer reports the failed stage and attempts to save a redacted diagnostic
-report alongside the log. Existing packages and configuration are retained;
-correct the reported problem and rerun the same command.
+report alongside the log. Existing user configuration is preserved. Completed
+package transactions are not rolled back; for example, an accepted mpv replacement
+can remain installed if a later stage fails. Correct the reported problem and
+rerun the same command.
 
 After activation, `spatial-verify` records the actual module and PipeWire checks.
 Missing hardware or an idle player produces `WAIT`, without failing an otherwise
@@ -94,6 +134,11 @@ dependencies. It does not install the resulting application packages, start the
 service, or edit your user configuration. Built packages and checksummed recipes
 are under `dist/arch/core/` and `dist/arch/companion/`.
 The additional renderer recipe is under `dist/arch/orender/`.
+
+Without `--with-audio`, installation runs `spatial-verify --core-only`: configuration,
+the running daemon and PipeWire must pass; optional audio checks explicitly report
+`OFF`. Run `spatial-verify` without that flag for the full configured audio check.
+This verification scope does not disable or reconfigure existing audio modules.
 
 Core source archives are deterministic and include the actual build scripts,
 tests, service, docs and configuration. Companion is pinned to
@@ -200,7 +245,11 @@ no longer need them; stock mpv can be restored through pacman.
 - [Omniphony Arch recipes](https://github.com/mgth/Omniphony/tree/fc67346181f1c5908a1bc26968ff192eb09a531d/packaging/arch)
 - [SonyTrackerLinux](https://github.com/kdani3/SonyTrackerLinux)
 - [AUR package metadata](https://aur.archlinux.org/rpc/v5/info?arg%5B%5D=mpv-omniphony&arg%5B%5D=orender&arg%5B%5D=harletty-bridge&arg%5B%5D=sony-tracker)
+- [Pinned mpv-omniphony AUR recipe](https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h=mpv-omniphony&id=f9e20fbbf55ca31da506ff770d1585bde11fbb89)
+- [Pinned Harletty AUR recipe](https://aur.archlinux.org/cgit/aur.git/tree/PKGBUILD?h=harletty-bridge&id=29ea73c708454ca11b7c124a677ddf370f709c99)
+- [Omniphony 0.6.0 ABI migration](https://github.com/mgth/Omniphony/releases/tag/v0.6.0)
 
-Inspected September 18, 2026. The AUR metadata reported mpv-omniphony and orender
-0.5.2-1, harletty-bridge 0.7.3-1, and sony-tracker 1.0.0-1. The helper resolves
-current package revisions when you install; runtime capability checks still apply.
+Rechecked September 28, 2026 against the actual AUR Git repositories. The pinned
+recipes above remain the supported release set even though AUR HEAD now offers
+mpv-omniphony 0.6.0-1 and Harletty 0.8.0-1. Runtime capability and real playback
+checks still apply; successful package installation alone is not audio evidence.

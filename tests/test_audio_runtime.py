@@ -25,6 +25,19 @@ from spatial.pose import IDENTITY, Quaternion
 SINK = Sink("AA:BB:CC:DD:EE:FF", "bluez_output.AA_BB_CC_DD_EE_FF.1", "75", "a2dp", "idle")
 
 
+def stereo_connections(source, destination):
+    ports, links = [], []
+    for index, channel in enumerate(("FL", "FR")):
+        output, input_ = 100 + index, 200 + index
+        for port, node, direction in ((output, source, "out"), (input_, destination, "in")):
+            ports.append({"id": port, "type": "PipeWire:Interface:Port", "info": {"props": {
+                "node.id": node, "port.direction": direction, "audio.channel": channel}}})
+        links.append({"type": "PipeWire:Interface:Link", "info": {
+            "output-node-id": source, "input-node-id": destination,
+            "output-port-id": output, "input-port-id": input_, "state": "active"}})
+    return ports, links
+
+
 def ready_telemetry():
     telemetry = RendererTelemetry()
     telemetry.accept("/omniphony/state/capabilities", [json.dumps(
@@ -92,6 +105,39 @@ class AudioPureTests(unittest.TestCase):
         telemetry.datagram_received(encode("/omniphony/state/renderer", '{"binaural":null}'), ("127.0.0.1", 5))
         self.assertFalse(telemetry.ready)
 
+    def test_ended_renderer_requires_a_complete_fresh_handshake(self):
+        for event in ("state/shutdown", "heartbeat/unknown"):
+            with self.subTest(event=event):
+                telemetry = ready_telemetry()
+                telemetry.expected_config = "/private/renderer.yaml"
+                telemetry.config_path = telemetry.expected_config
+                telemetry.config_status = "loaded"
+                telemetry.clipping, telemetry.master_gain, telemetry.object_count = 1, 0.8, 11
+                self.assertTrue(telemetry.ready)
+                telemetry.accept("/omniphony/" + event, [])
+                self.assertFalse(telemetry.registered)
+                self.assertIsNone(telemetry.object_count)
+                self.assertIsNone(telemetry.clipping)
+                self.assertIsNone(telemetry.master_gain)
+                telemetry.accept("/omniphony/state/capabilities", [json.dumps(
+                    {"producer": "renderer", "variant": "embedded", "host": "mpv"})])
+                telemetry.accept("/omniphony/heartbeat/ack", [])
+                self.assertFalse(telemetry.ready)
+                telemetry.accept("/omniphony/state/renderer", [json.dumps(
+                    {"binaural": {"outputMode": "binaural"}})])
+                self.assertFalse(telemetry.ready)
+                telemetry.accept("/omniphony/state/render/config_path", [telemetry.expected_config])
+                telemetry.accept("/omniphony/state/render/config_status", ["loaded"])
+                self.assertTrue(telemetry.ready)
+
+    def test_reported_bridge_failure_blocks_readiness_until_cleared(self):
+        telemetry = ready_telemetry()
+        telemetry.accept("/omniphony/state/render/bridge_error", ["private decoder error"])
+        self.assertFalse(telemetry.ready)
+        self.assertNotIn("private", telemetry.error)
+        telemetry.accept("/omniphony/state/render/bridge_error", [""])
+        self.assertTrue(telemetry.ready)
+
     def test_nonfinite_json_does_not_escape_to_companion_state(self):
         for address in ("/omniphony/state/renderer", "/omniphony/state/capabilities"):
             for invalid in ('{"value":NaN}', '{"value":Infinity}', '{"value":1e400}'):
@@ -110,25 +156,36 @@ class AudioPureTests(unittest.TestCase):
         stream = obj("Node", 4, {"media.class": "Stream/Output/Audio", "client.id": 3,
                    "target.object": SINK.name, "node.dont-fallback": True, "node.dont-reconnect": "true"})
         sink = obj("Node", 5, {"node.name": SINK.name, "object.serial": SINK.serial})
-        link = {"type": "PipeWire:Interface:Link", "id": 6,
-                "info": {"output-node-id": 4, "input-node-id": 5}}
+        ports, links = stereo_connections(4, 5)
         self.assertEqual(audio.verify_output([client, stream, sink])["state"], "waiting")
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "verified")
+        objects = [client, stream, sink, *ports, *links]
+        self.assertEqual(audio.verify_output(objects)["state"], "verified")
+        self.assertEqual(audio.verify_output(objects[:-1])["state"], "waiting")
+        links[1]["info"]["state"] = "init"
+        self.assertEqual(audio.verify_output(objects)["state"], "waiting")
+        links[1]["info"]["state"] = "active"
+        self.assertEqual(audio.verify_output([*objects, links[0]])["state"], "violation")
+        ports[1]["info"]["props"]["audio.channel"] = "FR"
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
+        ports[1]["info"]["props"]["audio.channel"] = "FL"
+        second_stream = obj("Node", 9, {**stream["info"]["props"]})
+        self.assertEqual(audio.verify_output([*objects, second_stream])["state"], "waiting")
         sink["info"]["props"]["object.serial"] = "new-session"
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "violation")
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
         sink["info"]["props"]["object.serial"] = SINK.serial
         del stream["info"]["props"]["node.dont-reconnect"]
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "violation")
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
 
     def test_known_pending_filter_is_waiting_until_its_own_audit_completes(self):
         audio = AudioRuntime()
         audio.process = SimpleNamespace(pid=777, returncode=None)
         audio._sink = SINK
+        ports, links = stereo_connections(4, 20)
         objects = [
             {"type": "PipeWire:Interface:Node", "id": 4, "info": {"props": {
                 "application.process.id": 777, "media.class": "Stream/Output/Audio",
                 "target.object": SINK.name, "node.dont-fallback": True, "node.dont-reconnect": True}}},
-            {"type": "PipeWire:Interface:Link", "info": {"output-node-id": 4, "input-node-id": 20}},
+            *ports, *links,
         ]
         self.assertEqual(audio.verify_output(objects)["state"], "violation")
         self.assertEqual(audio.verify_output(objects, pending_filter_inputs={"20"})["state"], "waiting")
@@ -214,7 +271,7 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_opt_in_orender_is_detected_without_public_decoder_entry(self):
         # mpv-omniphony 0.5.2 registers orender inside reinit_decoder(), while
         # --ad=help uses audio_decoder_list(), which advertises only lavc.
-        names = ("ad-orender-config", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
+        names = ("ad-orender-config", "ad-orender-osc", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
                  "ad-orender-osc-port", "ad-orender-osc-monitor-target",
                  "input-ipc-server", "ad-orender-library")
         listing = "Options:\n\n" + "".join(f" --{name:<30} String (default: )\n" for name in names)
@@ -239,6 +296,8 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("localhost-only", result["reason"])
 
             for output, code, explanation in (
+                (listing.replace("--ad-orender-osc ", "--ad-orender-osc-old "), 0,
+                 "--ad-orender-osc"),
                 (listing.replace("--ad-orender-library ", "--ad-orender-library-old "), 0,
                  "--ad-orender-library"),
                 (listing, 1, "exited 1"),
@@ -331,3 +390,19 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
         finally:
             sender.close()
             transport.close()
+
+    async def test_ipc_eof_cannot_leave_loaded_renderer_readiness(self):
+        audio = AudioRuntime()
+        audio.process = SimpleNamespace(returncode=None)
+        audio.reader = asyncio.StreamReader()
+        audio._file_loaded = True
+        audio.telemetry = ready_telemetry()
+        audio._properties["track-list"] = [{"type": "audio", "selected": True,
+            "decoder": "orender", "codec-profile": "Dolby Atmos + 11 objects"}]
+        self.assertTrue(audio.status()["renderer_ready"])
+        audio.reader.feed_eof()
+        await audio._read_ipc()
+        self.assertFalse(audio.status()["loaded"])
+        self.assertFalse(audio.status()["renderer_ready"])
+        self.assertIn("control connection was lost", audio.status()["error"])
+        self.assertFalse(audio.telemetry.registered)

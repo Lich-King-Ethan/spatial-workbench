@@ -8,10 +8,17 @@ QML components or replace imports with test doubles.
 
 The explicitly named `ControlFixture` provides only a `State` property and
 `PropertiesChanged` signals on that private bus. The test does not start spatiald,
-BudsLink, an audio renderer, or playback. Qt may activate desktop portal helpers
-inside the private test session. The test covers component
+BudsLink, an audio renderer, or playback. `run-private.sh` uses
+`private-session.conf`, which loads no desktop service-activation directories or
+host bus configuration. This prevents portal helpers from starting and mounting a
+document filesystem inside the temporary runtime. Cleanup stays on that runtime's
+filesystem and reports errors without unmounting or stopping desktop services.
+The test covers component
 creation, visible tracker delegates, plain tracker names, playback format updates,
-and exact application-stream identifiers. Component errors and **every warning
+exact application-stream identifiers, and the full disconnected representation.
+The disconnected check verifies real service-state refresh, loss/recovery,
+disabled actions when status is unavailable, and malformed-state handling.
+Component errors and **every warning
 reported by the QML engine** fail the test. General platform diagnostic messages
 remain visible; there is no warning suppression list.
 
@@ -22,8 +29,8 @@ Arch dependencies come from the Companion recipe, plus `cmake`, `ninja`, `dbus`,
 cmake -S plasma/tests -B /tmp/spatial-qml-build -G Ninja \
   -DSPATIAL_COMPANION_QML_DIR=/absolute/path/to/companion/contents/ui
 cmake --build /tmp/spatial-qml-build
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
-  SPATIAL_QML_PRIVATE_BUS=1 dbus-run-session -- /tmp/spatial-qml-build/spatial-qml-smoke
+bash plasma/tests/run-private.sh plasma/tests/private-session.conf \
+  /tmp/spatial-qml-build/spatial-qml-smoke
 ```
 
 This is a native import/instantiation and binding smoke test, not a screenshot

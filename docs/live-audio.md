@@ -13,13 +13,17 @@ the ordinary physical headphones, including the separately verified headphone EQ
 when enabled. Capturing the headphone monitor is not used. The graph audit rejects
 feedback, unselected applications entering the capture input, renderer links to
 other outputs, replaced device serials, missing routing protections, and failed
-links. Readiness requires every selected-source and renderer output channel to
-have an established path; the existence of a process or sink alone is insufficient.
+links. Readiness requires the renderer's negotiated native format to contain the
+fixed eight named channels, the source's native speakers to survive in its actual
+graph ports, and each application channel to reach its matching renderer input.
+Every renderer output channel must have an established path. A declared node
+property or a process alone cannot establish channel preservation.
 
 ## Engine and content contract
 
 The supported standalone engine is **Omniphony v0.5.2 with the packaged
-`+spatial-loopback1` patch**. The runtime probes that version and the necessary
+`+spatial-loopback1` patch and positioned-input patch (`orender-spatial` pkgrel 2)**.
+The runtime probes the version and necessary
 CLI options before launch. It creates a private configuration and FIFO, starts
 `orender render --continuous`, and uses v0.5.2's implemented
 `render.input_mode: live` path. The separate `orender input-live` command is

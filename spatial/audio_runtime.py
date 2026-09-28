@@ -152,6 +152,15 @@ class RendererTelemetry(asyncio.DatagramProtocol):
     def connection_made(self, transport):
         self.transport = transport
 
+    def invalidate(self):
+        """Discard the facts from a renderer session that has ended."""
+        self.registered = False
+        self.capabilities = {}
+        self.renderer = {}
+        self.config_path = self.config_status = None
+        self.last_seen = 0.0
+        self.clipping = self.master_gain = self.object_count = None
+
     def send(self, address, *values):
         if self.transport is not None and self.target is not None:
             self.transport.sendto(encode(address, *values), self.target)
@@ -190,14 +199,8 @@ class RendererTelemetry(asyncio.DatagramProtocol):
             self.last_seen = time.monotonic()
         elif key == "heartbeat/ack":
             self.last_seen = time.monotonic()
-        elif key == "heartbeat/unknown":
-            self.registered = False
-            self.capabilities = {}
-            self.renderer = {}
-            self.config_path = self.config_status = None
-        elif key == "state/shutdown":
-            self.capabilities = {}
-            self.last_seen = 0
+        elif key in ("heartbeat/unknown", "state/shutdown"):
+            self.invalidate()
         elif key == "state/clip" and args:
             self.clipping = args[0]
         elif key == "state/realtime/master_gain" and args:
@@ -208,13 +211,14 @@ class RendererTelemetry(asyncio.DatagramProtocol):
             self.config_path = args[0]
         elif key == "state/render/config_status" and args and isinstance(args[0], str):
             self.config_status = args[0]
-        elif key == "state/render/bridge_error" and args and args[0]:
-            self.error = "The decoder bridge reported an error; check the installed engine/bridge pair"
+        elif key == "state/render/bridge_error" and args and isinstance(args[0], str):
+            self.error = ("The decoder bridge reported an error; check the installed engine/bridge pair"
+                          if args[0] else "")
 
     @property
     def ready(self):
         binaural = self.renderer.get("binaural")
-        return (self.capabilities.get("producer") == "renderer"
+        return (not self.error and self.capabilities.get("producer") == "renderer"
                 and self.capabilities.get("variant") == "embedded"
                 and self.capabilities.get("host") == "mpv"
                 and isinstance(binaural, dict) and binaural.get("outputMode") == "binaural"
@@ -292,7 +296,7 @@ class AudioRuntime:
         # ad-orender option group is compiled only with HAVE_ORENDER; require
         # its exact controls here, then verify the actual decoder/ABI/objects
         # through the playback handshake below.
-        required = ("ad-orender-config", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
+        required = ("ad-orender-config", "ad-orender-osc", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
                     "ad-orender-osc-port", "ad-orender-osc-monitor-target", "input-ipc-server",
                     "ad-orender-library")
         advertised = set(re.findall(r"^\s*--([a-zA-Z0-9][a-zA-Z0-9-]*)(?=\s|$)", options, re.MULTILINE))
@@ -454,12 +458,14 @@ class AudioRuntime:
                     self._reason = "finished"
                     if data.get("reason") == "error":
                         self._error = "Playback failed; verify the media, decoder bridge, and headphone connection"
-                    self.telemetry.object_count = None
-                    self.telemetry.capabilities = {}
-                    self.telemetry.renderer = {}
+                    self.telemetry.invalidate()
+            if self.process is not None and self.process.returncode is None:
+                self._error = "The player control connection was lost"
         except (OSError, ValueError):
             self._error = "The player control connection was lost"
         finally:
+            self._file_loaded = False
+            self.telemetry.invalidate()
             for pending in self._pending.values():
                 if not pending.done():
                     pending.set_exception(AudioError("The player control connection was lost"))
@@ -546,7 +552,7 @@ class AudioRuntime:
             self._routing = {"state": "idle", "reason": "No owned playback stream"}
             return dict(self._routing)
         pid = str(self.process.pid)
-        nodes, clients = {}, set()
+        nodes, ports, clients = {}, {}, set()
         for obj in objects:
             if not isinstance(obj, dict):
                 continue
@@ -555,6 +561,9 @@ class AudioRuntime:
                 clients.add(str(obj.get("id")))
             if obj.get("type") == "PipeWire:Interface:Node":
                 nodes[str(obj.get("id"))] = props
+            if (obj.get("type") == "PipeWire:Interface:Port"
+                    and str(props.get("port.control", "false")).lower() != "true"):
+                ports[str(obj.get("id"))] = props
         output_ids = {node for node, props in nodes.items()
                       if props.get("media.class") == "Stream/Output/Audio"
                       and (str(props.get("application.process.id")) == pid
@@ -573,14 +582,17 @@ class AudioRuntime:
                     or str(props.get("node.dont-reconnect")).lower() != str(not self.allow_pcm_route).lower()):
                 self._routing = {"state": "violation", "reason": "The player's PipeWire routing protections are missing"}
                 return dict(self._routing)
-        linked = False
+        linked = {node: set() for node in output_ids}
+        linked_targets = {node: set() for node in output_ids}
+        linked_inputs = set()
         pending = False
         pending_ids = {str(node) for node in pending_filter_inputs}
         for obj in objects:
             if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
                 continue
             info = obj.get("info") or {}
-            if str(info.get("output-node-id")) in output_ids:
+            source = str(info.get("output-node-id"))
+            if source in output_ids:
                 destination = str(info.get("input-node-id"))
                 if destination in pending_ids:
                     pending = True
@@ -588,12 +600,41 @@ class AudioRuntime:
                 if destination not in target_ids:
                     self._routing = {"state": "violation", "reason": "The playback stream is linked to another output"}
                     return dict(self._routing)
-                linked = True
+                if info.get("state") not in ("active", "paused"):
+                    continue
+                output_port, input_port = str(info.get("output-port-id")), str(info.get("input-port-id"))
+                output_props, input_props = ports.get(output_port), ports.get(input_port)
+                if output_props is None or input_props is None:
+                    continue  # A graph snapshot may precede port enumeration.
+                if (str(output_props.get("node.id")) != source
+                        or str(input_props.get("node.id")) != destination
+                        or output_props.get("port.direction") != "out"
+                        or input_props.get("port.direction") != "in"
+                        or output_props.get("audio.channel") not in ("FL", "FR")
+                        or output_props.get("audio.channel") != input_props.get("audio.channel")):
+                    self._routing = {"state": "violation", "reason": "The player's stereo channels are not linked to matching input channels"}
+                    return dict(self._routing)
+                if output_port in linked[source] or input_port in linked_inputs:
+                    self._routing = {"state": "violation", "reason": "The player's stereo channels have duplicate links"}
+                    return dict(self._routing)
+                linked[source].add(output_port)
+                linked_inputs.add(input_port)
+                linked_targets[source].add(destination)
+                if len(linked_targets[source]) > 1:
+                    self._routing = {"state": "violation", "reason": "The player's stereo channels are split between inputs"}
+                    return dict(self._routing)
         if pending:
             self._routing = {"state": "waiting", "reason": "Waiting for the equalizer's physical output link"}
             return dict(self._routing)
-        self._routing = ({"state": "verified", "reason": "The player is linked to the selected physical headphones"}
-                         if linked else {"state": "waiting", "reason": "Waiting for the player's PipeWire links"})
+        complete = True
+        for node in output_ids:
+            outputs = {port: props for port, props in ports.items()
+                       if str(props.get("node.id")) == node and props.get("port.direction") == "out"}
+            channels = [props.get("audio.channel") for props in outputs.values()]
+            complete &= (len(channels) == 2 and set(channels) == {"FL", "FR"}
+                         and set(outputs) == linked[node])
+        self._routing = ({"state": "verified", "reason": "Both player channels are linked to the selected physical headphones"}
+                         if complete else {"state": "waiting", "reason": "Waiting for the player's complete stereo PipeWire links"})
         return dict(self._routing)
 
     async def stop(self, reason="stopped"):
@@ -622,8 +663,7 @@ class AudioRuntime:
                 self._transport.close()
             self._transport = None
             self.telemetry.transport = None
-            self.telemetry.capabilities = {}
-            self.telemetry.renderer = {}
+            self.telemetry.invalidate()
             self._file_loaded = False
             self._end_reason = reason
             self._sink = None

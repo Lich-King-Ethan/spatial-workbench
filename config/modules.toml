@@ -1,4 +1,4 @@
-# Ownership/maturity inventory for release 0.2.2, not executable configuration.
+# Ownership/maturity inventory for release 0.2.3, not executable configuration.
 # Runtime choices belong in ~/.config/spatiald/config.toml; see spatial/settings.py.
 schema = 1
 

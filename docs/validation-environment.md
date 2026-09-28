@@ -26,12 +26,12 @@ developer runs may also save `test-results.txt`; that generated log is not track
 
 ## Completed hosted CI checks
 
-[CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113)
-passed for commit 9d573ea. Python 3.11, 3.12 and 3.13 plus the Arch package lane
-each ran 256 tests with zero skips. The native Qt/Plasma smoke test reported five
-passes including setup and cleanup. The hosted jobs use a private D-Bus session and
-the native Lua, compiler, JavaScript and limiter dependencies that the development
-sandbox cannot provide.
+[CI run 35410414111](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414111)
+passed for commit `2f20be1`. Python 3.11, 3.12 and 3.13 plus the Arch package lane
+each ran 296 tests. The Python matrix requires zero skips; the native Qt/Plasma
+smoke reported five passes and zero skips. Hosted jobs supply the private D-Bus
+session, Lua, compiler, JavaScript and limiter dependencies unavailable together
+in the development sandbox.
 
 The suite covers Sony protocol/axis and recenter fixtures, TIDAL credential
 races, source validation, graph audits, reconnection races, playback ownership,
@@ -39,31 +39,82 @@ native presentation logic and independent provider failures. These fixtures prov
 the client behavior and package checks; they are not physical Bluetooth or
 listening tests.
 
-## Completed hosted integration checks
+## September 19 channel-preservation audit
 
-[CachyOS integration run 35379035086](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035086)
-passed the installed packages and native Qt cards, built the pinned Harletty bridge,
-and exercised real PipeWire 1.6.8 and WirePlumber 0.5.17 processes. The production
-route applied the device-scoped WF-1000XM5 EQ and SWH limiter to the synthetic
-headphone sink, while actual Sony-helper UDP packets drove the production tracker,
-Engine and OSC path. It captured and analyzed 18 48 kHz stereo windows covering
-positions, yaw, pitch, roll, recenter and mirror checks. The captured endpoint is
-synthetic/headless, and the report explicitly keeps hardware validation false.
+The earlier claim that the hosted PCM test proved a complete 7.1 spatial path is
+withdrawn. Saved artifacts from [run 35382912735](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35382912735)
+showed native eight-channel source PCM adapted into only two graph ports, linked
+to the first two of eight **unpositioned** renderer inputs. The pinned upstream
+capture code omitted SPA channel positions. WirePlumber kept the source's
+existing stereo format because the new target was unpositioned.
 
-[Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340)
-passed in a freshly booted minimal CachyOS guest with a CachyOS kernel and KVM.
-The unchanged installer, package ownership, systemd/udev/PipeWire services and
-daemon verification all passed. The guest then decoded the pinned real E-AC-3 JOC
-fixture through mpv and the orender/Harletty bridge, rendered to the post-EQ
-synthetic earbud monitor, captured neutral/repeat/yaw Atmos windows, and passed
-stop/restore route checks. Its retained result is exit code 0. The same artifact
-records the expected WAIT state for physical XM5, BlueZ HID, SlimeVR and KDE
-headphone acceptance because no physical hardware was attached.
+Reanalysis using complete 100 ms stimulus periods measured rear/front spectral
+differences of only 0.000044 dB (left) and 0.000229 dB (right). The earlier Hann
+window estimator was phase-sensitive for this repeating fixture, adding about
+0.239 dB artificial variation in a cyclic-shift check. Restored geometric checks
+reject those old captures on seven assertions. Assertions accepting rear/front
+equality and removed roll/compound-pose equivalences were incorrect.
 
-Both runs retain machine-readable reports, package hashes, PipeWire graph snapshots,
-Sony pose evidence and PCM artifacts. They establish a complete software and
-synthetic-audio route; they do not establish physical axis orientation, subjective
-localization, or TIDAL account entitlement.
+Version 0.2.3 adds the native position declaration and validates it by parsing the
+exact serialized SPA format in Rust tests. The Python auditor requires named,
+matching source-to-renderer links and preservation of the source's native channel
+set. The hosted gate must reproduce a source initially downmixed to stereo, then
+prove it reconfigures into eight channels after selection. Eight different tones
+are recorded from the renderer input monitor and checked for missing, swapped,
+duplicated or mixed lanes. Post-EQ broadband recordings separately test actual
+spatial DSP with restored position, yaw, pitch, roll and recenter assertions.
+
+## Confirmed repaired software path
+
+The fresh native checks completed successfully after the September 19 handoff:
+
+- [Renderer build 35410414135](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414135), `2f20be1`, compiled the CLI and FFI library and passed two OSC bind-policy plus two native channel-format/PCM-lane tests.
+- [CachyOS integration 35410253252](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410253252), implementation `50d542b`, passed the installed suite, native Qt cards, real routing, EQ/limiter, independent lanes and spatial captures.
+- [Booted CachyOS installer 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), the same implementation, passed full installation, real file ownership, retained user settings/permissions/Companion backup and a repeat core install, followed by PCM and encoded Atmos routes.
+
+On September 28, both artifact archives were downloaded and their SHA256 digests
+checked against GitHub. Independent inspection found eight active matching
+FL/FR/FC/LFE/SL/SR/RL/RR input links. Direct sinusoid projection of actual PCM
+confirmed the input tones with maximum unwanted/wanted amplitude ratio
+2.70e-9. All eight source tones also survived the post-EQ stereo output; the
+smallest observed per-ear tone RMS was 0.003012. These are fixture measurements,
+not advertised hardware audio specifications.
+
+Raw-capture hashes were checked and all 18 windows/74 acoustic assertions rerun
+for each artifact. Rear/front spectral differences were 3.479 dB (left) and
+5.618 dB (right). Deliberately replacing rear captures with front captures,
+freezing head-pose captures, or reversing yaw caused the repaired analyzer to
+reject the recordings. The old incorrectly approved artifact still failed seven
+geometry checks.
+
+The booted VM's separate encoded Atmos route produced four real captures with
+15 decoded objects, tracking active and routing verified. Independent left/right
+energy measurements reproduced the reported opposite-yaw difference of 8.585 dB.
+The final cleanup graph contained no nodes belonging to the stopped media player.
+Media reports record actual pose acknowledgements and require cleanup before pass.
+
+These tests used a synthetic headphone endpoint and helper UDP telemetry. They do
+not establish physical Bluetooth/HID behavior, Slime receiver operation, listener
+translation, subjective localization or TIDAL account entitlement. The September
+19 VM was a minimal booted system, not a full graphical desktop.
+
+## September 28 continuation
+
+No changes from the user's local session had been pushed when the repository was
+inspected; the audit branch still pointed to `2f20be1` and main to `f490ac3`.
+The continuation preserves the verified fixes, tightens incomplete live/EQ output
+readiness and adds a real Plasma Wayland session with fish and nano to the VM.
+The continuing validation record, exact tested commits, run results and artifact
+links are maintained in [pull request #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
+See [the VM procedure](full-installer-ci.md).
+
+The first full-desktop boot established the real SDDM Wayland/KWin/plasmashell
+session, but exposed a brittle nano Save As prompt matcher. Its replacement
+requires nano to save exact new bytes and exit successfully, retaining a terminal
+transcript. The next boot passed nano and desktop screenshot checks and reached
+the real installer, exposing desktop-portal activation during the isolated
+Companion package check. These failures are kept as evidence; neither is counted
+as a completed installer or application pass.
 
 ## Completed local checks
 

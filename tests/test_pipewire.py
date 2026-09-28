@@ -1,6 +1,9 @@
 import copy
+import json
 import unittest
-from spatial.pipewire import parse_sinks, address
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
+from spatial.pipewire import parse_sinks, address, capture
 
 MAC = "AA:BB:CC:DD:EE:FF"
 
@@ -50,3 +53,23 @@ class PipeWire(unittest.TestCase):
     def test_invalid_address_rejected(self):
         with self.assertRaises(ValueError):
             address("WF-1000XM5")
+
+
+class PipeWireCapture(unittest.IsolatedAsyncioTestCase):
+    async def test_valid_snapshot_and_explicit_empty_session_are_preserved(self):
+        for objects in (fixture(), []):
+            with self.subTest(objects=objects):
+                process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(json.dumps(objects).encode(), b"")))
+                with patch("spatial.pipewire.asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+                    self.assertEqual(await capture(), objects)
+
+    async def test_malformed_snapshot_cannot_prove_source_disappearance(self):
+        malformed = [None, {}, "", [None], [{}], fixture() + [fixture()[1]],
+                     [{"id": 20, "type": "PipeWire:Interface:Node"}],
+                     [{"id": 20, "type": "PipeWire:Interface:Node", "info": {"props": {}}}]]
+        for objects in malformed:
+            with self.subTest(objects=objects):
+                process = SimpleNamespace(returncode=0, communicate=AsyncMock(return_value=(json.dumps(objects).encode(), b"")))
+                with patch("spatial.pipewire.asyncio.create_subprocess_exec", AsyncMock(return_value=process)):
+                    with self.assertRaisesRegex(RuntimeError, "invalid graph snapshot"):
+                        await capture()

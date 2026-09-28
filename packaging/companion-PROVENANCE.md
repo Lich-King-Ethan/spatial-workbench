@@ -12,7 +12,10 @@ License: GNU GPL version 3 or later, as stated by upstream metadata and QML noti
 
 The `companion.patch` distributed beside this notice adds the SpatialControls
 and PlaybackControls components, a playback-state helper, and inserts the
-controls into the existing device page. This is a downstream
+controls into the existing device page. It also adds a read-only SpatialStatus
+view to the full representation when no device page is available, showing actual
+service state and connection instructions without constructing a fake device.
+This is a downstream
 integration with `org.spatiald.Control1`; it is not an upstream BudsLink release
 or endorsement. The original author attribution and UI resources remain intact.
 

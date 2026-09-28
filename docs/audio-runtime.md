@@ -82,6 +82,8 @@ fixed-routing policy on the next player launch.
 the owned player's streams by process ID, including through their PipeWire
 client, verifies their target and protection properties, and checks that every
 outgoing link reaches the selected physical sink's current serial and name.
+Every owned stream must have complete active or paused FL-to-FL and FR-to-FR
+links; partial paths wait, while swapped, duplicated or unauthorized links fail.
 The desktop runtime stops playback on a violation. An independently audited
 equalizer can supply its verified input IDs through `allowed_filter_inputs`;
 that module must first verify its entire output chain reaches the same sink.
