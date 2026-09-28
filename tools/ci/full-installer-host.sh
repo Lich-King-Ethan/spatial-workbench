@@ -54,7 +54,7 @@ PY
     printf 'ENVIRONMENT UNAVAILABLE: this job requires the public 16GB runner.\n' >&2
     exit 1
 }
-required_kib=$((30 * 1024 * 1024))
+required_kib=$((45 * 1024 * 1024))
 available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n1 | tr -d ' ')
 if (( available_kib < required_kib )); then
     # These unrelated SDKs are preinstalled on this disposable runner and are
@@ -83,7 +83,7 @@ docker exec "$container_name" bash /prepare.sh
 docker stop "$container_name"
 
 # Export directly into the guest disk, avoiding a second unpacked rootfs.
-truncate -s 24G "$vm_dir/root.raw"
+truncate -s 36G "$vm_dir/root.raw"
 mkfs.ext4 -F -L spatial-ci "$vm_dir/root.raw"
 mkdir "$vm_root"
 sudo mount -o loop "$vm_dir/root.raw" "$vm_root"
@@ -100,12 +100,13 @@ sudo umount "$vm_root"
 mounted=0
 docker rm "$container_name"
 
-printf 'Booting 4 vCPU / 10GiB CachyOS Plasma Wayland desktop with its own kernel and udev.\n'
+printf 'Booting 4 vCPU / 12GiB CachyOS Plasma Wayland desktop; guest prepares its own 8GiB swapfile.\n'
+free -h > "$evidence_dir/host-memory-before-boot.txt"
 : > "$evidence_dir/serial.log"
 # NAT supplies outbound package/source downloads. There are no forwarded ports,
 # host filesystem shares, SSH credentials, Bluetooth devices or audio hardware.
 sudo timeout --signal=TERM --kill-after=20s 95m qemu-system-x86_64 \
-    -machine q35,accel=kvm -cpu host -smp 4 -m 10G \
+    -machine q35,accel=kvm -cpu host -smp 4 -m 12G \
     -kernel "$vm_dir/vmlinuz" -initrd "$vm_dir/initramfs.img" \
     -append 'root=/dev/vda rw console=ttyS0 systemd.unit=graphical.target' \
     -drive "file=$vm_dir/root.raw,format=raw,if=virtio,cache=writeback" \

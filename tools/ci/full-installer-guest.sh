@@ -9,10 +9,22 @@ desktop_user() {
         DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus \
         CARGO_BUILD_JOBS=3 CMAKE_BUILD_PARALLEL_LEVEL=4 TERM=dumb NO_COLOR=1 "$@"
 }
+snapshot_resources() {
+    local phase=$1
+    {
+        date --iso-8601=seconds
+        free -h
+        cat /proc/meminfo
+        swapon --show --bytes
+        df -hT /
+        ps -eo pid,comm,rss,vsz --sort=-rss | sed -n '1,21p'
+    } > "/ci-output/resources-$phase.txt" 2>&1
+}
 finish() {
     local result=$?
     trap - EXIT
     set +e
+    if (( result )); then snapshot_resources failure; else snapshot_resources complete; fi
     journalctl --no-pager -b > /ci-output/system-journal.log
     desktop_user journalctl --user --no-pager -b > /ci-output/user-journal.log
     loginctl list-sessions --no-pager > /ci-output/login-sessions.txt
@@ -71,6 +83,27 @@ cat /proc/1/comm
 [[ $(systemd-detect-virt) == kvm ]]
 [[ ${SYSTEMD_OFFLINE:-0} == 0 ]]
 uname -a
+snapshot_resources boot
+# The upstream truehd release build used 9,232,508KiB RSS in one rustc
+# process. A complete desktop needs memory too; fewer Cargo jobs alone cannot
+# bound that process. Allocate swap only in this disposable, booted ext4 VM.
+[[ $(findmnt -n -o FSTYPE /) == ext4 ]]
+swap_file=/ci-swapfile
+[[ ! -e "$swap_file" && ! -L "$swap_file" ]]
+fallocate --length 8G "$swap_file"
+chmod 0600 "$swap_file"
+mkswap "$swap_file"
+swapon "$swap_file"
+python - <<'PY'
+from pathlib import Path
+
+entries = [line.split() for line in Path('/proc/swaps').read_text().splitlines()[1:]]
+active = [entry for entry in entries if entry[0] == '/ci-swapfile']
+assert len(active) == 1 and active[0][1] == 'file', entries
+assert int(active[0][2]) >= 8 * 1024 * 1024 - 1024, active
+print('Guest-only 8GiB swapfile is active; host swap and limits are unchanged.')
+PY
+snapshot_resources swap-ready
 systemctl is-active systemd-udevd.service
 udevadm control --reload-rules
 findmnt /
@@ -87,10 +120,12 @@ systemctl is-active sddm.service
 install -d -o builder -g builder /ci-output/desktop
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
     --report-dir /ci-output/desktop/before
+snapshot_resources before-build
 
 install -d -o builder -g builder /ci-output/install-state
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py seed
 desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py
+snapshot_resources after-full-install
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
     --report /ci-output/install-state/first-install.json
 python - <<'PY'
@@ -106,6 +141,7 @@ PY
 # exercises package replacement, configuration preservation and service restart
 # without spending another renderer build on the same pinned source.
 desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py --core-only
+snapshot_resources after-repeat-install
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
     --report /ci-output/install-state/repeat-core-install.json
 
@@ -129,6 +165,7 @@ desktop_user timeout --signal=TERM --kill-after=10s 10m dbus-run-session -- \
     python -I /home/builder/spatial-workbench/tools/ci/audio-stack-smoke.py \
     --require-media-audio --bridge /usr/lib/orender/libharletty_bridge.so \
     --report-dir /ci-output/audio/pipewire
+snapshot_resources after-audio
 python - <<'PY'
 import json
 from pathlib import Path

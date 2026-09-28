@@ -1,6 +1,7 @@
 # Dependencies and source contracts
 
-Inspected September 17–18, 2026. Source revisions identify the contracts reviewed
+Source contracts inspected September 17–18, 2026; AUR compatibility rechecked
+September 28, 2026. Source revisions identify the contracts reviewed
 for this release. They do not replace runtime capability checks or establish
 hardware compatibility. The build uses distribution packages first, existing
 reviewed AUR packages for upstream audio tools, and local packages for this
@@ -17,25 +18,34 @@ project's code and revision-specific patches.
 | BlueZ | Existing official host stack | Bluetooth identity and connection events |
 | BudsLink | User's existing upstream installation | Sole Sony control provider; not replaced by this installer |
 | Companion | Local `plasma-budslink-companion-spatial` | Pinned upstream widget plus native playback/tracking/application cards |
-| mpv-omniphony | Existing AUR package | Encoded source playback and embedded Omniphony decoder |
+| mpv-omniphony | Reviewed AUR recipe pinned to 0.5.2-1 | Encoded source playback and embedded Omniphony decoder |
 | Omniphony engine | Local `orender-spatial` from upstream 0.5.2 plus included patch | Matching CLI/library, verifiable loopback-only control |
-| Decoder bridge | Existing AUR `harletty-bridge` | Upstream format decoding and spatial metadata |
+| Decoder bridge | Reviewed AUR `harletty-bridge` recipe pinned to 0.7.3-1 | Compatible upstream format decoding and spatial metadata |
 | Sony helper | Existing AUR `sony-tracker` | Motion packets from a verified Sony HID sensor interface |
 | SWH LADSPA plugins | Official `swh-plugins` | Actual stereo look-ahead limiter after headphone PEQ |
 | tidalapi | Official `python-tidalapi`; Python extra `>=0.8.11,<0.9` | Device authorization, catalogue requests and clear stream manifests |
 
 `bash install.sh` builds and installs the full selection. It installs missing
-official build tools and uses existing `yay`/`paru` when available. Otherwise it
-fetches the actual AUR recipes and builds them directly with makepkg; package
-review prompts remain enabled. AUR metadata inspected for this release reported mpv-omniphony and
-orender 0.5.2-1, harletty-bridge 0.7.3-1 and sony-tracker 1.0.0-1. AUR dependencies
-resolve to their current reviewed package revisions when installed, so decoder
-capability and ABI checks remain essential.
+official build tools, checks out the exact reviewed bridge and player AUR commits,
+and builds them directly with makepkg, including when `yay`/`paru` is available.
+The Sony tracker uses an existing helper when available or a reviewed direct
+makepkg build otherwise. Package review prompts remain enabled.
+
+The supported audio set is Omniphony 0.5.2 with Harletty 0.7.3 and mpv-omniphony
+0.5.2. Current AUR HEAD cannot be substituted independently: upstream
+[Omniphony 0.6.0](https://github.com/mgth/Omniphony/releases/tag/v0.6.0) and Harletty
+0.8.0 change the decoder bridge ABI from 0.3 to 0.4, and current mpv-omniphony 0.6.0
+requires `orender>=0.6.0`. Future upgrades must update and test this set together.
+Decoder capability, ABI and actual playback checks remain essential after
+installation. Native software-chain evidence does not establish physical headset
+or tracker compatibility.
 
 mpv-omniphony supplies/replaces mpv and libmpv; this is a package-manager
 transaction, not a second unrelated executable. The local `orender-spatial`
-package provides `orender=0.5.2`, conflicts with the unpatched `orender` package,
-and installs its matching shared library. No script overwrites another package's
+package provides `orender=0.5.2`, conflicts with the unpatched `orender` package
+and unsupported bridge/player versions, and installs its matching shared library.
+The installer rejects an existing incompatible audio set before package
+transactions rather than silently downgrading it. No script overwrites another package's
 files. See [installation](install.md) and [packaging](../packaging/README.md).
 
 The control patch adds an explicit OSC bind policy and CLI/library capability
@@ -56,6 +66,8 @@ channel-format and PCM lane tests. See [patch details](orender-loopback.md) and
 | maniacx/BudsLink | `7405f6343f8390b5a78e358d3ad4c0870b2270bd` | D-Bus and WF-1000XM5 control contracts |
 | mgth/Omniphony, v0.5.2 | `a8018cd78f813d5c760b40d49e60fb12afc22526` | Packaged engine source and release contracts |
 | mgth/mpv-omniphony, v0.5.2 | `6b474e387d30fabec8927880a25075f288d675d3` | Player decoder, telemetry and release API |
+| AUR mpv-omniphony, 0.5.2-1 | [`f9e20fbbf55ca31da506ff770d1585bde11fbb89`](https://aur.archlinux.org/cgit/aur.git/tree/?h=mpv-omniphony&id=f9e20fbbf55ca31da506ff770d1585bde11fbb89) | Compatible player recipe, source checksums and library SONAME dependencies |
+| AUR harletty-bridge, 0.7.3-1 | [`29ea73c708454ca11b7c124a677ddf370f709c99`](https://aur.archlinux.org/cgit/aur.git/tree/?h=harletty-bridge&id=29ea73c708454ca11b7c124a677ddf370f709c99) | Compatible decoder recipe and source checksums |
 | mgth/Omniphony, inspected development snapshot | `fc67346181f1c5908a1bc26968ff192eb09a531d` | Additional source audit; not the packaged engine pin |
 | kdani3/SonyTrackerLinux | `f5326577c4ae1949c6cbce3d8a4905107a86452d` | HID discovery, binary packet and axis conventions |
 | SlimeVR/SlimeVR-Server | `c11dc54ed1a745ffc4b15db7f820d8d0c1993990` | Receiver USB IDs, identity and pose decoding |

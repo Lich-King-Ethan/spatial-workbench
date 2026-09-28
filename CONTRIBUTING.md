@@ -14,7 +14,7 @@ LADSPA limiter. On Arch, install the dependencies and run the checks below.
 These commands work in fish and Bash without activating a shell-specific script:
 
 ```sh
-sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins
+sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins git
 python -m venv .venv
 .venv/bin/python -m pip install -e '.[tidal]' build numpy
 env SPATIAL_TEST_DBUS=1 dbus-run-session -- .venv/bin/python -m unittest discover -s tests -v

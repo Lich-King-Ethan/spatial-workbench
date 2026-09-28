@@ -59,9 +59,17 @@ Its captured audio and metrics are software integration evidence, not proof of
 physical earbud playback.
 
 The job uses a standard public `ubuntu-24.04` runner and requires usable KVM,
-16GB host RAM and at least 30GiB free disk before provisioning. It gives the guest
-4 virtual CPUs, 10GiB RAM and a 24GiB disk, with a 120-minute workflow limit
+16GB host RAM and at least 45GiB free disk before provisioning. It gives the guest
+4 virtual CPUs, 12GiB RAM and a 36GiB ext4 disk, with a 120-minute workflow limit
 (95 minutes for the VM, 90 minutes for its test service).
+The booted guest creates and verifies an 8GiB swapfile inside its own filesystem
+before building packages. Host swap, limits and compiler optimization flags are
+not changed. A measured `harletty-bridge 0.8.0` build exhausted the previous
+10GiB guest: its `truehd 0.7.2` compiler process alone reached 9,232,508KiB
+resident memory (about 8.8GiB), in addition to the desktop and other processes.
+Reducing build concurrency cannot by itself bound a single compiler process.
+Memory, active swap, disk use and largest processes are captured at boot,
+before building, after installation/reinstallation/audio tests, and on failure.
 The preflight can remove only the unused preinstalled Android SDK, GHC, .NET and PowerShell from
 the disposable runner to recover disk space. When the runner cannot meet the
 requirements the job fails explicitly as an unavailable test environment; it

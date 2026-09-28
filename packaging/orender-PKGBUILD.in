@@ -3,7 +3,7 @@
 # are unchanged; this package supplies both the CLI and its matching library.
 pkgname=orender-spatial
 pkgver=0.5.2
-pkgrel=2
+pkgrel=3
 pkgdesc='Omniphony renderer with local OSC controls and positioned 7.1 live input'
 arch=('x86_64')
 url='https://github.com/mgth/Omniphony'
@@ -12,7 +12,11 @@ depends=('gcc-libs' 'pipewire')
 optdepends=('harletty-bridge: compressed and object-audio decoder bridge')
 makedepends=('rust' 'cargo' 'clang' 'pkgconf')
 provides=("orender=$pkgver" 'liborender.so=0-64')
-conflicts=('orender')
+# Refuse independent helper upgrades that would cross the reviewed bridge/player
+# ABI boundary. These optional modules remain optional when absent.
+conflicts=('orender'
+           'harletty-bridge<0.7.3-1' 'harletty-bridge>0.7.3-1'
+           'mpv-omniphony<0.5.2-1' 'mpv-omniphony>0.5.2-1')
 options=('!lto')
 source=("omniphony-$pkgver.tar.gz::https://github.com/mgth/Omniphony/archive/refs/tags/v$pkgver.tar.gz"
         'orender-loopback.patch' 'orender-live-channels.patch' 'orender-Cargo.lock')
