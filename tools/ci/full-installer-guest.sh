@@ -77,6 +77,12 @@ PY
 }
 trap finish EXIT
 
+ci_validation_scope=$(cat /ci-validation-scope)
+case "$ci_validation_scope" in
+    full|desktop) ;;
+    *) printf 'Unknown guest validation scope: %s\n' "$ci_validation_scope" >&2; exit 2 ;;
+esac
+printf 'Guest validation scope: %s\n' "$ci_validation_scope"
 printf 'Guest PID 1: '
 cat /proc/1/comm
 [[ $(cat /proc/1/comm) == systemd ]]
@@ -121,6 +127,46 @@ install -d -o builder -g builder /ci-output/desktop
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
     --report-dir /ci-output/desktop/before
 snapshot_resources before-build
+
+if [[ "$ci_validation_scope" == desktop ]]; then
+    desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py --desktop-only
+    snapshot_resources after-desktop-install
+    desktop_user systemctl --user is-enabled spatiald.service
+    desktop_user systemctl --user is-active spatiald.service pipewire.service wireplumber.service
+    desktop_user spatialctl status > /ci-output/daemon-status.json
+    pacman -Qk spatial-workbench plasma-budslink-companion-spatial
+    desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+        --installed --report-dir /ci-output/desktop/installed
+    python - <<'PY'
+import json
+from pathlib import Path
+
+reports = sorted(Path('/home/builder/.local/state/spatiald/install').glob('verification-*.json'))
+assert reports, 'The desktop installer did not produce a host verification report'
+host = json.loads(reports[-1].read_text())
+assert host['selection'] == 'core' and host['result'] == 'pass', host
+assert host['checks']['audio_modules']['status'] == 'off', host
+desktop_reports = {}
+for phase in ('before', 'installed'):
+    report = json.loads((Path('/ci-output/desktop') / phase / 'desktop.json').read_text())
+    assert report['status'] == 'pass', report
+    desktop_reports[phase] = report
+acceptance = {
+    'scope': 'desktop',
+    'desktop_precheck': 'pass',
+    'core_and_companion_install': 'pass',
+    'full_installer': 'not_run',
+    'audio': 'not_run',
+    'repeat_core_install': 'not_run',
+    'physical_hardware': 'not_tested',
+    'desktop': desktop_reports,
+    'host_verification': host,
+}
+Path('/ci-output/desktop-acceptance.json').write_text(json.dumps(acceptance, indent=2) + '\n')
+print(json.dumps(acceptance, indent=2))
+PY
+    exit 0
+fi
 
 install -d -o builder -g builder /ci-output/install-state
 desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py seed
@@ -188,6 +234,7 @@ for phase in ('before', 'installed'):
     assert desktop['status'] == 'pass', desktop
     desktop_reports[phase] = desktop
 acceptance = {
+    'scope': 'full',
     'installer': 'pass',
     'repeat_core_install': 'pass; existing settings, permissions and Companion backup preserved',
     'package_file_ownership': 'pass; installed files belong to the expected pacman packages',

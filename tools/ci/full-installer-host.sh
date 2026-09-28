@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Runs only on a disposable GitHub-hosted runner. No host credentials enter the VM.
 set -Eeuo pipefail
+ci_validation_scope=${CI_VALIDATION_SCOPE:-full}
+case "$ci_validation_scope" in
+    full|desktop) ;;
+    *) printf 'Unknown VM validation scope: %s\n' "$ci_validation_scope" >&2; exit 2 ;;
+esac
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || {
     printf 'This provisioning script requires a disposable GitHub-hosted runner.\n' >&2
     exit 1
@@ -8,6 +13,7 @@ set -Eeuo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 evidence_dir="$project_dir/installer-evidence"
 mkdir -p "$evidence_dir"
+printf '%s\n' "$ci_validation_scope" > "$evidence_dir/validation-scope.txt"
 exec > >(tee "$evidence_dir/host.log") 2>&1
 vm_dir=$(mktemp -d "$RUNNER_TEMP/spatial-installer.XXXXXXXX")
 vm_root="$vm_dir/root"
@@ -31,7 +37,8 @@ finish() {
 }
 trap finish EXIT
 
-printf 'Source commit: %s\nOfficial userspace image: %s\n' "$GITHUB_SHA" "$CACHYOS_IMAGE"
+printf 'Source commit: %s\nOfficial userspace image: %s\nValidation scope: %s\n' \
+    "$GITHUB_SHA" "$CACHYOS_IMAGE" "$ci_validation_scope"
 lscpu
 free -h
 df -h "$RUNNER_TEMP"
@@ -79,7 +86,7 @@ git -C "$project_dir" archive --format=tar HEAD > "$vm_dir/source.tar"
 docker run --detach --cap-add=SYS_ADMIN --name "$container_name" "$CACHYOS_IMAGE" sleep infinity
 docker cp "$vm_dir/source.tar" "$container_name:/source.tar"
 docker cp "$project_dir/tools/ci/full-installer-prepare.sh" "$container_name:/prepare.sh"
-docker exec "$container_name" bash /prepare.sh
+docker exec --env "CI_VALIDATION_SCOPE=$ci_validation_scope" "$container_name" bash /prepare.sh
 docker stop "$container_name"
 
 # Export directly into the guest disk, avoiding a second unpacked rootfs.
@@ -148,5 +155,10 @@ fi
     printf 'The actual installer or its acceptance checks failed.\n' >&2
     exit 1
 }
-printf 'PASS: full installer completed from fish in the booted Plasma VM; physical headphone checks remain WAIT.\n'
-cat "$evidence_dir/acceptance.json"
+if [[ "$ci_validation_scope" == desktop ]]; then
+    printf 'PASS: desktop UI precheck only; full installer, audio and repeat-install gates were NOT RUN.\n'
+    cat "$evidence_dir/desktop-acceptance.json"
+else
+    printf 'PASS: full installer completed from fish in the booted Plasma VM; physical headphone checks remain WAIT.\n'
+    cat "$evidence_dir/acceptance.json"
+fi

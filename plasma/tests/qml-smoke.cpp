@@ -171,6 +171,84 @@ private slots:
         QDBusConnection::sessionBus().unregisterService(service);
         QDBusConnection::sessionBus().unregisterObject(objectPath);
     }
+
+    void disconnectedFullRepresentation()
+    {
+        fixture.snapshot = QJsonDocument::fromJson(R"JSON({
+            "schema":1,"connected":false,"audio_ready":false,"runtime":{
+                "live":{"state":"disabled"},"equalizer":{"state":"waiting","enabled":true}}
+        })JSON").object();
+        QVERIFY(fixture.publish());
+        QStringList warnings;
+        QQmlEngine engine;
+        connect(&engine, &QQmlEngine::warnings, &engine, [&warnings](const QList<QQmlError> &errors) {
+            for (const auto &error : errors)
+                warnings.append(error.toString());
+        });
+        auto *translations = new KLocalizedQmlContext(&engine);
+        translations->setTranslationDomain(QStringLiteral("spatial-companion-smoke"));
+        engine.rootContext()->setContextObject(translations);
+        QQmlEngine::setContextForObject(translations, engine.rootContext());
+        QQuickWindow window;
+        window.resize(500, 500);
+        window.show();
+        QQmlComponent component(&engine, QUrl::fromLocalFile(
+            QStringLiteral(SPATIAL_COMPANION_QML_DIR) + QStringLiteral("/FullRepresentation.qml")));
+        QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
+        QVERIFY2(component.isReady(), qPrintable(component.errorString()));
+        std::unique_ptr<QObject> object(component.createWithInitialProperties({
+            {QStringLiteral("isEditMode"), false}, {QStringLiteral("isDesktopMode"), true},
+            {QStringLiteral("budsLinkRunning"), false}
+        }));
+        QVERIFY2(object != nullptr, qPrintable(component.errorString()));
+        auto *item = qobject_cast<QQuickItem *>(object.get());
+        QVERIFY(item);
+        item->setParentItem(window.contentItem());
+        item->setSize(QSizeF(500, 500));
+        QVERIFY(!item->property("hasDevice").toBool());
+        for (const auto &text : {"No compatible headphones connected", "Spatial Audio is running",
+                                "BudsLink is not running", "Headphone output: Waiting",
+                                "Application audio: Disabled", "Equalizer: Waiting"}) {
+            QQuickItem *label = nullptr;
+            QTRY_VERIFY_WITH_TIMEOUT((label = findVisualLabel(item, QString::fromUtf8(text))) != nullptr, 5000);
+            QTRY_VERIFY(label->isVisible() && label->width() > 0 && label->height() > 0);
+        }
+        auto *refresh = item->findChild<QQuickItem *>(QStringLiteral("spatialStatusRefresh"));
+        QVERIFY(refresh);
+        QTRY_VERIFY(refresh->isEnabled());
+        // Change the service's property without a PropertiesChanged signal.
+        // The old value must remain until the real button handler requests it.
+        auto changedRuntime = fixture.snapshot["runtime"].toObject();
+        changedRuntime["live"] = QJsonObject{{QStringLiteral("state"), QStringLiteral("waiting")}};
+        fixture.snapshot["runtime"] = changedRuntime;
+        QTest::qWait(150);
+        QVERIFY(findVisualLabel(item, QStringLiteral("Application audio: Disabled")) != nullptr);
+        QVERIFY(findVisualLabel(item, QStringLiteral("Application audio: Waiting")) == nullptr);
+        QVERIFY(QMetaObject::invokeMethod(refresh, "clicked"));
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("Application audio: Waiting")) != nullptr);
+        auto *status = item->findChild<QQuickItem *>(QStringLiteral("spatialStatus"));
+        QVERIFY(status);
+        // Invalid state must clear readiness rather than throwing binding errors
+        // or leaving the previous running-service state on screen.
+        for (const auto &invalid : {"null", "[]", "\"text\"", "1", "true", "{"}) {
+            QVERIFY(QMetaObject::invokeMethod(status, "readState",
+                    Q_ARG(QVariant, QVariant(QString::fromUtf8(invalid)))));
+            QTRY_VERIFY(!refresh->isEnabled());
+            QTRY_VERIFY(findVisualLabel(item, QStringLiteral("Waiting for Spatial Audio status")) != nullptr);
+        }
+        QVERIFY(QMetaObject::invokeMethod(status, "readState", Q_ARG(QVariant, QVariant(fixture.state()))));
+        QTRY_VERIFY(refresh->isEnabled());
+        // Losing the actual service must clear previous readiness and disable
+        // refresh; neither a fake device nor a null DevicePage is constructed.
+        QVERIFY(QDBusConnection::sessionBus().unregisterService(service));
+        QTRY_VERIFY(!refresh->isEnabled());
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("Spatial Audio service is unavailable")) != nullptr);
+        QVERIFY(QDBusConnection::sessionBus().registerService(service));
+        QTRY_VERIFY(refresh->isEnabled());
+        object.reset();
+        QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
 };
 
 int main(int argc, char **argv)

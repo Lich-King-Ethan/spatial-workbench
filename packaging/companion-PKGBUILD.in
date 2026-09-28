@@ -1,7 +1,7 @@
 # Patched source package. Upstream remains the owner of the Companion UI.
 pkgname=plasma-budslink-companion-spatial
 pkgver=0.2.0.spatial@VERSION@
-pkgrel=1
+pkgrel=2
 pkgdesc='BudsLink Companion with optional spatial tracking controls'
 arch=('any')
 url='https://github.com/maniacx/BudsLink-Companion'

@@ -15,7 +15,10 @@ document filesystem inside the temporary runtime. Cleanup stays on that runtime'
 filesystem and reports errors without unmounting or stopping desktop services.
 The test covers component
 creation, visible tracker delegates, plain tracker names, playback format updates,
-and exact application-stream identifiers. Component errors and **every warning
+exact application-stream identifiers, and the full disconnected representation.
+The disconnected check verifies real service-state refresh, loss/recovery,
+disabled actions when status is unavailable, and malformed-state handling.
+Component errors and **every warning
 reported by the QML engine** fail the test. General platform diagnostic messages
 remain visible; there is no warning suppression list.
 

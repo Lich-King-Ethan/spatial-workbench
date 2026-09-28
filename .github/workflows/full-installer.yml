@@ -1,22 +1,32 @@
 name: Full installer in a CachyOS VM
+run-name: CachyOS ${{ inputs.scope || 'full' }} validation
 
 # Building every upstream audio package is deliberately an explicit operation.
 on:
   workflow_dispatch:
+    inputs:
+      scope:
+        description: Full installation and audio, or desktop UI precheck only
+        type: choice
+        default: full
+        options:
+          - full
+          - desktop
 
 permissions:
   contents: read
 
 concurrency:
-  group: full-installer-${{ github.ref }}
+  group: full-installer-${{ github.ref }}-${{ inputs.scope || 'full' }}
   cancel-in-progress: true
 
 jobs:
   installer:
-    name: CachyOS Plasma desktop, fish, native installer and audio
+    name: CachyOS ${{ inputs.scope || 'full' }} validation with Plasma and fish
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     env:
+      CI_VALIDATION_SCOPE: ${{ inputs.scope || 'full' }}
       # Official baseline image, resolved 2026-09-18. Package updates retain
       # CachyOS/Arch signature verification and are recorded in the artifacts.
       CACHYOS_IMAGE: cachyos/cachyos@sha256:2a3ec1324a76e2822f4134095942b38fded5995c73478093587ebdcd4ccf81b5
@@ -24,13 +34,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Boot CachyOS Plasma with fish and test the native installer and audio
+      - name: Boot CachyOS Plasma and run the selected native checks
         run: bash tools/ci/full-installer-host.sh
       - name: Retain installer and boot evidence, including failures
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: full-installer-cachyos-${{ github.sha }}
+          name: cachyos-${{ inputs.scope || 'full' }}-${{ github.sha }}
           path: installer-evidence/
           if-no-files-found: error
           retention-days: 14

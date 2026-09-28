@@ -92,6 +92,7 @@ plasma/PlaybackControls.qml
 plasma/PlaybackState.js
 plasma/README.md
 plasma/SpatialControls.qml
+plasma/SpatialStatus.qml
 plasma/companion.patch
 plasma/tests/CMakeLists.txt
 plasma/tests/README.md

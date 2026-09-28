@@ -27,9 +27,16 @@ installer, the guest opens actual Konsole windows, edits and saves a file with
 nano launched from login fish, and records Spectacle screenshots. After the
 package installation it also opens the installed Companion with
 `plasmawindowed`; premature exit or QML load/runtime errors fail the gate.
-Screenshots and per-window logs are retained under `desktop/`, alongside
-session details and KWin support information. Rendering a widget does not
-establish that every control works; control behavior has separate tests.
+The real session's AT-SPI accessibility tree must belong to that exact client
+process and contain visible, nonzero-size disconnected-state labels inside its
+window. Service and module text are checked against the actual daemon snapshot;
+a blank applet cannot pass because the desktop background is visible. The gate
+invokes the enabled **Refresh status** button's exported press action and checks
+the content again. This establishes actual control invocation; the separate
+native Qt test verifies the handler's D-Bus refresh behavior. Screenshots,
+before/after accessibility content, per-window logs, session details and KWin
+support information are retained under `desktop/`. Device controls still have
+separate tests and require real compatible devices for hardware acceptance.
 
 `EDITOR` and `VISUAL` are set to nano in the disposable VM only. The product
 installer does not change the user's existing shell or preferred editor.
@@ -49,6 +56,17 @@ The full installation is followed by a real core-only reinstall, verifying
 package ownership, original user configuration content and permissions, the
 single Companion backup, and running services. Desktop verification runs again
 after both installations.
+
+The dispatch input `validation_scope` defaults to `full`. An explicit `desktop`
+precheck uses the same genuine booted Plasma system and login-fish entry point
+but runs `bash build.sh --install` to build and install only the core and
+Companion packages. It runs the desktop, nano, service and installed-window
+content checks and writes `desktop-acceptance.json`. That report explicitly
+marks the full installer, repeat installation and audio validation `not_run`;
+it is not a substitute for a successful full run. Both host and guest validate
+the scope, and `validation-scope.txt` preserves the selection in the artifact.
+This shorter mode is intended to catch desktop integration defects before
+rebuilding the native audio stack.
 
 After installation, the job also decodes a checksummed upstream E-AC-3 JOC
 fixture through the installed genuine decoder bridge and renderer, requiring

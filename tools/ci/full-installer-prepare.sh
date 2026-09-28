@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 # Image assembly only. Installation under test runs later, after a genuine boot.
 set -Eeuo pipefail
+ci_validation_scope=${CI_VALIDATION_SCOPE:-full}
+case "$ci_validation_scope" in
+    full|desktop) ;;
+    *) printf 'Unknown VM validation scope: %s\n' "$ci_validation_scope" >&2; exit 2 ;;
+esac
 export LC_ALL=C
 mkdir -p /ci-output
+printf '%s\n' "$ci_validation_scope" > /ci-validation-scope
+cp /ci-validation-scope /ci-output/validation-scope.txt
 outer_network=$(readlink /proc/self/ns/net)
 isolated_network=$(unshare --net readlink /proc/self/ns/net)
 [[ "$outer_network" != "$isolated_network" ]]
@@ -18,7 +25,7 @@ SYSTEMD_OFFLINE=1 pacman -Syu --noconfirm --needed base-devel git python python-
     systemd systemd-sysvcompat mkinitcpio linux-cachyos \
     pipewire pipewire-audio pipewire-pulse wireplumber rtkit dbus \
     plasma-meta sddm konsole dolphin spectacle mesa xorg-xwayland ttf-dejavu \
-    fish nano python-pillow 2>&1 | tee /ci-output/bootstrap-pacman.log
+    fish nano python-pillow python-atspi 2>&1 | tee /ci-output/bootstrap-pacman.log
 # pacman can return success after a failed post-transaction hook. Missing
 # depmod/systemd hooks would leave an incomplete guest, so fail at the cause.
 if grep -Eq '^error: command failed to execute correctly|refusing to run ' /ci-output/bootstrap-pacman.log; then

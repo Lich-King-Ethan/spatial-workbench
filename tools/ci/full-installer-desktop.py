@@ -172,6 +172,159 @@ def qml_failures(text):
     return [line for line in text.splitlines() if pattern.search(line)]
 
 
+def module_label(module):
+    """User-facing state expected from the real daemon's disconnected snapshot."""
+    if not module:
+        return "Waiting"
+    if module.get("state") == "disabled" or module.get("enabled") is False:
+        return "Disabled"
+    if module.get("error") or module.get("state") in ("error", "unavailable", "failed"):
+        return "Unavailable"
+    if module.get("state") in ("active", "playing", "running", "ready"):
+        return "Active"
+    return "Waiting"
+
+
+def validate_companion_nodes(nodes, labels):
+    """Reject hidden, zero-size and out-of-window text, including the old blank applet."""
+    windows = [node for node in nodes if node.get("role") in ("frame", "window", "dialog")
+               and node.get("visible") and node.get("showing")
+               and node.get("bounds") and node["bounds"][2] >= 200
+               and node["bounds"][3] >= 120]
+    for window in windows:
+        matches = {}
+        for label in labels:
+            for node in nodes:
+                if (node.get("name") != label or not node.get("visible")
+                        or not node.get("showing") or not node.get("bounds")):
+                    continue
+                x, y, width, height = node["bounds"]
+                if width <= 0 or height <= 0 or x < 0 or y < 0:
+                    continue
+                if (node["path"].startswith(window["path"] + ".")
+                        and x + width <= window["bounds"][2] + 1
+                        and y + height <= window["bounds"][3] + 1):
+                    matches[label] = node
+                    break
+        if set(labels) != matches.keys():
+            continue
+        button = matches["Refresh status"]
+        if button.get("role") not in ("push button", "button") or not button.get("enabled"):
+            raise RuntimeError("Companion's actual Refresh status button is not enabled")
+        if not button.get("actions"):
+            raise RuntimeError("Companion's actual Refresh status button exports no action")
+        return matches
+    raise RuntimeError(f"Companion has no single window with visible in-window content for: {labels}")
+
+
+def accessible_tree(application, atspi):
+    nodes, objects = [], {}
+
+    def visit(accessible, path, depth):
+        if depth > 20 or len(nodes) >= 1000:
+            raise RuntimeError("Companion accessibility tree exceeds the bounded inspection limit")
+        state = accessible.getState()
+        node = {"path": path, "name": accessible.name or "", "role": accessible.getRoleName(),
+                "visible": state.contains(atspi.STATE_VISIBLE),
+                "showing": state.contains(atspi.STATE_SHOWING),
+                "enabled": state.contains(atspi.STATE_ENABLED)}
+        try:
+            rectangle = accessible.queryComponent().getExtents(atspi.WINDOW_COORDS)
+            node["bounds"] = [rectangle.x, rectangle.y, rectangle.width, rectangle.height]
+        except NotImplementedError:
+            pass
+        try:
+            action = accessible.queryAction()
+            node["actions"] = [action.getName(index) for index in range(action.nActions)]
+        except NotImplementedError:
+            pass
+        nodes.append(node)
+        objects[path] = accessible
+        for index in range(accessible.childCount):
+            child = accessible.getChildAtIndex(index)
+            if child is not None:
+                visit(child, f"{path}.{index}", depth + 1)
+
+    visit(application, "app", 0)
+    return nodes, objects
+
+
+def application_for_pid(desktop, pid):
+    applications = [desktop.getChildAtIndex(index) for index in range(desktop.childCount)]
+    matches = [app for app in applications if app is not None and app.get_process_id() == pid]
+    if len(matches) != 1:
+        raise RuntimeError(f"Expected one accessible application owned by PID {pid}")
+    return matches[0]
+
+
+def companion_accessibility(directory, process, timeout=45):
+    """Inspect the installed window through the real session's AT-SPI bus."""
+    import pyatspi
+    from gi.repository import Atspi, GLib
+
+    Atspi.set_timeout(2000, 5000)
+
+    snapshot = json.loads(run("spatialctl", "status"))
+    if snapshot.get("schema") != 1 or snapshot.get("connected") is not False:
+        raise RuntimeError("This VM's disconnected UI check requires actual disconnected daemon state")
+    runtime = snapshot.get("runtime", {})
+    labels = ["No compatible headphones connected", "Spatial Audio is running",
+              "Headphone output: Waiting", "Refresh status",
+              "Application audio: " + module_label(runtime.get("live")),
+              "Equalizer: " + module_label(runtime.get("equalizer"))]
+    evidence = {"status": "fail", "pid": process.pid, "expected_labels": labels,
+                "daemon_snapshot": snapshot, "nodes": []}
+    deadline = time.monotonic() + timeout
+
+    def inspect():
+        if process.poll() is not None:
+            raise RuntimeError("The Companion process exited during accessibility inspection")
+        desktop = pyatspi.Registry.getDesktop(0)
+        application = application_for_pid(desktop, process.pid)
+        nodes, objects = accessible_tree(application, pyatspi)
+        evidence["nodes"] = nodes
+        return validate_companion_nodes(nodes, labels), objects
+
+    def await_content():
+        last_error = None
+        while time.monotonic() < deadline:
+            try:
+                return inspect()
+            except (RuntimeError, GLib.GError) as error:
+                last_error = error
+                time.sleep(0.25)
+        raise RuntimeError(f"Installed Companion content did not become accessible: {last_error}")
+
+    try:
+        matches, objects = await_content()
+        evidence["before_action"] = evidence["nodes"]
+        button = objects[matches["Refresh status"]["path"]]
+        action = button.queryAction()
+        press_actions = [index for index in range(action.nActions)
+                         if action.getName(index).lower() in ("press", "click")]
+        if len(press_actions) != 1:
+            raise RuntimeError("Refresh status does not expose one unambiguous press action")
+        press = press_actions[0]
+        # Invoke the real exported control, never a QML test hook or fake device.
+        # This proves action acceptance and retained real status. The native Qt
+        # test separately verifies the handler's D-Bus refresh transaction.
+        if not action.doAction(press):
+            raise RuntimeError("Companion rejected the actual Refresh status accessibility action")
+        evidence["action"] = {"name": action.getName(press), "control": "Refresh status",
+                              "accepted": True,
+                              "scope": "actual control invocation; native Qt tests verify its D-Bus handler"}
+        deadline = time.monotonic() + 10
+        await_content()
+        evidence["status"] = "pass"
+        return {"file": "companion-accessibility.json", "pid": process.pid,
+                "labels": labels, "refresh_action": evidence["action"]}
+    except Exception as error:
+        evidence["error"] = str(error)
+        raise
+    finally:
+        (directory / "companion-accessibility.json").write_text(json.dumps(evidence, indent=2) + "\n")
+
+
 def screenshot_evidence(directory, environment, installed):
     from PIL import Image, ImageStat
 
@@ -192,8 +345,21 @@ def screenshot_evidence(directory, environment, installed):
         for name, command in commands:
             log = (directory / f"{name}.log").open("w")
             logs.append(log)
-            processes.append((name, subprocess.Popen(command, env=environment,
+            client_environment = dict(environment)
+            if name == "companion":
+                # Qt's documented accessibility opt-in applies only to the
+                # real installed client; the Wayland session remains unchanged.
+                client_environment["QT_LINUX_ACCESSIBILITY_ALWAYS_ON"] = "1"
+            processes.append((name, subprocess.Popen(command, env=client_environment,
                                                      stdout=log, stderr=subprocess.STDOUT)))
+        accessibility = None
+        content_error = None
+        if installed:
+            try:
+                accessibility = companion_accessibility(directory, dict(processes)["companion"])
+            except Exception as error:
+                # Retain the real screenshot even when content admission fails.
+                content_error = error
         # Spectacle delays its capture while the actual Wayland windows render.
         # Waking the virtual output does not bypass the session/service checks.
         run("kscreen-doctor", "--dpms", "on", env=environment)
@@ -215,10 +381,13 @@ def screenshot_evidence(directory, environment, installed):
             if max(deviation) < 8:
                 raise RuntimeError("Desktop screenshot is blank or nearly uniform")
             size = [captured.width, captured.height]
+        if content_error is not None:
+            raise content_error
         return {"file": screenshot.name, "size": size,
                 "sha256": hashlib.sha256(screenshot.read_bytes()).hexdigest(),
                 "windows": [name for name, _ in processes],
-                "scope": "actual desktop rendering; individual widget actions require separate checks"}
+                "companion_accessibility": accessibility,
+                "scope": "actual desktop rendering and installed disconnected content; native tests cover device controls"}
     finally:
         for _, process in processes:
             if process.poll() is None:
