@@ -66,9 +66,9 @@ class NativeQmlSmoke : public QObject
 private slots:
     void initTestCase()
     {
-        // The package check starts a new dbus-run-session, never the user's desktop bus.
+        // The package runner starts a private bus with desktop activation disabled.
         QVERIFY2(qEnvironmentVariable("SPATIAL_QML_PRIVATE_BUS") == QStringLiteral("1"),
-                 "Run this test using the documented isolated dbus-run-session command.");
+                 "Run this test through plasma/tests/run-private.sh and private-session.conf.");
         QVERIFY(QDBusConnection::sessionBus().isConnected());
         QVERIFY(QDBusConnection::sessionBus().registerObject(
             objectPath, &fixtureObject, QDBusConnection::ExportAdaptors));

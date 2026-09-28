@@ -539,8 +539,15 @@ class LiveAudio:
                     if (str(source_props.get("node.id")) != source
                             or str(target_props.get("node.id")) != target
                             or source_props.get("port.direction") != "out"
-                            or target_props.get("port.direction") != "in"
-                            or source_props.get("audio.channel") not in ("FL", "FR")
+                            or target_props.get("port.direction") != "in"):
+                        return result("violation", "The renderer's stereo channels are not linked to matching input channels")
+                    if self._state == "starting" and source_props.get("audio.channel") in (None, "UNK"):
+                        # Omniphony initially exposes its multichannel speaker
+                        # stream, then replaces it with positioned binaural
+                        # ports. Do not accept that temporary route as ready;
+                        # the existing startup deadline bounds negotiation.
+                        continue
+                    if (source_props.get("audio.channel") not in ("FL", "FR")
                             or source_props.get("audio.channel") != target_props.get("audio.channel")):
                         return result("violation", "The renderer's stereo channels are not linked to matching input channels")
                     if source_port in renderer_links[source] or target_port in renderer_inputs:

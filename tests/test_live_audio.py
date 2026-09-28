@@ -211,6 +211,30 @@ class LivePureTests(unittest.TestCase):
         objects = [o for o in graph() if o["id"] != 1302]
         self.assertEqual(running().audit(objects)["state"], "waiting")
 
+    def test_initial_unknown_renderer_ports_wait_for_binaural_stereo_negotiation(self):
+        objects = graph()
+        # Real native startup: a 12-channel unpositioned speaker stream appears
+        # briefly before Omniphony replaces it with its binaural FL/FR stream.
+        for port in (301, 302):
+            next(o for o in objects if o["id"] == port)["info"]["props"]["audio.channel"] = "UNK"
+        objects.extend(obj("Port", port, **{"node.id": 30, "port.direction": "out", "audio.channel": "UNK"})
+                       for port in range(303, 313))
+        live = running()
+        live._state = "starting"
+        self.assertEqual(live.audit(objects)["state"], "waiting")
+        self.assertFalse(live.status()["renderer_ready"])
+        self.assertEqual(live.audit(graph())["state"], "ready")
+        # Losing a positioned output after startup is never normal negotiation.
+        live._state = "playing"
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
+    def test_named_stereo_crossing_is_invalid_even_during_startup(self):
+        objects = graph()
+        next(o for o in objects if o["id"] == 450)["info"]["input-port-id"] = 1302
+        live = running()
+        live._state = "starting"
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
     def test_renderer_stereo_cannot_split_between_physical_sink_and_equalizer(self):
         objects = graph()
         objects[-1]["info"]["input-node-id"] = 60

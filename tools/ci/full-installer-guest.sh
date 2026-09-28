@@ -78,6 +78,10 @@ findmnt /sys
 desktop_user systemctl --user show-environment
 desktop_user systemctl --user start pipewire.service wireplumber.service
 desktop_user systemctl --user is-active pipewire.service wireplumber.service
+busctl --system get-property org.freedesktop.RealtimeKit1 /org/freedesktop/RealtimeKit1 \
+    org.freedesktop.RealtimeKit1 MaxRealtimePriority > /ci-output/rtkit-status.txt
+systemctl is-active rtkit-daemon.service
+ps -eLo pid,tid,comm,cls,rtprio,ni > /ci-output/thread-scheduling-before.txt
 desktop_user pw-dump > /ci-output/pipewire-before.json
 systemctl is-active sddm.service
 install -d -o builder -g builder /ci-output/desktop

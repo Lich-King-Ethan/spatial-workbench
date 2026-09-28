@@ -48,8 +48,10 @@ rechecked on September 28.
 - [Booted installer VM run 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), also `50d542b`, passed the full installer, actual file-ownership checks, and a repeat core install preserving settings and the Companion backup. Its separate genuine E-AC-3 JOC/mpv/renderer/EQ route retained 15 decoded objects, verified routing/tracking across four captures and successful player cleanup.
 
 The September 28 continuation adds stricter live/EQ stereo-output audits and a
-full Plasma Wayland VM with fish and nano. Validation of those new changes is
-pending. Earlier minimal-VM evidence must not be described as a full desktop test.
+full Plasma Wayland VM with fish and nano. The continuing audit, exact tested
+commits, fresh run results and artifact links are recorded in
+[pull request #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
+Earlier minimal-VM evidence must not be described as a full desktop test.
 
 No physical headphones, XM5 HID, Slime receiver or TIDAL account were available.
 The synthetic endpoint establishes only the software behavior actually tested.

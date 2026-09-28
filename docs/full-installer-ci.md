@@ -13,7 +13,7 @@ records the displayed recipes and actual upstream commit identities.
 The guest is assembled from the pinned official
 [`cachyos/cachyos` userspace image](https://github.com/CachyOS/docker) and current
 signed CachyOS/Arch packages, including the complete `plasma-meta` desktop,
-SDDM, Konsole, Dolphin, Spectacle, Mesa, fish and nano. It boots to a real SDDM-autologin
+SDDM, Konsole, Dolphin, Spectacle, Mesa, RTKit, fish and nano. It boots to a real SDDM-autologin
 **Plasma Wayland session** on a virtual DRM display. Mesa software rendering is
 used because this runner has no passed-through GPU. This is a booted desktop
 system assembled from official packages, not a CachyOS ISO/Calamares installation
@@ -34,7 +34,13 @@ establish that every control works; control behavior has separate tests.
 `EDITOR` and `VISUAL` are set to nano in the disposable VM only. The product
 installer does not change the user's existing shell or preferred editor.
 Screen locking and idle display power-off are disabled in this unattended
-guest. No passwords, host credentials or physical devices are introduced.
+guest. The installed Plasma Welcome release is marked as already seen using
+its normal `plasma-welcomerc` setting so the first-login tour cannot obscure
+application screenshots; the Welcome Center remains installed. RTKit uses its
+normal packaged service and policy; its D-Bus availability and the guest's
+initial thread scheduling are retained without suppressing fallback warnings
+or granting extra application privileges. No passwords, host credentials or
+physical devices are introduced.
 Bluetooth, HID permissions on a physical receiver and headphone playback still
 require actual devices. The acceptance artifact requires those absent hardware
 checks to remain `WAIT`.

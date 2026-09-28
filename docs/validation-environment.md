@@ -104,7 +104,17 @@ No changes from the user's local session had been pushed when the repository was
 inspected; the audit branch still pointed to `2f20be1` and main to `f490ac3`.
 The continuation preserves the verified fixes, tightens incomplete live/EQ output
 readiness and adds a real Plasma Wayland session with fish and nano to the VM.
-Fresh validation of these changes is pending. See [the VM procedure](full-installer-ci.md).
+The continuing validation record, exact tested commits, run results and artifact
+links are maintained in [pull request #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
+See [the VM procedure](full-installer-ci.md).
+
+The first full-desktop boot established the real SDDM Wayland/KWin/plasmashell
+session, but exposed a brittle nano Save As prompt matcher. Its replacement
+requires nano to save exact new bytes and exit successfully, retaining a terminal
+transcript. The next boot passed nano and desktop screenshot checks and reached
+the real installer, exposing desktop-portal activation during the isolated
+Companion package check. These failures are kept as evidence; neither is counted
+as a completed installer or application pass.
 
 ## Completed local checks
 

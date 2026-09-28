@@ -413,6 +413,11 @@ class Gate:
                            "reason": "No genuine Harletty decoder bridge supplied; CLI/FFI only"}}
         if routing_only:
             self.report["renderer_audio"]["reason"] = "Explicit early routing gate; full renderer gate runs separately"
+        elif self.bridge.is_file():
+            self.report["renderer_audio"]["reason"] = (
+                "Full renderer audio path has not completed"
+                if require_renderer_audio or require_media_audio else
+                "Full renderer audio path was not requested; CLI/FFI only")
 
     def passed(self, name, **detail):
         self.report["checks"].append({"name": name, "status": "passed", **detail})

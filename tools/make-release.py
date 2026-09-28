@@ -58,12 +58,16 @@ def release(output):
     shutil.copyfile(ROOT / "packaging/companion-PROVENANCE.md", companion / "PROVENANCE.md")
     shutil.copyfile(ROOT / "plasma/tests/CMakeLists.txt", companion / "native-qml-CMakeLists.txt")
     shutil.copyfile(ROOT / "plasma/tests/qml-smoke.cpp", companion / "native-qml-smoke.cpp")
+    shutil.copyfile(ROOT / "plasma/tests/private-session.conf", companion / "native-qml-private-session.conf")
+    shutil.copyfile(ROOT / "plasma/tests/run-private.sh", companion / "native-qml-run-private.sh")
     replacements = {
         "@VERSION@": version, "@UPSTREAM_SHA256@": UPSTREAM_SHA256,
         "@PATCH_SHA256@": digest(companion / "companion.patch"),
         "@PROVENANCE_SHA256@": digest(companion / "PROVENANCE.md"),
         "@QML_CMAKE_SHA256@": digest(companion / "native-qml-CMakeLists.txt"),
         "@QML_SMOKE_SHA256@": digest(companion / "native-qml-smoke.cpp"),
+        "@QML_BUS_SHA256@": digest(companion / "native-qml-private-session.conf"),
+        "@QML_RUNNER_SHA256@": digest(companion / "native-qml-run-private.sh"),
     }
     recipe = (ROOT / "packaging/companion-PKGBUILD.in").read_text()
     for token, value in replacements.items():

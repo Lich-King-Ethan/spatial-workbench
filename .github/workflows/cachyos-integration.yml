@@ -86,11 +86,8 @@ jobs:
               cmake -S plasma/tests -B dist/cachyos-native-qml -G Ninja \
                 -DSPATIAL_COMPANION_QML_DIR=/usr/share/plasma/plasmoids/com.github.maniacx.BudsLink-Companion/contents/ui
               cmake --build dist/cachyos-native-qml
-              runtime_dir=$(mktemp -d)
-              trap '\''rm -rf -- "$runtime_dir"'\'' EXIT
-              env XDG_RUNTIME_DIR="$runtime_dir" QT_QPA_PLATFORM=offscreen \
-                QT_QUICK_BACKEND=software SPATIAL_QML_PRIVATE_BUS=1 \
-                dbus-run-session -- dist/cachyos-native-qml/spatial-qml-smoke \
+              bash plasma/tests/run-private.sh plasma/tests/private-session.conf \
+                dist/cachyos-native-qml/spatial-qml-smoke \
                 -o -,txt -o dist/cachyos-evidence/installed-companion.xml,junitxml
               python -I -c '\''import xml.etree.ElementTree as E; root = E.parse("dist/cachyos-evidence/installed-companion.xml").getroot(); assert not root.findall(".//skipped"), "Native Qt tests must not skip"'\''
             '

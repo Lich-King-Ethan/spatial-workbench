@@ -16,7 +16,7 @@ sed -i '/^[[:space:]]*Color[[:space:]]*$/s/^/# CI transcript: /' /etc/pacman.con
 # https://github.com/systemd/systemd/blob/main/docs/ENVIRONMENT.md
 SYSTEMD_OFFLINE=1 pacman -Syu --noconfirm --needed base-devel git python python-pexpect python-numpy sudo \
     systemd systemd-sysvcompat mkinitcpio linux-cachyos \
-    pipewire pipewire-audio pipewire-pulse wireplumber dbus \
+    pipewire pipewire-audio pipewire-pulse wireplumber rtkit dbus \
     plasma-meta sddm konsole dolphin spectacle mesa xorg-xwayland ttf-dejavu \
     fish nano python-pillow 2>&1 | tee /ci-output/bootstrap-pacman.log
 # pacman can return success after a failed post-transaction hook. Missing
@@ -75,6 +75,20 @@ Session=plasma.desktop
 Relogin=false
 EOF
 install -d -o builder -g builder /home/builder/.config
+# Plasma Welcome is launched by its KDED module, not an XDG autostart entry.
+# Record the installed release as already seen in this unattended VM so its
+# first-login tour cannot cover the Companion screenshot. Keep it installed.
+# https://github.com/KDE/plasma-welcome/blob/v6.7.5/src/kded/daemon.cpp
+plasma_welcome_version=$(pacman -Q plasma-welcome | awk '{print $2}')
+plasma_welcome_version=${plasma_welcome_version%-*}
+plasma_welcome_version=${plasma_welcome_version#*:}
+[[ "$plasma_welcome_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+cat > /home/builder/.config/plasma-welcomerc <<EOF
+[General]
+LastSeenVersion=$plasma_welcome_version
+ShowUpdatePage=false
+LiveEnvironment=false
+EOF
 cat > /home/builder/.config/kscreenlockerrc <<'EOF'
 [Daemon]
 Autolock=false
@@ -91,7 +105,8 @@ DimDisplayIdleTimeoutSec=-1
 [AC][SuspendAndShutdown]
 AutoSuspendAction=0
 EOF
-chown builder:builder /home/builder/.config/kscreenlockerrc /home/builder/.config/powerdevilrc
+chown builder:builder /home/builder/.config/plasma-welcomerc \
+    /home/builder/.config/kscreenlockerrc /home/builder/.config/powerdevilrc
 printf 'LANG=C.UTF-8\n' > /etc/locale.conf
 printf 'spatial-installer-ci\n' > /etc/hostname
 printf '/dev/vda / ext4 defaults 0 1\n' > /etc/fstab
