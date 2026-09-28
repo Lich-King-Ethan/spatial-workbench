@@ -109,31 +109,59 @@ def await_desktop(timeout=150):
     raise RuntimeError(f"Plasma Wayland did not become ready: {last_error}")
 
 
+def drive_nano(child, path, text, timeout=15):
+    """Save through the actual editor; judge bytes, not curses prompt wording."""
+    import pexpect
+
+    if path.exists() or path.is_symlink():
+        raise RuntimeError("The nano acceptance file must not exist before editing")
+    expected = (text + "\n").encode("utf-8")
+    child.expect("GNU nano")
+    child.send(text)
+    # Ctrl+S saves the named file directly. Ctrl+O is Save As, whose prompt
+    # wording/curses redraws vary between nano releases and locales.
+    # https://www.nano-editor.org/dist/latest/cheatsheet.html
+    child.sendcontrol("s")
+    deadline = time.monotonic() + timeout
+    while True:
+        if path.is_file() and path.read_bytes() == expected:
+            break
+        if time.monotonic() >= deadline:
+            raise TimeoutError("nano did not save the exact expected bytes before the deadline")
+        try:
+            # Drain terminal output into the retained transcript while waiting
+            # for nano's disk write. Nothing outside the editor writes the file.
+            child.read_nonblocking(size=4096, timeout=min(0.2, max(0, deadline - time.monotonic())))
+        except pexpect.TIMEOUT:
+            pass
+        except pexpect.EOF as error:
+            raise RuntimeError("nano exited before saving the expected file") from error
+    child.sendcontrol("x")
+    child.expect(pexpect.EOF)
+    child.close()
+    if child.exitstatus != 0 or path.read_bytes() != expected:
+        raise RuntimeError("nano did not exit successfully with the exact saved content")
+    return hashlib.sha256(expected).hexdigest()
+
+
 def nano_check(directory, environment):
     import pexpect
 
     path = directory / "nano-edit.txt"
     text = "Saved by the real nano editor launched from login fish."
-    child = pexpect.spawn("/usr/bin/fish", ["--login", "--command",
-                           'exec $EDITOR --ignorercfiles "$argv[1]"', str(path)],
-                          env={**environment, "TERM": "xterm-256color"},
-                          encoding="utf-8", timeout=15, dimensions=(30, 120))
-    try:
-        child.expect("GNU nano")
-        child.send(text)
-        child.sendcontrol("o")
-        child.expect("File Name to Write")
-        child.sendline("")
-        child.expect("Wrote 1 line")
-        child.sendcontrol("x")
-        child.expect(pexpect.EOF)
-        child.close()
-        if child.exitstatus != 0 or path.read_text().rstrip("\n") != text:
-            raise RuntimeError("The selected editor did not save the expected file")
-    finally:
-        if child.isalive():
-            child.terminate(force=True)
-    return {"editor": "nano", "invoked_from": "fish --login", "saved_file": path.name}
+    with (directory / "nano-terminal.log").open("w") as transcript:
+        child = pexpect.spawn("/usr/bin/fish", ["--login", "--command",
+                               'exec $EDITOR --ignorercfiles "$argv[1]"', str(path)],
+                              env={**environment, "TERM": "xterm-256color"},
+                              encoding="utf-8", timeout=15, dimensions=(30, 120))
+        child.logfile_read = transcript
+        try:
+            saved_sha256 = drive_nano(child, path, text)
+        finally:
+            if child.isalive():
+                child.terminate(force=True)
+    return {"editor": "nano", "invoked_from": "fish --login", "saved_file": path.name,
+            "sha256": saved_sha256, "transcript": "nano-terminal.log"}
 
 
 def qml_failures(text):
