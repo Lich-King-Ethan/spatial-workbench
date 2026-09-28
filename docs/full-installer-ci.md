@@ -57,7 +57,7 @@ package ownership, original user configuration content and permissions, the
 single Companion backup, and running services. Desktop verification runs again
 after both installations.
 
-The dispatch input `validation_scope` defaults to `full`. An explicit `desktop`
+The dispatch input `scope` defaults to `full`. An explicit `desktop`
 precheck uses the same genuine booted Plasma system and login-fish entry point
 but runs `bash build.sh --install` to build and install only the core and
 Companion packages. It runs the desktop, nano, service and installed-window
