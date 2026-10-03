@@ -51,6 +51,45 @@ class InstallerContractTests(unittest.TestCase):
         self.assertNotIn("[PASS]", result.stdout)
         self.assertIn("actual-build-error", log)
 
+    def test_audio_player_libraries_use_the_prompted_official_transaction(self):
+        transaction = re.search(r"(?ms)^if \(\( with_tidal \|\| with_audio \)\); then\n.*?^fi", SCRIPT)
+        self.assertIsNotNone(transaction)
+        audio_packages = {"pipewire-audio", "swh-plugins", "libcdio-paranoia", "mujs",
+                          "uchardet", "libsixel", "libxpresent"}
+        for audio, tidal, answer in ((1, 0, "y"), (1, 1, "y"), (0, 1, "y"),
+                                     (0, 0, "y"), (1, 0, "n")):
+            with self.subTest(audio=audio, tidal=tidal, answer=answer), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                log, arguments = root / "install.log", root / "arguments"
+                program = "\n".join([
+                    "set -euo pipefail", "spatial_green=''; spatial_reset=''",
+                    f"with_audio={audio}; with_tidal={tidal}",
+                    function("message"), function("passed"), function("run_step"),
+                    # Real run_step must leave stdin connected and preserve the
+                    # transaction's output and nonzero cancellation status.
+                    'sudo() { [[ "$1" == pacman ]] || return 99; shift; pacman "$@"; }',
+                    'pacman() { printf "%s\\n" "$@" > "$fixture_arguments";',
+                    '  printf "Proceed with installation? [Y/n] "; local answer; read -r answer;',
+                    '  [[ "$answer" == y ]] || return 47; }',
+                    transaction.group(),
+                ])
+                result = subprocess.run(["bash", "-c", program], input=answer + "\n",
+                                        capture_output=True, text=True, timeout=10,
+                                        env={**os.environ, "spatial_install_log": str(log),
+                                             "fixture_arguments": str(arguments)})
+                self.assertEqual(result.returncode, 47 if answer == "n" else 0, result.stderr)
+                if not (audio or tidal):
+                    self.assertFalse(arguments.exists())
+                    continue
+                requested = arguments.read_text().splitlines()
+                self.assertEqual(requested[:2], ["-S", "--needed"])
+                self.assertEqual(set(requested[2:]), (audio_packages if audio else set())
+                                 | ({"python-tidalapi"} if tidal else set()))
+                self.assertEqual(len(requested), len(set(requested)))
+                self.assertIn("Proceed with installation? [Y/n]", result.stdout)
+                self.assertIn("Proceed with installation? [Y/n]", log.read_text())
+                self.assertEqual("[PASS]" in result.stdout, answer == "y")
+
     def test_reuse_requires_exact_package_and_satisfying_version(self):
         for exact_name, version_satisfied, expected in [(1, 1, 0), (0, 1, 1), (1, 0, 1)]:
             with self.subTest(exact_name=exact_name, version=version_satisfied):

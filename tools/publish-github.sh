@@ -153,6 +153,7 @@ tests/test_audio_stack_smoke.py
 tests/test_control.py
 tests/test_control_unit.py
 tests/test_core.py
+tests/test_core_packaging.py
 tests/test_desktop.py
 tests/test_diagnostics.py
 tests/test_discovery.py

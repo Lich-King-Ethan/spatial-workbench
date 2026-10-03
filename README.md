@@ -6,9 +6,10 @@ Your headphones remain the final output; BudsLink retains the Sony device contro
 
 > Development build. Physical WF-1000XM5 channel localization and corrected yaw
 > were tested on September 28. Motion still had audible lag. The October 3
-> software checks pass on an isolated compatible audio stack; the installed host
-> still has incompatible dependencies. Hardware testing is paused; [status and remaining checks](STATUS.md) separate software
-> evidence from physical and account acceptance.
+> repaired installation passes all 15 native audio gates on private PipeWire.
+> The second physical test awaits the user connecting the headphones;
+> [status and remaining checks](STATUS.md) separate software evidence from
+> physical and account acceptance.
 
 ## Install
 

@@ -2,41 +2,53 @@
 
 ## Current handoff — October 3, 2026
 
-The user paused physical testing and requested code review/cleanup, the **BudsLink
-Spatial Companion** rename, AGPL-3.0-only for original project code, and a native
-TIDAL mini-client. Stay on `fix/positioned-surround-audit`, preserve local work,
-and do not resume installs, audible playback or movement tests without the user's
-new instruction. Existing package prompts, settings and runtime identifiers stay.
+The user authorized installation and preparation for a second physical smoke test
+after the code review, **BudsLink Spatial Companion** rename and native TIDAL work.
+Stay on `fix/positioned-surround-audit` and preserve local work, settings, normal
+package prompts and runtime identifiers. The headphones are currently disconnected;
+the user will connect them later. Wait for readiness before audible playback or
+movement cues. Physical acceptance is still pending.
 
-The timestamps/predictor and TIDAL source changes pass 469 Python tests without
-skips, including the WirePlumber guard startup-race and sign-in recovery regressions.
-The Companion passes 7 native Qt checks, including actual window hiding, card
-recreation and sign-in completion while closed. Browser handoff preserves the
-bounded daemon attempt; reopening resumes checks without hidden network polling.
-Two consecutive isolated pinned-stack runs pass all 15 audio gates:
-eight independent input lanes, owned 7.1, 18 PCM windows/74 checks, four Atmos captures
-with 15 decoded objects and cleanup. The reports are
+The reviewed ten-package repair was installed through normal Konsole/fish/nano
+prompts. Core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony `1.0.0-2`,
+renderer `0.5.2-3`, bridge `0.7.3-1` and existing mpv `0.5.2-1` are now the installed
+set. Five missing mpv library packages were added. All 122 baseline
+configuration/widget files are unchanged; `spatiald.service` and WirePlumber are active.
+
+Core revision 2 exposed a real local packaging error: a virtual-environment Python
+installed the wheel under the builder's prefix, leaving the CLI missing after
+old-name replacement. Activation stopped before service restart. Revision 3 now
+uses system Python and `--prefix=/usr`, with a staging guard for module paths and
+both launcher shebangs. Its rebuild used official Python frontends and passed
+all 474 tests. The archive layout was verified before the corrected package was
+installed. The affected project virtual environment was restored separately
+without global pip installation. Preserve this failure record; the earlier
+passing unit suite did not validate the installed package layout.
+
+Non-audible `spatial-verify` reports software features PASS and hardware/playback
+WAIT with the headphones disconnected. The actual installed stack passed all 15
+native gates on private D-Bus/PipeWire using its `/usr` modules and libraries
+without replacements. The final report is
+`build/local-validation/round2-20261003/installed-native-audio/report.json`:
+eight lanes, owned 7.1, 18 PCM windows/74 checks, decoded Atmos with 15 objects
+and verified cleanup/defaults; `hardware_validated` is false. The Companion's
+7 native Qt checks cover window hiding, card recreation and recovered sign-in
+completion.
+
+Earlier isolated pinned-stack runs passed all 15 gates in
 `native-pinned-review-20261003.abukawxy/` and
-`native-pinned-review-20261003.rbtb2hc1/` under `build/local-validation/`.
-An earlier Atmos startup graph-stability failure remains unexplained and retained.
-See [status](../STATUS.md) for the complete evidence boundary.
+`native-pinned-review-20261003.rbtb2hc1/`. They cover eight lanes, owned 7.1,
+18 PCM windows/74 checks, four Atmos captures with 15 objects and cleanup.
+The initial dependency failure in `native-review-20261003.1hatAl/` led to the
+installed repair. The intermediate Atmos graph-stability failure in
+`native-pinned-review-20261003.ji60e8_s/` remains unexplained. These reports live
+under `build/local-validation/`; no tests were weakened.
 
-These new packages are not installed or physically accepted. The live host's
-audio dependencies have drifted, and the isolated pass does not repair them.
-September 28's corrected yaw was close to anchored and settled when still, with
-perceived delay. Pitch, roll, off-center recenter and real TIDAL account/Atmos
-checks remain open.
-
-When physical testing resumes, first inspect and repair the audio package group
-through normal package prompts. October 3 inspection
-found `orender` reporting `omniphony-renderer v0.2.5` without the required marker,
-`orender-spatial` absent, and `harletty-bridge 0.8.0-1` (supported pin: `0.7.3-1`).
-The installed mpv 0.5.2 also cannot load `libcdio_paranoia.so.2`,
-`libcdio_cdda.so.2`, `libmujs.so`, `libuchardet.so.0`, `libsixel.so.1` and
-`libXpresent.so.1`. Do not fabricate markers, create ABI-guessing symlinks, or
-weaken gates. Rebuild/resolve the compatible group against its actual dependencies.
-The retained failed preflight is `build/local-validation/native-review-20261003.1hatAl/`.
-Keep desktop dependencies unchanged during this code-only pass; use isolated builds.
+When the user connects the headphones, verify actual A2DP/HID readiness and low
+volume first. September 28's corrected yaw was close to anchored and settled when
+still, with perceived delay. Repeat that baseline, then finish pitch, roll,
+off-center recenter and prediction comparisons. Real TIDAL account/Atmos acceptance
+also remains open. Coordinate movement and listening cues with the user.
 
 Start with [current status](../STATUS.md), [architecture](architecture.md),
 [timing](head-tracking-timing.md), [TIDAL](tidal-runtime.md) and

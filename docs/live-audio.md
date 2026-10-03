@@ -108,7 +108,8 @@ hosted and local isolated PipeWire tests established native channel negotiation
 and software routing behavior; September 28 testing also reached the actual
 WF-1000XM5 and corrected yaw compensation. Selected-game behavior, the remaining
 physical axes, latency perception and real-device recovery still need acceptance.
-Physical testing is paused as of October 3. See [current status](../STATUS.md)
+The repaired October 3 installed stack passes the private native gate; physical
+testing awaits the user connecting the headphones. See [current status](../STATUS.md)
 and the [physical record](local-pc-validation-20260928.md).
 
 Primary references:

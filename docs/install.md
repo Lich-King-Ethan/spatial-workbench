@@ -28,6 +28,13 @@ your desktop session, then runs the real host acceptance checks automatically.
 Standard package review and sudo prompts remain enabled. No system Python
 packages are installed with pip.
 
+Core revision `0.2.3-3` and later use `/usr/bin/python` explicitly for the build,
+tests and wheel installation, with an explicit `/usr` prefix. The staging check
+requires the system module path and both executable CLI launchers with system
+Python shebangs. An active development virtual environment must not determine
+where a pacman package installs its files. Official `python-build` and
+`python-installer` remain required build dependencies.
+
 Native source builds need substantial memory and free disk space. Prefer at least
 16 GiB RAM, or enough already-configured swap for a lower-memory machine; close
 other memory-heavy applications during compilation. Reducing build parallelism
@@ -60,9 +67,12 @@ alias. Existing settings, saved tracker permissions and TIDAL sessions stay in p
 
 Do not manually rename configuration directories or remove the old package's
 files. Build and inspect the new packages, then let pacman own their replacement.
-The renamed packages and compatibility metadata pass local source/build checks;
-an actual old-name upgrade transaction and physical acceptance remain separate
-checks in [status](../STATUS.md).
+The October 3 old-name replacement completed through normal prompts, with all
+122 baseline configuration/widget files unchanged. That installation exposed a
+local revision 2 build whose wheel had been staged under a virtual-environment
+prefix, removing the system CLI during replacement. The corrected revision 3
+package was rebuilt, checked and installed before service activation. Physical
+acceptance remains separate; see [status](../STATUS.md) for the current results.
 
 ## What the command installs
 
@@ -77,6 +87,12 @@ checks in [status](../STATUS.md).
 | `harletty-bridge` | Reviewed AUR recipe pinned to 0.7.3-1 | Compatible format-decoding plugin |
 | `sony-tracker-spatial` | Pinned SonyTrackerLinux 1.0.0 plus included patch | Version 1.0.0-2 or later; timestamped absolute Sony HID reports |
 | `swh-plugins` | Official Arch Extra | Limiter for the optional headphone equalizer |
+
+The audio installation also explicitly requests `libcdio-paranoia`, `mujs`,
+`uchardet`, `libsixel` and `libxpresent` through the normal official-package
+transaction. The pinned mpv build links these libraries even though its upstream
+package metadata omits them; retaining them prevents a previously installed
+player from becoming unloadable after dependency cleanup.
 
 The AUR transaction for `mpv-omniphony` replaces stock `mpv` and supplies libmpv.
 Review the package manager's transaction, including any applications that depend

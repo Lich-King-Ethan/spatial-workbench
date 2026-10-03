@@ -186,7 +186,12 @@ run_step 'Ensure official build tools and review editor' sudo pacman -S --needed
 if (( with_tidal || with_audio )); then
     distro_modules=()
     if (( with_tidal )); then distro_modules+=(python-tidalapi); fi
-    if (( with_audio )); then distro_modules+=(pipewire-audio swh-plugins); fi
+    if (( with_audio )); then
+        # The pinned mpv recipe omits these five libraries from its package
+        # dependencies although its executable links them. Install their real
+        # repository packages before building or reusing that exact player.
+        distro_modules+=(pipewire-audio swh-plugins libcdio-paranoia mujs uchardet libsixel libxpresent)
+    fi
     run_step 'Install official optional modules' sudo pacman -S --needed "${distro_modules[@]}"
 fi
 run_logged_step 'Generate complete checksummed package sources' python3 "$project_dir/tools/make-release.py"

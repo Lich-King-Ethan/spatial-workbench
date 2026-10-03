@@ -4,21 +4,22 @@
 
 The project is now named **BudsLink Spatial Companion** (formerly Spatial Workbench).
 Original code now uses AGPL-3.0-only; compatibility names and user settings remain.
-Physical testing is **paused at the user's request**. The current source changes
-must not be confused with the packages installed for the September 28 listening tests.
+The user authorized installation and preparation for a second physical smoke test.
+The repaired packages are installed; the headphones are disconnected and the user
+will connect them later. Physical listening and movement checks remain pending.
 
 ## Validation matrix
 
 | Area | Evidence | Remaining work |
 |---|---|---|
-| Surround channel integrity | Two consecutive October 3 isolated runs pass all 15 gates: eight independent lanes, owned 7.1, 18 PCM windows/74 acoustic checks, four Atmos captures with 15 objects and cleanup | Live host needs dependency repair; earlier Atmos startup failure retained without a claimed cause |
+| Surround channel integrity | Actual installed stack passes all 15 gates on private PipeWire: eight lanes, owned 7.1, 18 PCM windows/74 checks, Atmos objects and cleanup | Physical regression; earlier unexplained Atmos startup failure retained |
 | Actual WF-1000XM5 output | September 28 installed A2DP → renderer → EQ → headphones route; user heard clear channel direction changes | New build's physical regression pass |
 | Physical yaw | September 28 corrected orientation compensates at unit gain; user reported near-centered anchoring that settles when still | Evaluate remaining motion lag |
 | Pitch, roll and off-center recenter | Software fixtures cover rotations and recenter order | Physical listening acceptance pending |
-| Timestamp capture | Packaged SPT1 helper passed native C/UDP checks; canonical pose, packet rejection and selected-report history checks pass in the full suite | Physical timing capture remains paused |
+| Timestamp capture | Packaged SPT1 helper passed native C/UDP checks; canonical pose, packet rejection and selected-report history checks pass in the full suite | Physical timing capture awaits the connected headphones |
 | Prediction | Bounded predictor, latency evidence and all accepted selected-packet history pass software regression; disabled by default | Physical lag/overshoot acceptance |
 | TIDAL mini-client | Provider, D-Bus, credential ordering and catalogue/playback tests pass; Qt/JavaScript checks cover controls and sign-in recovery after browser handoff | Account authorization, real service playback and entitled Atmos acceptance |
-| Rename and licensing | Renamed core/widget packages built; CLI aliases, compatibility metadata, source contents and retained licenses checked | Installed ownership and old-name upgrade acceptance |
+| Rename and licensing | Old-name packages replaced through normal prompts; core 0.2.3-3 fixes a real staging defect; 122/122 baseline configuration/widget files unchanged | Loaded desktop widget and physical regression acceptance |
 | Optional SlimeVR receiver | Protocol, identity, freshness and policy tests | Physical receiver acceptance |
 
 Synthetic endpoints and protocol fixtures prove software behavior; they do not
@@ -26,44 +27,67 @@ establish headset acoustics, a real user's account entitlement, or a complete
 physical acceptance pass. Timing snapshots describe host events, not a sensor
 clock or a measured acoustic output timestamp.
 
-## October 3 software build
+## October 3 installation and software checks
 
-The full Python source suite passes **469 tests** without skips, including the
-WirePlumber startup-race and TIDAL sign-in recovery regressions.
-The Companion passes **7 native Qt checks**; its JavaScript state tests are included
-in the suite. Recovery checks hide the actual popup window, recreate its card,
-and handle sign-in completion while closed without restarting hidden polling or
-restoring a logged-out session. Local package builds have completed for
-`budslink-spatial-companion 0.2.3-2`,
-`plasma-budslink-spatial-companion 0.2.0.spatial0.2.3-3`, and
-`sony-tracker-spatial 1.0.0-2`. None was installed into the live desktop session.
+The reviewed ten-package audio repair was installed through normal Konsole,
+fish and nano package prompts. The current set includes core
+`budslink-spatial-companion 0.2.3-3`, widget
+`plasma-budslink-spatial-companion 0.2.0.spatial0.2.3-3`,
+`sony-tracker-spatial 1.0.0-2`, `orender-spatial 0.5.2-3`,
+`harletty-bridge 0.7.3-1` and the existing `mpv-omniphony 0.5.2-1`.
+The five missing mpv library packages were installed, and the installer now
+requests them explicitly. All 122 baseline configuration/widget files are unchanged.
 
-Build concurrency was capped at 8 on the 32-thread, 31 GiB machine. The core
-build used `makepkg --nodeps` only because pacman lacked records for
-`python-build` and `python-installer`; the actual frontends were installed in the
-private virtual environment. Other build dependencies were checked with pacman,
-and the full package `check()` ran. This is local build evidence, not a fresh
-clean-chroot or physical-upgrade result.
+The first core installation exposed a real packaging defect: the local revision
+2 build had used a virtual-environment Python, placing wheel files under its
+builder-specific prefix and leaving `/usr/bin/spatialctl` missing after replacement.
+Activation stopped before restarting services. Revision 3 uses `/usr/bin/python`
+for build, check and installation, sets `--prefix=/usr`, and rejects incorrect
+staging paths or CLI shebangs. The affected project virtual environment was
+restored separately without global pip installation. Core was rebuilt with the
+official `python-build` and `python-installer` packages; all **474 tests** passed.
+The archive was checked for
+an exclusively `/usr` payload and correct launchers before installation.
 
-The October 3 private PipeWire rerun **failed before audio started**. The host now
-has `omniphony-renderer v0.2.5` without the required patch marker, no installed
-`orender-spatial`, Harletty `0.8.0-1` instead of pinned `0.7.3-1`, and an mpv binary
-with unresolved shared-library dependencies. The installed audio stack is not
-currently validated or working as the supported set. Failure evidence is retained
-in `build/local-validation/native-review-20261003.1hatAl/`.
+`spatiald.service` and WirePlumber are active. Non-audible `spatial-verify` checks
+report software features **PASS** and hardware/playback **WAIT**, as expected with
+the headphones disconnected. The actual installed audio stack passed all **15
+native gates**, using its `/usr` modules, binaries and libraries on a private
+D-Bus/PipeWire session without bind-over replacements. The report is
+`build/local-validation/round2-20261003/installed-native-audio/report.json`: eight
+input lanes, owned 7.1, 18 PCM windows/74 checks, decoded Atmos with 15 objects,
+and verified cleanup/defaults. It explicitly records `hardware_validated: false`.
 
-The isolated compatible stack then exposed a real WirePlumber 0.5.18 startup race
-in the route guard. The fix obtains the metadata manager from the event's source,
-matching the installed stock hooks, with a regression test. After that fix, all
-15 native gates passed twice consecutively in `native-pinned-review-20261003.abukawxy/`
-and `native-pinned-review-20261003.rbtb2hc1/`. An earlier
-isolated run, `native-pinned-review-20261003.ji60e8_s/`, failed an Atmos startup
-graph-stability check. Its evidence is retained. The successful repeats do not
-establish that failure's root cause, and no acceptance predicate was relaxed.
+The Companion's **7 native Qt checks** pass; JavaScript checks are included in the
+Python suite. They cover the real popup hiding, card recreation and recovered
+sign-in completion without hidden polling or restoring a logged-out session.
+Build concurrency was capped at 8 on the 32-thread, 31 GiB machine.
 
-This validation uses an isolated pinned renderer/bridge/player and extracted
-signed dependency packages. It does **not** repair or validate the installed
-host audio stack. No desktop repair or hardware test was performed.
+Hosted checks for commit `c680472` completed successfully in
+[CI run 37161921772](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37161921772)
+and [renderer run 37161921733](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37161921733).
+Those runs predate the core revision 3 packaging and explicit mpv dependency
+repairs; the local installation results above cover those follow-up changes.
+
+## Earlier October 3 failures and isolated evidence
+
+The first private PipeWire rerun failed before audio because installed renderer
+and bridge versions had drifted and mpv could not load required libraries. Its
+report remains in `build/local-validation/native-review-20261003.1hatAl/`.
+That dependency failure was repaired by the subsequent package transaction.
+
+The isolated compatible stack then exposed a WirePlumber 0.5.18 guard startup
+race. The fix obtains the metadata manager from the event source, matching stock
+hooks, with a regression test. All 15 gates subsequently passed twice in
+`native-pinned-review-20261003.abukawxy/` and
+`native-pinned-review-20261003.rbtb2hc1/`: eight independent lanes, owned 7.1,
+18 PCM windows/74 checks, four Atmos captures with 15 objects and cleanup.
+Those earlier runs used an isolated pinned stack and extracted signed libraries.
+
+An earlier run, `native-pinned-review-20261003.ji60e8_s/`, failed an Atmos startup
+graph-stability check. Its cause remains unestablished despite the successful
+repeats. No acceptance predicate was relaxed, and none of these software runs
+establish physical headphone or authenticated TIDAL acceptance.
 
 ## Evidence and history
 

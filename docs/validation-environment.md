@@ -1,49 +1,79 @@
 # Validation evidence and environment history
 
-## Local software validation — October 3, 2026
+## Installed repair and preparation — October 3, 2026
 
-After the rename, timestamp/prediction and TIDAL mini-client changes, the full
-Python source suite passes 469 tests without skips, including the guard and
-TIDAL sign-in recovery regressions. The Companion passes 7 native Qt checks,
-including actual window hiding, card recreation and recovered sign-in completion.
-These checks also reject hidden polling and stale-session restoration after logout.
-Sony 1.0.0-2 package checks verify legacy, absolute and
-timestamped modes.
+The user authorized the second physical smoke-test preparation. A reviewed
+10-package transaction repaired the audio group and installed the renamed core,
+Companion and timestamped Sony helper through normal Konsole/fish/nano prompts.
+All 122 baseline configuration/widget files remained unchanged.
+
+The first core revision 2 installation exposed a packaging defect despite passing
+source tests: Python's installer ran from a virtual environment and staged the
+wheel under the builder's environment prefix. Replacing the old package then
+left `/usr/bin/spatialctl` missing. Activation stopped before service restart.
+Revision 3 explicitly uses `/usr/bin/python` for build/check/package, installs
+with `--prefix=/usr`, and checks the staged system module and executable CLI
+shebangs. Regression fixtures reject virtual-environment paths and malformed
+launchers. The official `python-build` and `python-installer` packages were
+installed, the repaired package build passed all **474 tests**, and its archive
+contained only `/usr` files with correct CLI shebangs before installation. The
+affected project virtual environment was restored separately; no global pip
+installation was used. Error traces from deliberately rejected D-Bus requests
+remain in the test log; the final suite result was 474 tests, OK, with exit 0.
+
+The installed set is core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony
+`1.0.0-2`, renderer `0.5.2-3`, bridge `0.7.3-1` and mpv `0.5.2-1`. Five missing
+mpv library packages were restored. `spatiald.service` and WirePlumber are active;
+non-audible `spatial-verify` reports software features PASS and hardware/playback
+WAIT. The headphones are disconnected, and the user will connect them later.
+
+The actual installed stack then passed all **15 native gates**, with every check
+reporting `passed` and process exit 0. Its `/usr` modules, binaries and libraries
+ran on private D-Bus/PipeWire without bind-over replacements. The report at
+`build/local-validation/round2-20261003/installed-native-audio/report.json` records
+eight input lanes, owned 7.1, 18 PCM windows/74 checks, actual Atmos decoding with
+15 objects, and verified route cleanup/defaults. `hardware_validated` is false.
+Physical listening, motion and real TIDAL account acceptance remain open.
+
+The Companion passes 7 native Qt checks, including actual window hiding, card
+recreation and recovered sign-in completion. These reject hidden polling and
+stale-session restoration after logout. Sony 1.0.0-2 package checks verify legacy,
+absolute and timestamped modes. Builds use up to 8 jobs on the 32-thread, 31 GiB PC.
+
+## Earlier isolated software validation — October 3, 2026
 
 The initial staged-wheel audio rerun failed before audio: the installed renderer
-lacks the required patch marker, the renderer/bridge versions no longer match
-the supported group, and mpv has unresolved shared libraries. That failure remains
-in `build/local-validation/native-review-20261003.1hatAl/`.
+lacked the required patch marker, the renderer/bridge versions no longer matched
+the supported group, and mpv had unresolved shared libraries. That failure remains
+in `build/local-validation/native-review-20261003.1hatAl/`; the later transaction
+repaired those dependencies.
 
 The isolated compatible stack uncovered a real WirePlumber 0.5.18 guard startup
 race (`native-pinned-review-20261003.9ziqmjq3/`). The production fix obtains the
 metadata manager from the event source; a Lua regression preserves the fail-closed
 routing contract. The pinned bridge 0.7.3 was rebuilt, the pinned player binary
-was verified against pacman's package checksum, and missing libraries were
-extracted from signed packages into the isolated environment. Host packages were
-not repaired or replaced.
+was verified against pacman's checksum, and missing libraries were extracted
+from signed packages for the isolated runs. Host packages were unchanged at that
+point.
 
 All 15 gates subsequently passed twice consecutively, in
 `native-pinned-review-20261003.abukawxy/` and
-`native-pinned-review-20261003.rbtb2hc1/`:
-eight independent input lanes, automatic owned 7.1 routing, 18 PCM capture windows
-with 74 acoustic assertions, four genuine Atmos captures retaining 15 objects,
-and cleanup/route invariants. A previous isolated attempt,
-`native-pinned-review-20261003.ji60e8_s/`, failed the Atmos startup graph-stability
-gate. More detailed failure instrumentation was added without changing any
-acceptance predicate. The successful follow-up does not establish a cause for
-that earlier failure. Both successful runs retained the same acceptance predicates.
+`native-pinned-review-20261003.rbtb2hc1/`: eight independent input lanes, automatic
+owned 7.1 routing, 18 PCM capture windows with 74 acoustic assertions, four genuine
+Atmos captures retaining 15 objects, and cleanup/route invariants. A previous run,
+`native-pinned-review-20261003.ji60e8_s/`, failed the Atmos graph-stability gate.
+Detailed instrumentation was added without changing acceptance predicates; the
+successful follow-up does not establish that earlier failure's cause.
 
-These builds use 8 jobs on the local 32-thread, 31 GiB CachyOS machine. Core
-`makepkg --nodeps` covers two missing pacman frontend records only: `python-build`
-and `python-installer` are available in a private virtual environment, and the
-other build/check dependencies were verified with pacman. Package `check()` was
-executed completely; no tests were skipped to make the build pass.
+The earlier core revision 2 build used virtual-environment frontends and
+`makepkg --nodeps` for their missing pacman records. Its full tests ran, but did
+not detect the incorrect installation prefix. The revision 3 system-Python build
+and staging checks address that separate failure; no tests were skipped or
+weakened to make either audio or package validation pass.
 
-No new package was installed on the live desktop and no physical/account test
-was resumed. Snapshot history records accepted selected-provider packets; it is
-not a lossless capture of the Bluetooth transport. The earbud-side clock and
-acoustic output delay are not established by host-monotonic timestamps.
+Snapshot history records accepted selected-provider packets, not a lossless
+Bluetooth transport capture. Host-monotonic timestamps do not establish the
+earbud's sensor clock or acoustic output delay.
 
 
 ## Original cloud environment — September 2026
@@ -52,7 +82,7 @@ The initial development runtime was Ubuntu 24.04 with Python 3.12. Development
 continued on the actual CachyOS desktop on September 28 and October 3. The supported
 installation target is Arch/CachyOS with KDE Plasma, PipeWire, WirePlumber and BlueZ.
 This reference retains dated evidence from each environment; [current status](../STATUS.md)
-summarizes the latest branch. Physical testing is currently paused.
+summarizes the latest branch. Physical checks await the user connecting the headphones.
 
 Pure Python tests, binary protocol fixtures, real child-process lifecycle checks,
 source-matched patch checks, archive checksums, and wheel construction ran
