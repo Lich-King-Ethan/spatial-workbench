@@ -1,4 +1,4 @@
-# Install on Arch Linux or CachyOS
+# Install BudsLink Spatial Companion
 
 From the extracted project directory in your normal KDE terminal:
 
@@ -38,9 +38,9 @@ decoder; the desktop and other build processes also need memory. The desktop tes
 VM uses 12 GiB RAM plus 8 GiB guest-only swap. The installer does not create swap
 or change the host's memory configuration.
 
-Your existing BudsLink installation remains the Sony-controls provider. You have
-already confirmed it works with your WF-1000XM5. This project neither replaces
-the BudsLink backend nor signs into your TIDAL account for you.
+Your existing BudsLink installation remains the Sony-controls provider. The
+built-in TIDAL client needs no separate music application; the full installer
+includes `python-tidalapi`, and account sign-in remains an explicit user action.
 
 Installation restarts the running WirePlumber user service once to load the
 package's targeted live-audio routing guard; currently playing desktop audio can
@@ -49,18 +49,33 @@ redirected by the live module and prevents them falling through to another outpu
 if its renderer disappears. It does not change the global default device. Live
 application routing remains unavailable until the guard advertises readiness.
 
+## Upgrading from Spatial Workbench
+
+The core package is now `budslink-spatial-companion`; the widget package is
+`plasma-budslink-spatial-companion`. They provide and conflict with the old package
+names, so pacman handles the replacement through its normal transaction prompts.
+They keep `spatialctl`, `spatiald.service`, D-Bus identifiers, configuration/state
+directories and the existing Companion plugin ID. `budslink-spatial` is a new CLI
+alias. Existing settings, saved tracker permissions and TIDAL sessions stay in place.
+
+Do not manually rename configuration directories or remove the old package's
+files. Build and inspect the new packages, then let pacman own their replacement.
+The renamed packages and compatibility metadata pass local source/build checks;
+an actual old-name upgrade transaction and physical acceptance remain separate
+checks in [status](../STATUS.md).
+
 ## What the command installs
 
 | Component | Source | Role |
 |---|---|---|
-| `spatial-workbench` | This repository, built with makepkg | Daemon, CLI, diagnostics, user service |
-| `plasma-budslink-companion-spatial` | Pinned upstream Companion plus included patch | Native tracking rows in your existing Companion |
+| `budslink-spatial-companion` | This repository, built with makepkg | Daemon, CLI, diagnostics, user service |
+| `plasma-budslink-spatial-companion` | Pinned upstream Companion plus included patch | Native tracking rows in your existing Companion |
 | `python-dbus-next` | Official Arch repositories | Desktop D-Bus communication |
-| `python-tidalapi` | Official Arch Extra | Optional TIDAL account and stream API |
+| `python-tidalapi` | Official Arch Extra | Built-in TIDAL client dependency; included by the full installer |
 | `mpv-omniphony` | Reviewed AUR recipe pinned to 0.5.2-1 | Actual spatial playback; depends on `orender` |
 | `orender-spatial` | Pinned Omniphony 0.5.2 plus included patches | Matching CLI/library with local OSC control and positioned 7.1 input |
 | `harletty-bridge` | Reviewed AUR recipe pinned to 0.7.3-1 | Compatible format-decoding plugin |
-| `sony-tracker` | AUR, through yay/paru or reviewed makepkg | Sony HID orientation helper |
+| `sony-tracker-spatial` | Pinned SonyTrackerLinux 1.0.0 plus included patch | Version 1.0.0-2 or later; timestamped absolute Sony HID reports |
 | `swh-plugins` | Official Arch Extra | Limiter for the optional headphone equalizer |
 
 The AUR transaction for `mpv-omniphony` replaces stock `mpv` and supplies libmpv.
@@ -84,11 +99,15 @@ has been tested together. The installer checks out the exact reviewed AUR commit
 for the bridge and player and builds them with makepkg as your ordinary user,
 including when yay or paru is installed. It records provenance and shows the
 recipes for review; source checksums and package-manager prompts remain enabled.
-The Sony tracker can use your existing AUR helper.
+The Sony helper is built from the checksummed local `sony-tracker-spatial`
+recipe. It provides and conflicts with `sony-tracker` through normal pacman
+prompts, retaining the same executable and legacy default behavior. The daemon
+requires version 1.0.0-2 or later and its `--absolute --timestamped` modes;
+an older helper cannot supply that contract. See [the helper's source and patch provenance](../packaging/sony-PROVENANCE.md).
 
 This pairing matters: upstream Omniphony 0.6.0 changes the decoder bridge ABI from
 0.3 to 0.4 and requires Harletty 0.8.0. A 0.8.0 bridge cannot load in this release's
-0.5.2 renderer. Current mpv-omniphony 0.6.0 also requires `orender>=0.6.0`.
+0.5.2 renderer. The inspected mpv-omniphony 0.6.0 also requires `orender>=0.6.0`.
 Upgrade the audio set together only after its renderer patches and complete audio
 tests have been updated. The pin preserves the verified native decoding and
 spatialization path; it does not remove a codec or substitute a test decoder.
@@ -228,7 +247,7 @@ never read.
 
 ```sh
 systemctl --user disable --now spatiald.service
-sudo pacman -R spatial-workbench plasma-budslink-companion-spatial
+sudo pacman -R budslink-spatial-companion plasma-budslink-spatial-companion
 ```
 
 Your user configuration and saved Companion backup remain. To restore a previous

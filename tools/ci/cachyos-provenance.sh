@@ -25,7 +25,7 @@ for mirrorlist in /etc/pacman.d/*mirrorlist; do
     [[ -f $mirrorlist ]] && cp "$mirrorlist" "$evidence/${mirrorlist##*/}.txt"
 done
 if [[ -d dist/arch ]]; then
-    for package in core companion orender; do
+    for package in core companion orender sony; do
         if [[ -f dist/arch/$package/PKGBUILD ]]; then
             cp "dist/arch/$package/PKGBUILD" "$evidence/$package-PKGBUILD.txt"
         fi

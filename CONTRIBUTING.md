@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to BudsLink Spatial Companion
 
 Keep changes scoped to one provider or interface where possible. Hardware
 discovery, routing, decoding, tracking, account access, and Companion UI remain
@@ -64,3 +64,19 @@ renderer-path-triggered workflow. Actions are pinned to commit IDs, checkout
 credentials are not persisted, and workflows request read-only repository access.
 CI artifacts are unsigned test builds. A configured workflow is not evidence
 that a GitHub run passed; use the actual run logs when reporting results.
+
+## Licensing and compatibility
+
+Original contributions use AGPL-3.0-only. Preserve upstream GPL/MIT notices and
+attribution; read the [license map](docs/licensing.md) before importing code.
+Do not relicense the derived Plasma widget or third-party assets by changing a
+project-wide label.
+
+The Python/Arch distribution is `budslink-spatial-companion`. Keep the `spatial`
+module, `spatialctl` alias, `spatiald.service`, D-Bus names and saved config paths
+compatible. Package ownership checks must use actual renamed package owners.
+The repository URL has not been renamed.
+
+Physical testing is paused as of October 3. Develop with private buses, synthetic
+protocol fixtures and isolated audio endpoints. Never label those results as a
+physical listening pass or weaken acoustic assertions to make a run green.

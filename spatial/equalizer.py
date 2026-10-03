@@ -113,7 +113,7 @@ def filter_config(profile_path: Path, sink: Sink, group: str, limiter_plugin: st
         "outputs": ["limit:Output 1", "limit:Output 2"],
     }
     return {
-        "context.properties": {"application.name": "Spatial Equalizer", "log.level": 1},
+        "context.properties": {"application.name": "BudsLink Spatial Companion EQ", "log.level": 1},
         "context.spa-libs": {"audio.convert.*": "audioconvert/libspa-audioconvert",
                              "support.*": "support/libspa-support"},
         "context.modules": [

@@ -1,9 +1,13 @@
 --- a/contents/ui/DevicePage.qml
 +++ b/contents/ui/DevicePage.qml
-@@ -88,6 +88,24 @@
-             }
-         }
- 
+@@ -4,0 +5 @@
++import QtQuick.Controls as QQC2
+@@ -91,0 +93,24 @@
++            active: root.visible && root.QQC2.SwipeView.isCurrentItem
++            Layout.alignment: Qt.AlignHCenter
++            sourceComponent: TidalControls { cardWidth: root.widgetWidth }
++        }
++
 +        PlaybackControls {
 +            device: root.device
 +            cardWidth: root.widgetWidth
@@ -22,431 +26,22 @@
 +            Layout.alignment: Qt.AlignHCenter
 +        }
 +
-         Loader {
-             active: root.device.config.labelIndicatorEnabled > 0
- 
---- /dev/null
-+++ b/contents/ui/SpatialControls.qml
-@@ -0,0 +1,165 @@
-+// SPDX-License-Identifier: GPL-3.0-or-later
-+// Native tracking controls for BudsLink Companion's Plasma-Widget branch.
-+pragma ComponentBehavior: Bound
-+
-+import QtQuick
-+import QtQuick.Layouts
-+import QtQuick.Controls as QQC2
-+import org.kde.plasma.components 3.0 as PlasmaComponents3
-+import org.kde.kirigami as Kirigami
-+import org.kde.plasma.workspace.dbus as DBus
-+
-+Item {
-+    id: root
-+    required property var device
-+    required property int cardWidth
-+    readonly property string service: "org.spatiald.Control1"
-+    readonly property string objectPath: "/org/spatiald/Control1"
-+    property var snapshot: ({})
-+    property string errorText: ""
-+    property DBus.DBusPendingReply pendingReply
-+    property bool busy: false
-+    property int requestSerial: 0
-+    readonly property bool matches: watcher.registered && snapshot.schema === 1
-+        && snapshot.connected && device && snapshot.companion_path === device.path
-+    readonly property var rows: {
-+        if (!matches) return [];
-+        let result = [];
-+        if (snapshot.earbud) {
-+            result.push({ id: snapshot.earbud.id, name: "",
-+                title: i18n("Use Earbud Head Tracking"), enabled: snapshot.earbud.enabled });
-+        }
-+        for (let tracker of (snapshot.optional_trackers || [])) {
-+            result.push({ id: tracker.id, name: tracker.name,
-+                title: i18n("Use Optional Motion Tracker:"), enabled: tracker.enabled });
-+        }
-+        return result;
-+    }
-+    visible: matches && rows.length > 0
-+    implicitHeight: visible ? card.implicitHeight : 0
-+    implicitWidth: cardWidth
-+
-+    DBus.DBusServiceWatcher {
-+        id: watcher
-+        busType: DBus.BusType.Session
-+        watchedService: root.service
-+        onRegisteredChanged: {
-+            if (!registered) {
-+                root.snapshot = ({});
-+                root.busy = false;
-+                root.requestSerial += 1;
-+                root.errorText = "";
-+            } else {
-+                // Properties does not re-fetch when a service acquires its name.
-+                controlProps.updateAll();
-+            }
-+        }
-+    }
-+    DBus.Properties {
-+        id: controlProps
-+        busType: DBus.BusType.Session
-+        service: root.service
-+        path: root.objectPath
-+        iface: root.service
-+        property string stateText: String(properties.State || "")
-+        onStateTextChanged: root.readState(stateText)
-+        onRefreshed: root.readState(stateText)
-+    }
-+    function readState(text) {
-+        try { root.snapshot = text ? JSON.parse(text) : ({}); }
-+        catch (error) { root.snapshot = ({}); }
-+    }
-+    function invoke(member, args) {
-+        if (root.busy || !watcher.registered) return;
-+        root.busy = true;
-+        root.errorText = "";
-+        const serial = ++root.requestSerial;
-+        root.pendingReply = DBus.SessionBus.asyncCall({service: root.service,
-+            path: root.objectPath, iface: root.service, member: member, arguments: args});
-+        const reply = root.pendingReply;
-+        const finished = () => {
-+            if (serial === root.requestSerial) {
-+                root.busy = false;
-+                root.pendingReply = null;
-+                if (reply.isError)
-+                    root.errorText = i18n("The tracking setting could not be changed.");
-+                controlProps.updateAll();
-+            }
-+            reply.destroy();
-+        };
-+        if (reply.isFinished) finished();
-+        else reply.finished.connect(finished);
++        Loader {
+--- a/contents/ui/FullRepresentation.qml
++++ b/contents/ui/FullRepresentation.qml
+@@ -20 +20,2 @@
+-    property bool hasDevice: devicePages.length > 0
++    readonly property bool hasDevice: swipeView.count > 0
++    property bool budsLinkRunning: false
+@@ -60,0 +62,6 @@
++    SpatialStatus {
++        anchors.fill: parent
++        visible: !root.hasDevice
++        budsLinkRunning: root.budsLinkRunning
 +    }
 +
-+    WidgetCard {
-+        id: card
-+        cardWidth: root.cardWidth
-+        content: [
-+            ColumnLayout {
-+                Layout.fillWidth: true
-+                Layout.margins: Kirigami.Units.smallSpacing * 2
-+                spacing: Kirigami.Units.smallSpacing * 2
-+                Repeater {
-+                    model: root.rows
-+                    delegate: ColumnLayout {
-+                        id: row
-+                        required property var modelData
-+                        Layout.fillWidth: true
-+                        spacing: Kirigami.Units.smallSpacing
-+                        PlasmaComponents3.Label {
-+                            text: row.modelData.title
-+                            textFormat: Text.PlainText
-+                            wrapMode: Text.Wrap
-+                            horizontalAlignment: Text.AlignHCenter
-+                            Layout.fillWidth: true
-+                            font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
-+                        }
-+                        PlasmaComponents3.Label {
-+                            text: row.modelData.name
-+                            textFormat: Text.PlainText
-+                            visible: text.length > 0
-+                            wrapMode: Text.WrapAnywhere
-+                            horizontalAlignment: Text.AlignHCenter
-+                            Layout.fillWidth: true
-+                        }
-+                        QQC2.CheckBox {
-+                            id: checkbox
-+                            checked: row.modelData.enabled
-+                            enabled: !root.busy
-+                            Layout.alignment: Qt.AlignHCenter
-+                            Accessible.name: row.modelData.title + " " + row.modelData.name
-+                            contentItem: Item { implicitWidth: 0; implicitHeight: 0 }
-+                            onToggled: {
-+                                const requested = checked;
-+                                // Keep the displayed value authoritative until D-Bus confirms it.
-+                                checked = Qt.binding(() => row.modelData.enabled);
-+                                root.invoke("SetTrackerEnabled", [row.modelData.id, requested]);
-+                            }
-+                        }
-+                    }
-+                }
-+                PlasmaComponents3.Label {
-+                    text: i18n("Active Motion Tracker: %1", root.snapshot.active_name || i18n("None"))
-+                    Accessible.name: text
-+                    textFormat: Text.PlainText
-+                    wrapMode: Text.WrapAnywhere
-+                    Layout.fillWidth: true
-+                    horizontalAlignment: Text.AlignHCenter
-+                }
-+                PlasmaComponents3.Button {
-+                    text: i18n("Recenter")
-+                    enabled: !root.busy && !!root.snapshot.active_id
-+                    Layout.alignment: Qt.AlignHCenter
-+                    onClicked: root.invoke("Recenter", [])
-+                }
-+                PlasmaComponents3.Label {
-+                    text: root.errorText
-+                    textFormat: Text.PlainText
-+                    visible: text.length > 0
-+                    wrapMode: Text.Wrap
-+                    Layout.fillWidth: true
-+                }
-+            }
-+        ]
-+    }
-+}
---- /dev/null
-+++ b/contents/ui/PlaybackControls.qml
-@@ -0,0 +1,251 @@
-+// SPDX-License-Identifier: GPL-3.0-or-later
-+pragma ComponentBehavior: Bound
-+
-+import QtQuick
-+import QtQuick.Layouts
-+import QtQuick.Controls as QQC2
-+import QtQuick.Dialogs as Dialogs
-+import org.kde.plasma.components 3.0 as PlasmaComponents3
-+import org.kde.kirigami as Kirigami
-+import org.kde.plasma.workspace.dbus as DBus
-+import "PlaybackState.js" as PlaybackState
-+
-+Item {
-+    id: root
-+    required property var device
-+    required property int cardWidth
-+    readonly property string service: "org.spatiald.Control1"
-+    readonly property string objectPath: "/org/spatiald/Control1"
-+    readonly property string mediaService: "org.mpris.MediaPlayer2.spatiald"
-+    property var snapshot: ({})
-+    property string errorText: ""
-+    property bool busy: false
-+    property string pendingMember: ""
-+    property int requestSerial: 0
-+    property DBus.DBusPendingReply pendingReply
-+    readonly property var runtime: snapshot.runtime || ({})
-+    readonly property var audio: runtime.audio || ({})
-+    readonly property var track: runtime.track || ({})
-+    readonly property string sourceKind: PlaybackState.sourceKind(audio)
-+    readonly property bool matches: watcher.registered && snapshot.schema === 1
-+        && snapshot.connected && device && snapshot.companion_path === device.path
-+    readonly property string failure: errorText || audio.error || runtime.playback_error || ""
-+    visible: matches
-+    implicitWidth: cardWidth
-+    implicitHeight: visible ? card.implicitHeight : 0
-+
-+    DBus.DBusServiceWatcher {
-+        id: watcher
-+        busType: DBus.BusType.Session
-+        watchedService: root.service
-+        onRegisteredChanged: {
-+            if (registered) {
-+                controlProps.updateAll();
-+            } else {
-+                root.snapshot = ({});
-+                root.busy = false;
-+                root.pendingMember = "";
-+                root.requestSerial += 1;
-+                root.errorText = "";
-+            }
-+        }
-+    }
-+    DBus.DBusServiceWatcher {
-+        id: mediaWatcher
-+        busType: DBus.BusType.Session
-+        watchedService: root.mediaService
-+    }
-+    DBus.Properties {
-+        id: controlProps
-+        busType: DBus.BusType.Session
-+        service: root.service
-+        path: root.objectPath
-+        iface: root.service
-+        property string stateText: String(properties.State || "")
-+        onStateTextChanged: root.readState(stateText)
-+        onRefreshed: root.readState(stateText)
-+    }
-+    Dialogs.FileDialog {
-+        id: fileDialog
-+        title: i18n("Open Audio or Video")
-+        fileMode: Dialogs.FileDialog.OpenFile
-+        nameFilters: [i18n("Audio and video (*.flac *.m4a *.mkv *.mka *.mp4 *.wav *.mp3 *.ogg *.opus *.aac *.eac3 *.ac3 *.thd *.truehd *.dts)"),
-+                      i18n("All files (*)")]
-+        onAccepted: mediaInput.text = selectedFile.toString()
-+    }
-+
-+    function readState(text) {
-+        try { root.snapshot = text ? JSON.parse(text) : ({}); }
-+        catch (error) { root.snapshot = ({}); }
-+    }
-+    function sourceText() {
-+        switch (root.sourceKind) {
-+        case "atmos": return i18n("Dolby Atmos");
-+        case "dtsx": return i18n("DTS:X");
-+        case "objects": return i18n("Object audio");
-+        case "binaural": return i18n("Binaural audio");
-+        case "stereo": return i18n("Stereo audio");
-+        default: return "";
-+        }
-+    }
-+    function playbackText() {
-+        if (root.runtime.loading || (root.busy && root.pendingMember === "Play")) return i18n("Opening…");
-+        if (root.audio.running && !root.audio.loaded) return i18n("Loading…");
-+        if (root.audio.running) return root.audio.paused ? i18n("Paused") : i18n("Playing");
-+        if (!root.snapshot.audio_ready) return i18n("Waiting for headphone output…");
-+        return i18n("Ready");
-+    }
-+    function invoke(member, args, useMediaService) {
-+        // Stop remains available while a source is opening or waiting for audio.
-+        if (!watcher.registered || (root.busy && member !== "Stop")) return;
-+        if (useMediaService && !mediaWatcher.registered) return;
-+        root.busy = true;
-+        root.pendingMember = member;
-+        root.errorText = "";
-+        const serial = ++root.requestSerial;
-+        root.pendingReply = DBus.SessionBus.asyncCall({
-+            service: useMediaService ? root.mediaService : root.service,
-+            path: useMediaService ? "/org/mpris/MediaPlayer2" : root.objectPath,
-+            iface: useMediaService ? "org.mpris.MediaPlayer2.Player" : root.service,
-+            member: member, arguments: args
-+        });
-+        const reply = root.pendingReply;
-+        const finished = () => {
-+            if (serial === root.requestSerial) {
-+                root.busy = false;
-+                root.pendingMember = "";
-+                root.pendingReply = null;
-+                if (reply.isError)
-+                    root.errorText = reply.error.message || i18n("Playback could not be changed.");
-+                controlProps.updateAll();
-+            }
-+            reply.destroy();
-+        };
-+        if (reply.isFinished) finished();
-+        else reply.finished.connect(finished);
-+    }
-+    function openMedia() {
-+        const value = mediaInput.text.trim();
-+        if (value.length) root.invoke("Play", [value], false);
-+    }
-+
-+    WidgetCard {
-+        id: card
-+        cardWidth: root.cardWidth
-+        content: [
-+            ColumnLayout {
-+                Layout.fillWidth: true
-+                Layout.margins: Kirigami.Units.smallSpacing * 2
-+                spacing: Kirigami.Units.smallSpacing * 2
-+                PlasmaComponents3.Label {
-+                    text: i18n("Playback")
-+                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
-+                    horizontalAlignment: Text.AlignHCenter
-+                    Layout.fillWidth: true
-+                }
-+                RowLayout {
-+                    Layout.fillWidth: true
-+                    PlasmaComponents3.TextField {
-+                        id: mediaInput
-+                        Layout.fillWidth: true
-+                        placeholderText: i18n("File path or TIDAL URL")
-+                        Accessible.name: i18n("File path or TIDAL URL")
-+                        selectByMouse: true
-+                        onAccepted: root.openMedia()
-+                    }
-+                    PlasmaComponents3.ToolButton {
-+                        icon.name: "document-open"
-+                        Accessible.name: i18n("Browse for a file")
-+                        QQC2.ToolTip.text: i18n("Browse for a file")
-+                        QQC2.ToolTip.visible: hovered
-+                        onClicked: fileDialog.open()
-+                    }
-+                }
-+                PlasmaComponents3.Button {
-+                    text: i18n("Open")
-+                    icon.name: "media-playback-start"
-+                    enabled: !root.busy && !root.runtime.loading && mediaInput.text.trim().length > 0
-+                    Layout.alignment: Qt.AlignHCenter
-+                    onClicked: root.openMedia()
-+                }
-+                PlasmaComponents3.Label {
-+                    text: root.track.title || ""
-+                    visible: text.length > 0
-+                    textFormat: Text.PlainText
-+                    wrapMode: Text.WrapAnywhere
-+                    horizontalAlignment: Text.AlignHCenter
-+                    Layout.fillWidth: true
-+                }
-+                PlasmaComponents3.Label {
-+                    text: root.playbackText() + (root.sourceText() ? " · " + root.sourceText() : "")
-+                    textFormat: Text.PlainText
-+                    wrapMode: Text.Wrap
-+                    horizontalAlignment: Text.AlignHCenter
-+                    Layout.fillWidth: true
-+                }
-+                PlasmaComponents3.ProgressBar {
-+                    from: 0
-+                    to: 1
-+                    value: PlaybackState.progress(root.audio)
-+                    visible: !!root.audio.running
-+                    indeterminate: !!root.audio.running && !root.audio.loaded
-+                    Accessible.name: i18n("Playback progress")
-+                    Layout.fillWidth: true
-+                }
-+                PlasmaComponents3.Label {
-+                    text: PlaybackState.durationText(root.audio.position)
-+                          + (PlaybackState.seconds(root.audio.duration) > 0
-+                             ? " / " + PlaybackState.durationText(root.audio.duration) : "")
-+                    visible: !!root.audio.loaded
-+                    Accessible.name: i18n("Playback time")
-+                    horizontalAlignment: Text.AlignHCenter
-+                    Layout.fillWidth: true
-+                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
-+                }
-+                RowLayout {
-+                    Layout.alignment: Qt.AlignHCenter
-+                    PlasmaComponents3.ToolButton {
-+                        icon.name: "media-skip-backward"
-+                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_index > 0
-+                        Accessible.name: i18n("Previous track")
-+                        QQC2.ToolTip.text: i18n("Previous track")
-+                        QQC2.ToolTip.visible: hovered
-+                        onClicked: root.invoke("Previous", [], true)
-+                    }
-+                    PlasmaComponents3.ToolButton {
-+                        icon.name: root.audio.running && !root.audio.paused ? "media-playback-pause" : "media-playback-start"
-+                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_length > 0
-+                        Accessible.name: root.audio.running && !root.audio.paused ? i18n("Pause") : i18n("Play")
-+                        QQC2.ToolTip.text: Accessible.name
-+                        QQC2.ToolTip.visible: hovered
-+                        onClicked: root.invoke("PlayPause", [], true)
-+                    }
-+                    PlasmaComponents3.ToolButton {
-+                        icon.name: "media-playback-stop"
-+                        enabled: !!root.audio.running || !!root.runtime.loading || root.busy
-+                        Accessible.name: i18n("Stop")
-+                        QQC2.ToolTip.text: i18n("Stop")
-+                        QQC2.ToolTip.visible: hovered
-+                        onClicked: root.invoke("Stop", [], false)
-+                    }
-+                    PlasmaComponents3.ToolButton {
-+                        icon.name: "media-skip-forward"
-+                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered
-+                            && root.runtime.queue_index + 1 < root.runtime.queue_length
-+                        Accessible.name: i18n("Next track")
-+                        QQC2.ToolTip.text: i18n("Next track")
-+                        QQC2.ToolTip.visible: hovered
-+                        onClicked: root.invoke("Next", [], true)
-+                    }
-+                }
-+                PlasmaComponents3.Label {
-+                    text: root.failure
-+                    visible: text.length > 0
-+                    textFormat: Text.PlainText
-+                    wrapMode: Text.WrapAnywhere
-+                    Layout.fillWidth: true
-+                }
-+            }
-+        ]
-+    }
-+}
+@@ -63,0 +71 @@
++        visible: root.hasDevice
 --- /dev/null
 +++ b/contents/ui/LiveAudioControls.qml
 @@ -0,0 +1,185 @@
@@ -636,6 +231,262 @@
 +    }
 +}
 --- /dev/null
++++ b/contents/ui/PlaybackControls.qml
+@@ -0,0 +1,253 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++pragma ComponentBehavior: Bound
++
++import QtQuick
++import QtQuick.Layouts
++import QtQuick.Controls as QQC2
++import QtQuick.Dialogs as Dialogs
++import org.kde.plasma.components 3.0 as PlasmaComponents3
++import org.kde.kirigami as Kirigami
++import org.kde.plasma.workspace.dbus as DBus
++import "PlaybackState.js" as PlaybackState
++
++Item {
++    id: root
++    required property var device
++    required property int cardWidth
++    readonly property string service: "org.spatiald.Control1"
++    readonly property string objectPath: "/org/spatiald/Control1"
++    readonly property string mediaService: "org.mpris.MediaPlayer2.spatiald"
++    property var snapshot: ({})
++    property string errorText: ""
++    property bool busy: false
++    property string pendingMember: ""
++    property int requestSerial: 0
++    property DBus.DBusPendingReply pendingReply
++    readonly property var runtime: snapshot.runtime || ({})
++    readonly property var audio: runtime.audio || ({})
++    readonly property var track: runtime.track || ({})
++    readonly property string sourceKind: PlaybackState.sourceKind(audio)
++    readonly property bool matches: watcher.registered && snapshot.schema === 1
++        && snapshot.connected && device && snapshot.companion_path === device.path
++    readonly property string failure: errorText || audio.error || runtime.playback_error || ""
++    visible: matches
++    implicitWidth: cardWidth
++    implicitHeight: visible ? card.implicitHeight : 0
++
++    DBus.DBusServiceWatcher {
++        id: watcher
++        busType: DBus.BusType.Session
++        watchedService: root.service
++        onRegisteredChanged: {
++            if (registered) {
++                controlProps.updateAll();
++            } else {
++                root.snapshot = ({});
++                root.busy = false;
++                root.pendingMember = "";
++                root.requestSerial += 1;
++                root.errorText = "";
++            }
++        }
++    }
++    DBus.DBusServiceWatcher {
++        id: mediaWatcher
++        busType: DBus.BusType.Session
++        watchedService: root.mediaService
++    }
++    DBus.Properties {
++        id: controlProps
++        busType: DBus.BusType.Session
++        service: root.service
++        path: root.objectPath
++        iface: root.service
++        property string stateText: String(properties.State || "")
++        onStateTextChanged: root.readState(stateText)
++        onRefreshed: root.readState(stateText)
++    }
++    Dialogs.FileDialog {
++        id: fileDialog
++        title: i18n("Open Audio or Video")
++        fileMode: Dialogs.FileDialog.OpenFile
++        nameFilters: [i18n("Audio and video (*.flac *.m4a *.mkv *.mka *.mp4 *.wav *.mp3 *.ogg *.opus *.aac *.eac3 *.ac3 *.thd *.truehd *.dts)"),
++                      i18n("All files (*)")]
++        onAccepted: mediaInput.text = selectedFile.toString()
++    }
++
++    function readState(text) {
++        try { root.snapshot = text ? JSON.parse(text) : ({}); }
++        catch (error) { root.snapshot = ({}); }
++    }
++    function sourceText() {
++        switch (root.sourceKind) {
++        case "atmos": return i18n("Dolby Atmos");
++        case "dtsx": return i18n("DTS:X");
++        case "objects": return i18n("Object audio");
++        case "binaural": return i18n("Binaural audio");
++        case "stereo": return i18n("Stereo audio");
++        default: return "";
++        }
++    }
++    function playbackText() {
++        if (root.runtime.loading || (root.busy && root.pendingMember === "Play")) return i18n("Opening…");
++        if (root.audio.running && !root.audio.loaded) return i18n("Loading…");
++        if (root.audio.running) return root.audio.paused ? i18n("Paused") : i18n("Playing");
++        if (!root.snapshot.audio_ready) return i18n("Waiting for headphone output…");
++        return i18n("Ready");
++    }
++    function invoke(member, args, useMediaService) {
++        // Stop remains available while a source is opening or waiting for audio.
++        if (!watcher.registered || (root.busy && member !== "Stop")) return;
++        if (useMediaService && !mediaWatcher.registered) return;
++        root.busy = true;
++        root.pendingMember = member;
++        root.errorText = "";
++        const serial = ++root.requestSerial;
++        root.pendingReply = DBus.SessionBus.asyncCall({
++            service: useMediaService ? root.mediaService : root.service,
++            path: useMediaService ? "/org/mpris/MediaPlayer2" : root.objectPath,
++            iface: useMediaService ? "org.mpris.MediaPlayer2.Player" : root.service,
++            member: member, arguments: args
++        });
++        const reply = root.pendingReply;
++        const finished = () => {
++            if (serial === root.requestSerial) {
++                root.busy = false;
++                root.pendingMember = "";
++                root.pendingReply = null;
++                if (reply.isError)
++                    root.errorText = reply.error.message || i18n("Playback could not be changed.");
++                controlProps.updateAll();
++            }
++            reply.destroy();
++        };
++        if (reply.isFinished) finished();
++        else reply.finished.connect(finished);
++    }
++    function openMedia() {
++        const value = mediaInput.text.trim();
++        if (value.length) root.invoke("Play", [value], false);
++    }
++
++    WidgetCard {
++        id: card
++        cardWidth: root.cardWidth
++        content: [
++            ColumnLayout {
++                Layout.fillWidth: true
++                Layout.margins: Kirigami.Units.smallSpacing * 2
++                spacing: Kirigami.Units.smallSpacing * 2
++                PlasmaComponents3.Label {
++                    text: i18n("Playback")
++                    textFormat: Text.PlainText
++                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                    horizontalAlignment: Text.AlignHCenter
++                    Layout.fillWidth: true
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    PlasmaComponents3.TextField {
++                        id: mediaInput
++                        Layout.fillWidth: true
++                        placeholderText: i18n("Local media path or URL")
++                        Accessible.name: i18n("Local media path or URL")
++                        selectByMouse: true
++                        onAccepted: root.openMedia()
++                    }
++                    PlasmaComponents3.ToolButton {
++                        icon.name: "document-open"
++                        Accessible.name: i18n("Browse for a file")
++                        QQC2.ToolTip.text: i18n("Browse for a file")
++                        QQC2.ToolTip.visible: hovered
++                        onClicked: fileDialog.open()
++                    }
++                }
++                PlasmaComponents3.Button {
++                    text: i18n("Open")
++                    icon.name: "media-playback-start"
++                    enabled: root.snapshot.audio_ready === true && !root.busy && !root.runtime.loading && mediaInput.text.trim().length > 0
++                    Layout.alignment: Qt.AlignHCenter
++                    onClicked: root.openMedia()
++                }
++                PlasmaComponents3.Label {
++                    text: root.track.title || ""
++                    visible: text.length > 0
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    horizontalAlignment: Text.AlignHCenter
++                    Layout.fillWidth: true
++                }
++                PlasmaComponents3.Label {
++                    text: root.playbackText() + (root.sourceText() ? " · " + root.sourceText() : "")
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    horizontalAlignment: Text.AlignHCenter
++                    Layout.fillWidth: true
++                }
++                PlasmaComponents3.ProgressBar {
++                    from: 0
++                    to: 1
++                    value: PlaybackState.progress(root.audio)
++                    visible: !!root.audio.running
++                    indeterminate: !!root.audio.running && !root.audio.loaded
++                    Accessible.name: i18n("Playback progress")
++                    Layout.fillWidth: true
++                }
++                PlasmaComponents3.Label {
++                    text: PlaybackState.durationText(root.audio.position)
++                          + (PlaybackState.seconds(root.audio.duration) > 0
++                             ? " / " + PlaybackState.durationText(root.audio.duration) : "")
++                    visible: !!root.audio.loaded
++                    textFormat: Text.PlainText
++                    Accessible.name: i18n("Playback time")
++                    horizontalAlignment: Text.AlignHCenter
++                    Layout.fillWidth: true
++                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                }
++                RowLayout {
++                    Layout.alignment: Qt.AlignHCenter
++                    PlasmaComponents3.ToolButton {
++                        icon.name: "media-skip-backward"
++                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_index > 0
++                        Accessible.name: i18n("Previous track")
++                        QQC2.ToolTip.text: i18n("Previous track")
++                        QQC2.ToolTip.visible: hovered
++                        onClicked: root.invoke("Previous", [], true)
++                    }
++                    PlasmaComponents3.ToolButton {
++                        icon.name: root.audio.running && !root.audio.paused ? "media-playback-pause" : "media-playback-start"
++                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_length > 0
++                        Accessible.name: root.audio.running && !root.audio.paused ? i18n("Pause") : i18n("Play")
++                        QQC2.ToolTip.text: Accessible.name
++                        QQC2.ToolTip.visible: hovered
++                        onClicked: root.invoke("PlayPause", [], true)
++                    }
++                    PlasmaComponents3.ToolButton {
++                        icon.name: "media-playback-stop"
++                        enabled: !!root.audio.running || !!root.runtime.loading || root.busy
++                        Accessible.name: i18n("Stop")
++                        QQC2.ToolTip.text: i18n("Stop")
++                        QQC2.ToolTip.visible: hovered
++                        onClicked: root.invoke("Stop", [], false)
++                    }
++                    PlasmaComponents3.ToolButton {
++                        icon.name: "media-skip-forward"
++                        enabled: !root.busy && !root.runtime.loading && mediaWatcher.registered
++                            && root.runtime.queue_index + 1 < root.runtime.queue_length
++                        Accessible.name: i18n("Next track")
++                        QQC2.ToolTip.text: i18n("Next track")
++                        QQC2.ToolTip.visible: hovered
++                        onClicked: root.invoke("Next", [], true)
++                    }
++                }
++                PlasmaComponents3.Label {
++                    text: root.failure
++                    visible: text.length > 0
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    Layout.fillWidth: true
++                }
++            }
++        ]
++    }
++}
+--- /dev/null
 +++ b/contents/ui/PlaybackState.js
 @@ -0,0 +1,35 @@
 +.pragma library
@@ -673,29 +524,177 @@
 +    const duration = seconds(audio && audio.duration);
 +    return duration > 0 ? Math.min(1, seconds(audio && audio.position) / duration) : 0;
 +}
-
---- a/contents/ui/FullRepresentation.qml
-+++ b/contents/ui/FullRepresentation.qml
-@@ -20 +20,2 @@
--    property bool hasDevice: devicePages.length > 0
-+    readonly property bool hasDevice: swipeView.count > 0
-+    property bool budsLinkRunning: false
-@@ -60,0 +62,6 @@
-+    SpatialStatus {
-+        anchors.fill: parent
-+        visible: !root.hasDevice
-+        budsLinkRunning: root.budsLinkRunning
+--- /dev/null
++++ b/contents/ui/SpatialControls.qml
+@@ -0,0 +1,165 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++// Native tracking controls for BudsLink Companion's Plasma-Widget branch.
++pragma ComponentBehavior: Bound
++
++import QtQuick
++import QtQuick.Layouts
++import QtQuick.Controls as QQC2
++import org.kde.plasma.components 3.0 as PlasmaComponents3
++import org.kde.kirigami as Kirigami
++import org.kde.plasma.workspace.dbus as DBus
++
++Item {
++    id: root
++    required property var device
++    required property int cardWidth
++    readonly property string service: "org.spatiald.Control1"
++    readonly property string objectPath: "/org/spatiald/Control1"
++    property var snapshot: ({})
++    property string errorText: ""
++    property DBus.DBusPendingReply pendingReply
++    property bool busy: false
++    property int requestSerial: 0
++    readonly property bool matches: watcher.registered && snapshot.schema === 1
++        && snapshot.connected && device && snapshot.companion_path === device.path
++    readonly property var rows: {
++        if (!matches) return [];
++        let result = [];
++        if (snapshot.earbud) {
++            result.push({ id: snapshot.earbud.id, name: "",
++                title: i18n("Use Earbud Head Tracking"), enabled: snapshot.earbud.enabled });
++        }
++        for (let tracker of (snapshot.optional_trackers || [])) {
++            result.push({ id: tracker.id, name: tracker.name,
++                title: i18n("Use Optional Motion Tracker:"), enabled: tracker.enabled });
++        }
++        return result;
++    }
++    visible: matches && rows.length > 0
++    implicitHeight: visible ? card.implicitHeight : 0
++    implicitWidth: cardWidth
++
++    DBus.DBusServiceWatcher {
++        id: watcher
++        busType: DBus.BusType.Session
++        watchedService: root.service
++        onRegisteredChanged: {
++            if (!registered) {
++                root.snapshot = ({});
++                root.busy = false;
++                root.requestSerial += 1;
++                root.errorText = "";
++            } else {
++                // Properties does not re-fetch when a service acquires its name.
++                controlProps.updateAll();
++            }
++        }
++    }
++    DBus.Properties {
++        id: controlProps
++        busType: DBus.BusType.Session
++        service: root.service
++        path: root.objectPath
++        iface: root.service
++        property string stateText: String(properties.State || "")
++        onStateTextChanged: root.readState(stateText)
++        onRefreshed: root.readState(stateText)
++    }
++    function readState(text) {
++        try { root.snapshot = text ? JSON.parse(text) : ({}); }
++        catch (error) { root.snapshot = ({}); }
++    }
++    function invoke(member, args) {
++        if (root.busy || !watcher.registered) return;
++        root.busy = true;
++        root.errorText = "";
++        const serial = ++root.requestSerial;
++        root.pendingReply = DBus.SessionBus.asyncCall({service: root.service,
++            path: root.objectPath, iface: root.service, member: member, arguments: args});
++        const reply = root.pendingReply;
++        const finished = () => {
++            if (serial === root.requestSerial) {
++                root.busy = false;
++                root.pendingReply = null;
++                if (reply.isError)
++                    root.errorText = i18n("The tracking setting could not be changed.");
++                controlProps.updateAll();
++            }
++            reply.destroy();
++        };
++        if (reply.isFinished) finished();
++        else reply.finished.connect(finished);
 +    }
 +
-@@ -63,0 +71 @@
-+        visible: root.hasDevice
---- a/contents/ui/main.qml
-+++ b/contents/ui/main.qml
-@@ -67,0 +68 @@
-+        budsLinkRunning: watcher.registered
++    WidgetCard {
++        id: card
++        cardWidth: root.cardWidth
++        content: [
++            ColumnLayout {
++                Layout.fillWidth: true
++                Layout.margins: Kirigami.Units.smallSpacing * 2
++                spacing: Kirigami.Units.smallSpacing * 2
++                Repeater {
++                    model: root.rows
++                    delegate: ColumnLayout {
++                        id: row
++                        required property var modelData
++                        Layout.fillWidth: true
++                        spacing: Kirigami.Units.smallSpacing
++                        PlasmaComponents3.Label {
++                            text: row.modelData.title
++                            textFormat: Text.PlainText
++                            wrapMode: Text.Wrap
++                            horizontalAlignment: Text.AlignHCenter
++                            Layout.fillWidth: true
++                            font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                        }
++                        PlasmaComponents3.Label {
++                            text: row.modelData.name
++                            textFormat: Text.PlainText
++                            visible: text.length > 0
++                            wrapMode: Text.WrapAnywhere
++                            horizontalAlignment: Text.AlignHCenter
++                            Layout.fillWidth: true
++                        }
++                        QQC2.CheckBox {
++                            id: checkbox
++                            checked: row.modelData.enabled
++                            enabled: !root.busy
++                            Layout.alignment: Qt.AlignHCenter
++                            Accessible.name: row.modelData.title + " " + row.modelData.name
++                            contentItem: Item { implicitWidth: 0; implicitHeight: 0 }
++                            onToggled: {
++                                const requested = checked;
++                                // Keep the displayed value authoritative until D-Bus confirms it.
++                                checked = Qt.binding(() => row.modelData.enabled);
++                                root.invoke("SetTrackerEnabled", [row.modelData.id, requested]);
++                            }
++                        }
++                    }
++                }
++                PlasmaComponents3.Label {
++                    text: i18n("Active Motion Tracker: %1", root.snapshot.active_name || i18n("None"))
++                    Accessible.name: text
++                    textFormat: Text.PlainText
++                    wrapMode: Text.WrapAnywhere
++                    Layout.fillWidth: true
++                    horizontalAlignment: Text.AlignHCenter
++                }
++                PlasmaComponents3.Button {
++                    text: i18n("Recenter")
++                    enabled: !root.busy && !!root.snapshot.active_id
++                    Layout.alignment: Qt.AlignHCenter
++                    onClicked: root.invoke("Recenter", [])
++                }
++                PlasmaComponents3.Label {
++                    text: root.errorText
++                    textFormat: Text.PlainText
++                    visible: text.length > 0
++                    wrapMode: Text.Wrap
++                    Layout.fillWidth: true
++                }
++            }
++        ]
++    }
++}
 --- /dev/null
 +++ b/contents/ui/SpatialStatus.qml
-@@ -0,0 +1,124 @@
+@@ -0,0 +1,133 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +// Disconnected-state view. Device controls still require a real BudsLink device.
 +pragma ComponentBehavior: Bound
@@ -784,10 +783,12 @@
 +            Layout.rightMargin: Kirigami.Units.largeSpacing
 +        }
 +        PlasmaComponents3.Label {
-+            text: root.serviceAvailable ? i18n("Spatial Audio is running")
-+                : watcher.registered ? i18n("Waiting for Spatial Audio status") : i18n("Spatial Audio service is unavailable")
++            text: root.serviceAvailable ? i18n("BudsLink Spatial Companion is running")
++                : watcher.registered ? i18n("Waiting for BudsLink Spatial Companion status") : i18n("BudsLink Spatial Companion is unavailable")
 +            textFormat: Text.PlainText
-+            Layout.alignment: Qt.AlignHCenter
++            wrapMode: Text.Wrap
++            horizontalAlignment: Text.AlignHCenter
++            Layout.fillWidth: true
 +        }
 +        PlasmaComponents3.Label {
 +            text: root.budsLinkRunning ? i18n("BudsLink is running") : i18n("BudsLink is not running")
@@ -818,5 +819,514 @@
 +            Layout.alignment: Qt.AlignHCenter
 +            Layout.bottomMargin: Kirigami.Units.largeSpacing * 2
 +        }
++        Loader {
++            active: root.visible
++            Layout.alignment: Qt.AlignHCenter
++            sourceComponent: TidalControls {
++                cardWidth: Math.max(240, root.availableWidth - Kirigami.Units.largeSpacing * 2)
++            }
++        }
 +    }
 +}
+--- /dev/null
++++ b/contents/ui/TidalControls.qml
+@@ -0,0 +1,463 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++pragma ComponentBehavior: Bound
++
++import QtQuick
++import QtQuick.Window
++import QtQuick.Layouts
++import QtQuick.Controls as QQC2
++import org.kde.plasma.components 3.0 as PC
++import org.kde.kirigami as Kirigami
++import org.kde.plasma.workspace.dbus as DBus
++import "TidalState.js" as TidalState
++
++Item {
++    id: root
++    objectName: "tidalClient"
++    required property int cardWidth
++    readonly property string service: "org.spatiald.Control1"
++    readonly property string objectPath: "/org/spatiald/Control1"
++    property var snapshot: ({})
++    property var account: ({})
++    property var login: ({})
++    property var page: ({})
++    property var location: ({mode: "search", query: ""})
++    property var history: []
++    property int categoryIndex: 0
++    property string quality: "atmos"
++    property string errorText: ""
++    property bool busy: false
++    property int requestSerial: 0
++    property DBus.DBusPendingReply pendingReply
++    property var pendingFinished: null
++    property string pendingAction: ""
++    readonly property bool serviceAvailable: watcher.registered
++    readonly property bool clientActive: visible && Window.window !== null && Window.window.visible
++    readonly property bool authenticated: account.authenticated === true
++    readonly property bool canPlay: serviceAvailable && snapshot.schema === 1 && snapshot.audio_ready === true
++    readonly property string category: ["tracks", "albums", "artists", "playlists"][categoryIndex]
++    readonly property var rows: TidalState.items(page, category)
++    readonly property bool authorizing: login.state === "pending" || login.state === "starting"
++    implicitWidth: cardWidth
++    implicitHeight: card.implicitHeight
++
++    DBus.DBusServiceWatcher {
++        id: watcher
++        busType: DBus.BusType.Session
++        watchedService: root.service
++        onRegisteredChanged: {
++            root.invalidate();
++            root.snapshot = ({}); root.account = ({}); root.login = ({});
++            root.page = ({}); root.history = [];
++            if (registered && root.clientActive) {
++                props.updateAll(); root.refreshAccount(false, true);
++            }
++        }
++    }
++    DBus.Properties {
++        id: props
++        busType: DBus.BusType.Session
++        service: root.service
++        path: root.objectPath
++        iface: root.service
++        property string stateText: String(properties.State || "")
++        onStateTextChanged: root.readState(stateText)
++        onRefreshed: root.readState(stateText)
++    }
++    Timer {
++        id: loginPoll
++        interval: Math.max(1000, Number(root.login.interval || 5) * 1000)
++        repeat: true
++        running: root.clientActive && root.serviceAvailable && root.authorizing
++        onTriggered: {
++            if (root.busy) return;
++            if (root.login.state === "starting") root.resumeLogin();
++            else root.request("login_poll", {login_id: root.login.login_id}, result => root.acceptLogin(result, false));
++        }
++    }
++    Component.onCompleted: { if (root.serviceAvailable && root.clientActive) root.refreshAccount(false, true); }
++    Component.onDestruction: root.release()
++    onClientActiveChanged: {
++        if (!clientActive) root.release();
++        else if (root.serviceAvailable) { props.updateAll(); root.refreshAccount(false, true); }
++    }
++
++    function readState(text) {
++        try { root.snapshot = TidalState.decode(text); }
++        catch (error) { root.snapshot = ({}); }
++    }
++    function invalidate(cancelPendingStart) {
++        root.requestSerial += 1;
++        if (root.pendingReply) {
++            const reply = root.pendingReply;
++            if (root.pendingFinished) reply.finished.disconnect(root.pendingFinished);
++            if (cancelPendingStart === true && root.pendingAction === "login_start") {
++                // A cancelled start has no ID yet. Retain only its reply so a
++                // late result can cancel that exact attempt, never another client.
++                const targetService = root.service;
++                const targetPath = root.objectPath;
++                const disposeStart = () => {
++                    if (!reply.isError) {
++                        try {
++                            const result = TidalState.decode(reply.value);
++                            if (result.login_id && result.state === "pending") {
++                                const cancel = DBus.SessionBus.asyncCall({service: targetService,
++                                    path: targetPath, iface: targetService, member: "TidalRequest",
++                                    arguments: ["login_cancel", JSON.stringify({login_id: result.login_id})]});
++                                const disposeCancel = () => cancel.destroy();
++                                if (cancel.isFinished) disposeCancel(); else cancel.finished.connect(disposeCancel);
++                            }
++                        } catch (error) { /* Discard an unusable orphan response. */ }
++                    }
++                    reply.destroy();
++                };
++                if (reply.isFinished) disposeStart(); else reply.finished.connect(disposeStart);
++            } else reply.destroy();
++        }
++        root.pendingReply = null; root.pendingFinished = null; root.pendingAction = ""; root.busy = false;
++    }
++    function release() {
++        // Opening the browser hides Plasma's popup and can destroy this card.
++        // The daemon retains the bounded attempt; only explicit Cancel/sign-out
++        // abandon it. A recreated card recovers instructions by direct reply.
++        root.invalidate(false); root.login = ({});
++    }
++    function request(action, payload, callback) {
++        if (!root.serviceAvailable || !root.clientActive || root.busy) return;
++        root.busy = true; root.errorText = "";
++        const serial = ++root.requestSerial;
++        const reply = DBus.SessionBus.asyncCall({service: root.service, path: root.objectPath,
++            iface: root.service, member: "TidalRequest", arguments: [action, JSON.stringify(payload)]});
++        root.pendingReply = reply;
++        root.pendingAction = action;
++        const finished = () => {
++            if (serial === root.requestSerial) {
++                root.pendingReply = null; root.pendingFinished = null; root.pendingAction = ""; root.busy = false;
++                if (reply.isError) root.errorText = reply.error.message || i18n("TIDAL could not complete this request.");
++                else {
++                    try {
++                        const result = TidalState.decode(reply.value);
++                        if (result.error) root.errorText = String(result.error);
++                        if (callback) callback(result);
++                    } catch (error) { root.errorText = i18n("TIDAL returned an unreadable response."); }
++                }
++            }
++            reply.destroy();
++        };
++        root.pendingFinished = finished;
++        if (reply.isFinished) finished(); else reply.finished.connect(finished);
++    }
++    function refreshAccount(refresh, resume) {
++        root.request("status", {refresh: refresh}, result => {
++            root.account = result;
++            if (resume && !root.authenticated) root.resumeLogin();
++        });
++    }
++    function resumeLogin() {
++        root.request("login_status", {}, result => root.acceptLogin(result, true));
++    }
++    function acceptLogin(result, recovered) {
++        root.login = Object.assign({}, root.login, result);
++        if (result.state === "pending" && !TidalState.loginUrl(root.login.verification_url)) {
++            root.cancelLogin(); root.errorText = i18n("TIDAL returned an unsupported sign-in address.");
++        } else if (result.state !== "pending" && result.state !== "starting") {
++            root.login = ({state: result.state});
++            if (result.state === "signed_in") {
++                if (!recovered) root.refreshAccount(true);
++                else if (!root.authenticated) root.request("status", {refresh: false}, current => {
++                    // A detached poll can complete between the initial account
++                    // read and login_status. Recheck local saved credentials;
++                    // an old completed attempt must not undo external sign-out.
++                    root.account = current;
++                    if (current.session_saved === true) root.refreshAccount(true);
++                });
++            } else if (result.state === "expired" || result.state === "error")
++                root.errorText = result.error || i18n("Sign-in ended. Start again to get a new code.");
++        }
++    }
++    function signIn() {
++        if (root.busy || !root.serviceAvailable) return;
++        root.login = ({state: "starting"});
++        root.request("login_start", {}, result => root.acceptLogin(result, false));
++    }
++    function cancelLogin() {
++        const loginId = root.login.login_id || "";
++        root.invalidate(true); root.login = ({});
++        if (loginId) root.request("login_cancel", {login_id: loginId}, null);
++    }
++    function signOut() {
++        root.invalidate(true); root.login = ({});
++        root.request("logout", {}, result => {
++            root.account = result; root.page = ({}); root.history = []; root.location = ({mode: "search", query: ""});
++        });
++    }
++    function navigate(destination, remember) {
++        if (root.busy) return;
++        const old = {location: root.location, page: root.page, categoryIndex: root.categoryIndex};
++        const payload = {limit: 20, offset: destination.offset || 0};
++        const action = destination.mode;
++        if (action === "search") payload.query = destination.query;
++        else if (action === "collection") { payload.kind = destination.kind; payload.id = destination.id; }
++        else payload.kind = root.category;
++        root.request(action, payload, result => {
++            if (result.error) return;
++            if (remember) root.history = root.history.concat([old]);
++            root.location = destination; root.page = result;
++            if (action === "collection") root.categoryIndex = 0;
++        });
++    }
++    function search() {
++        const query = searchInput.text.trim();
++        if (query.length) root.navigate({mode: "search", query: query}, root.location.mode !== "search");
++    }
++    function browse(item) {
++        if (item.kind !== "track") root.navigate({mode: "collection", kind: item.kind, id: item.id}, true);
++    }
++    function back() {
++        if (root.busy || !root.history.length) return;
++        const previous = root.history[root.history.length - 1];
++        root.history = root.history.slice(0, -1); root.location = previous.location;
++        root.page = previous.page; root.categoryIndex = previous.categoryIndex;
++    }
++    function play(item) {
++        if (!root.canPlay || !TidalState.playable(item)) return;
++        root.request("play", {reference: item.reference, quality: root.quality}, () => props.updateAll());
++    }
++    function paginate(offset) { root.navigate(Object.assign({}, root.location, {offset: offset}), false); }
++
++    WidgetCard {
++        id: card
++        cardWidth: root.cardWidth
++        content: ColumnLayout {
++            Layout.fillWidth: true
++            Layout.margins: Kirigami.Units.smallSpacing * 2
++            spacing: Kirigami.Units.smallSpacing * 2
++            PC.Label {
++                text: i18n("TIDAL")
++                textFormat: Text.PlainText
++                font.bold: true
++                Layout.alignment: Qt.AlignHCenter
++            }
++            PC.Label {
++                text: !root.serviceAvailable ? i18n("BudsLink Spatial Companion is unavailable")
++                    : root.authenticated ? i18n("Signed in") : root.account.session_saved ? i18n("Saved session — check sign-in to browse") : i18n("Sign in to browse TIDAL")
++                textFormat: Text.PlainText
++                wrapMode: Text.Wrap
++                Layout.fillWidth: true
++            }
++            RowLayout {
++                Layout.fillWidth: true
++                PC.Button {
++                    objectName: "tidalSignIn"
++                    text: root.account.session_saved ? i18n("Check sign-in") : i18n("Sign in")
++                    visible: !root.authenticated && !root.authorizing
++                    enabled: root.serviceAvailable && !root.busy
++                    onClicked: root.account.session_saved ? root.refreshAccount(true) : root.signIn()
++                }
++                PC.Button {
++                    objectName: "tidalSignOut"
++                    text: i18n("Sign out")
++                    visible: root.authenticated || root.account.session_saved === true
++                    enabled: root.serviceAvailable
++                    onClicked: root.signOut()
++                }
++            }
++            ColumnLayout {
++                visible: root.authorizing
++                Layout.fillWidth: true
++                PC.Label {
++                    objectName: "tidalLoginCode"
++                    text: root.login.state === "starting" ? i18n("Starting sign-in…") : i18n("Code: %1", root.login.user_code || "")
++                    textFormat: Text.PlainText
++                    Accessible.name: text
++                    font.bold: true
++                    wrapMode: Text.WrapAnywhere
++                    Layout.fillWidth: true
++                }
++                PC.Label {
++                    text: i18n("Enter this code on TIDAL’s sign-in page, then reopen this panel to finish. Sign-in checks pause while it is closed.")
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    Layout.fillWidth: true
++                }
++                RowLayout {
++                    PC.Button {
++                        objectName: "tidalOpenLogin"
++                        text: i18n("Open TIDAL sign-in")
++                        enabled: !!TidalState.loginUrl(root.login.verification_url)
++                        onClicked: Qt.openUrlExternally(TidalState.loginUrl(root.login.verification_url))
++                    }
++                    PC.Button {
++                        objectName: "tidalCancelLogin"
++                        text: i18n("Cancel")
++                        onClicked: root.cancelLogin()
++                    }
++                }
++            }
++            ColumnLayout {
++                visible: root.authenticated
++                Layout.fillWidth: true
++                RowLayout {
++                    PC.TextField {
++                        id: searchInput
++                        objectName: "tidalSearchInput"
++                        placeholderText: i18n("Search TIDAL")
++                        Accessible.name: i18n("Search TIDAL")
++                        Layout.fillWidth: true
++                        selectByMouse: true
++                        onAccepted: root.search()
++                    }
++                    PC.ToolButton {
++                        objectName: "tidalSearch"
++                        icon.name: "edit-find"
++                        Accessible.name: i18n("Search")
++                        enabled: !root.busy && !!searchInput.text.trim()
++                        onClicked: root.search()
++                    }
++                }
++                RowLayout {
++                    PC.ComboBox {
++                        objectName: "tidalCategory"
++                        model: root.location.mode === "collection" ? [i18n("Tracks"), i18n("Albums")]
++                            : [i18n("Tracks"), i18n("Albums"), i18n("Artists"), i18n("Playlists")]
++                        Accessible.name: i18n("Browse category")
++                        Layout.fillWidth: true
++                        currentIndex: root.categoryIndex
++                        enabled: !root.busy && (root.location.mode !== "collection" || (!!root.page.item && root.page.item.kind === "artist"))
++                        onActivated: {
++                            root.categoryIndex = currentIndex;
++                            if (root.location.mode === "library") root.navigate({mode: "library"}, false);
++                        }
++                    }
++                    PC.Button {
++                        objectName: "tidalLibrary"
++                        text: i18n("Favorites")
++                        enabled: !root.busy
++                        onClicked: root.navigate({mode: "library"}, true)
++                    }
++                }
++                PC.ComboBox {
++                    objectName: "tidalQuality"
++                    model: [i18n("Dolby Atmos only"), i18n("Lossless")]
++                    Accessible.name: i18n("TIDAL playback quality")
++                    Layout.fillWidth: true
++                    currentIndex: root.quality === "atmos" ? 0 : 1
++                    onActivated: root.quality = currentIndex === 0 ? "atmos" : "lossless"
++                }
++                PC.Label {
++                    text: root.quality === "atmos" ? i18n("Requires Dolby Atmos. Playback stops with an error if it is unavailable.") : i18n("Play the lossless stream using your audio settings.")
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    Layout.fillWidth: true
++                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                }
++                PC.Label {
++                    visible: !root.canPlay
++                    text: i18n("Connect your headphones to play. You can keep browsing.")
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    Layout.fillWidth: true
++                }
++                RowLayout {
++                    Layout.fillWidth: true
++                    PC.ToolButton {
++                        objectName: "tidalBack"
++                        icon.name: "go-previous"
++                        Accessible.name: i18n("Back")
++                        enabled: !root.busy && root.history.length > 0
++                        onClicked: root.back()
++                    }
++                    PC.Label {
++                        text: root.page.item ? root.page.item.title : root.location.mode === "library" ? i18n("Favorites") : root.location.query || i18n("Search tracks, albums, artists and playlists")
++                        textFormat: Text.PlainText
++                        wrapMode: Text.WrapAnywhere
++                        Layout.fillWidth: true
++                    }
++                    PC.ToolButton {
++                        objectName: "tidalPlayCollection"
++                        icon.name: "media-playback-start"
++                        visible: TidalState.playable(root.page.item)
++                        enabled: root.canPlay && !root.busy
++                        Accessible.name: i18n("Play collection")
++                        onClicked: root.play(root.page.item)
++                    }
++                }
++                Repeater {
++                    model: root.rows
++                    delegate: RowLayout {
++                        id: resultRow
++                        required property var modelData
++                        required property int index
++                        Layout.fillWidth: true
++                        ColumnLayout {
++                            Layout.fillWidth: true
++                            PC.Label {
++                                text: resultRow.modelData.title || ""
++                                textFormat: Text.PlainText
++                                wrapMode: Text.WrapAnywhere
++                                Layout.fillWidth: true
++                            }
++                            PC.Label {
++                                text: (resultRow.modelData.subtitle || "") + (resultRow.modelData.catalogue_atmos ? " · " + i18n("Atmos in catalog") : "")
++                                textFormat: Text.PlainText
++                                wrapMode: Text.WrapAnywhere
++                                font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                                Layout.fillWidth: true
++                            }
++                        }
++                        PC.ToolButton {
++                            objectName: "tidalBrowse" + resultRow.index
++                            icon.name: "go-next"
++                            visible: resultRow.modelData.kind !== "track"
++                            enabled: !root.busy
++                            Accessible.name: i18n("Browse %1", resultRow.modelData.title || "")
++                            onClicked: root.browse(resultRow.modelData)
++                        }
++                        PC.ToolButton {
++                            objectName: "tidalPlay" + resultRow.index
++                            icon.name: "media-playback-start"
++                            visible: TidalState.playable(resultRow.modelData)
++                            enabled: root.canPlay && !root.busy
++                            Accessible.name: i18n("Play %1", resultRow.modelData.title || "")
++                            onClicked: root.play(resultRow.modelData)
++                        }
++                    }
++                }
++                PC.Label {
++                    text: i18n("No results on this page.")
++                    visible: !root.busy && root.page.offset !== undefined && root.rows.length === 0
++                    textFormat: Text.PlainText
++                    Layout.fillWidth: true
++                }
++                RowLayout {
++                    Layout.alignment: Qt.AlignHCenter
++                    PC.Button {
++                        objectName: "tidalPreviousPage"
++                        text: i18n("Previous page")
++                        enabled: !root.busy && Number(root.page.offset || 0) > 0
++                        onClicked: root.paginate(Math.max(0, Number(root.page.offset) - Number(root.page.limit || 20)))
++                    }
++                    PC.Button {
++                        objectName: "tidalNextPage"
++                        text: i18n("Next page")
++                        enabled: !root.busy && root.page.has_more === true
++                        onClicked: root.paginate(Number(root.page.offset || 0) + Number(root.page.limit || 20))
++                    }
++                }
++            }
++            PC.BusyIndicator {
++                running: root.busy
++                visible: running
++                Accessible.name: i18n("Loading TIDAL")
++                Layout.alignment: Qt.AlignHCenter
++            }
++            PC.Label {
++                objectName: "tidalError"
++                text: root.errorText
++                visible: !!text
++                textFormat: Text.PlainText
++                wrapMode: Text.WrapAnywhere
++                Layout.fillWidth: true
++            }
++        }
++    }
++}
+--- /dev/null
++++ b/contents/ui/TidalState.js
+@@ -0,0 +1,21 @@
++.pragma library
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++function object(value) {
++    return value !== null && typeof value === "object" && !Array.isArray(value) ? value : ({});
++}
++function decode(text) { return object(JSON.parse(String(text))); }
++function items(page, category) {
++    const value = page.items || page[category];
++    return Array.isArray(value) ? value : [];
++}
++function loginUrl(value) {
++    // Device authorization stays on TIDAL's own site. Never open catalog text.
++    return typeof value === "string"
++        && /^https:\/\/(link\.tidal\.com|login\.tidal\.com|tidal\.com)(\/|\?|$)/.test(value)
++        && !/[\s\\]/.test(value) ? value : "";
++}
++function playable(item) {
++    return !!item && ["track", "album", "playlist"].includes(item.kind)
++        && typeof item.reference === "string" && item.reference.startsWith("tidal:");
++}
+--- a/contents/ui/main.qml
++++ b/contents/ui/main.qml
+@@ -67,0 +68 @@
++        budsLinkRunning: watcher.registered
+--- a/metadata.json
++++ b/metadata.json
+@@ -11 +11 @@
+-        "Description": "Companion widget for BudsLink to monitor Battery level and Control ANC of Earbuds/Headset",
++        "Description": "Headphone controls, spatial audio and a native TIDAL mini-client",
+@@ -15 +15 @@
+-        "Name": "BudsLink Companion",
++        "Name": "BudsLink Spatial Companion",

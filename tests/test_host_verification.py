@@ -116,7 +116,7 @@ class RealGraphAuditIntegrationTests(unittest.TestCase):
         state["runtime"]["audio"]["pcm_route_allowed"] = False
         self.assertEqual(verify.audit_playback_graph(state, graph)[0], "fail")
 
-    def test_actual_live_and_equalizer_chains_are_audited_before_allowing_them(self):
+    def live_fixture(self):
         from spatial.live_audio import GUARD_KEY, LIVE_CHANNELS
         state, graph, obj, link = self.fixture()
         name, group = state["target"], "spatial-eq-" + "a" * 32
@@ -167,14 +167,64 @@ class RealGraphAuditIntegrationTests(unittest.TestCase):
                                       "input_serial": "200", "stream_serial": "100", "route_applied": True,
                                       "renderer_ready": True, "state": "playing"}
         state["runtime"]["equalizer"] = {"enabled": True, "process_id": 444, "link_group": group}
+        return state, graph, obj, link
+
+    def test_actual_live_and_equalizer_chains_are_audited_before_allowing_them(self):
+        state, graph, obj, link = self.live_fixture()
         result = verify.audit_playback_graph(state, graph)
         self.assertEqual(result[0], "pass", result[1])
         renderer_link = next(item for item in graph if item["id"] == 403)
         renderer_link["info"]["input-port-id"] = 1402
         self.assertEqual(verify.audit_playback_graph(state, graph)[0], "fail")
         renderer_link["info"]["input-port-id"] = 1401
+        # Both stages must independently lose readiness if either ear is missing.
+        for link_id in (404, 406):
+            with self.subTest(link_id=link_id):
+                right = next(item for item in graph if item["id"] == link_id)
+                graph.remove(right)
+                result = verify.audit_playback_graph(state, graph)
+                self.assertEqual(result[0], "wait", result[1])
+                graph.append(right)
+                result = verify.audit_playback_graph(state, graph)
+                self.assertEqual(result[0], "pass", result[1])
+        eq_right = next(item for item in graph if item["id"] == 406)
+        eq_right["info"]["input-port-id"] = 51
+        result = verify.audit_playback_graph(state, graph)
+        self.assertEqual(result[0], "fail", result[1])
+        eq_right["info"]["input-port-id"] = 52
         graph.append(link(407, 30, 987, 301))
         self.assertEqual(verify.audit_playback_graph(state, graph)[0], "fail")
+
+    def test_owned_native_pcm_uses_only_its_independently_verified_live_route(self):
+        import copy
+        from spatial.live_audio import LIVE_CHANNELS
+        for channels in (LIVE_CHANNELS, ("FL", "FR", "FC", "LFE", "RL", "RR"), ("FC",)):
+            with self.subTest(channels=channels):
+                state, graph, obj, link = self.live_fixture()
+                graph = [o for o in graph if o["id"] not in (101, 102, 401, 402)]
+                source = next(o for o in graph if o["id"] == 10)
+                native = source["info"]["params"]["Format"][0]
+                native.update(channels=len(channels), position=list(channels))
+                graph.extend(obj("Port", 101 + i, **{"node.id": 10, "port.direction": "out", "audio.channel": ch})
+                             for i, ch in enumerate(channels))
+                graph.extend(link(4010 + i, 10, 20, 101 + i, 201 + LIVE_CHANNELS.index(ch))
+                             for i, ch in enumerate(channels))
+                result = verify.audit_playback_graph(state, graph)
+                self.assertEqual(result[0], "pass", result[1])
+                for mutate in (lambda g: g[-1]["info"].update({"input-port-id": 999}),
+                               lambda g: next(o for o in g if o["id"] == 10)["info"].update({"params": {}}),
+                               lambda g: next(o for o in g if o["id"] == 10)["info"]["props"].update({"object.serial": "101"})):
+                    broken = copy.deepcopy(graph)
+                    mutate(broken)
+                    self.assertEqual(verify.audit_playback_graph(state, broken)[0], "fail")
+                # Even an otherwise complete source cannot authorize PCM while
+                # an extra source link is still negotiating.
+                extra = link(5000, 10, 20, 101, 201)
+                extra["info"]["state"] = "init"
+                self.assertEqual(verify.audit_playback_graph(state, [*graph, extra])[0], "wait")
+                # Stereo output requirements survive native PCM authorization.
+                for link_id in (404, 406):
+                    self.assertEqual(verify.audit_playback_graph(state, [o for o in graph if o["id"] != link_id])[0], "wait")
 
 
 class PlaybackOwnershipTests(unittest.IsolatedAsyncioTestCase):

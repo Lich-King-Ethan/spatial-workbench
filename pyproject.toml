@@ -1,20 +1,22 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "spatial-workbench"
+name = "budslink-spatial-companion"
 version = "0.2.3"
-description = "Modular headphone tracking, spatial playback, and Plasma integration"
+description = "BudsLink Spatial Companion: spatial audio, head tracking and TIDAL for KDE Plasma"
 requires-python = ">=3.11"
 readme = {file = "README.md", content-type = "text/markdown"}
-license = "MIT"
+license = "AGPL-3.0-only"
+license-files = ["LICENSE", "LICENSES/*.txt", "spatial/data/AutoEq-LICENSE.txt"]
 dependencies = ["dbus-next>=0.2.3,<0.3"]
 
 [project.optional-dependencies]
 tidal = ["tidalapi>=0.8.11,<0.9"]
 
 [project.scripts]
+budslink-spatial = "spatial.cli:main"
 spatialctl = "spatial.cli:main"
 
 [tool.setuptools.packages.find]

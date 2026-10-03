@@ -1,4 +1,4 @@
-# Desktop runtime
+# Desktop integration and API reference
 
 `spatial.desktop.DesktopRuntime` exports the session service
 `org.spatiald.Control1` at `/org/spatiald/Control1`. It owns three independent
@@ -109,9 +109,9 @@ Real D-Bus integration tests are available with:
 SPATIAL_TEST_DBUS=1 dbus-run-session -- python -m unittest discover -s tests -p test_desktop.py -v
 ```
 
-These tests run on a real private session bus in GitHub CI. The local development
-runner still lacks Qt/Plasma and refuses D-Bus socket creation; that limitation
-does not apply to the Arch CI environment.
+These tests use a real private session bus. The original cloud runner lacked
+Qt/Plasma and restricted D-Bus sockets; later Arch CI and local CachyOS checks
+provide those dependencies. Current results are listed in [status](../STATUS.md).
 
 On September 18, 2026, the [Arch Companion check](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35338214187/job/105577902132)
 at commit `49cd288d67f2ad47fcfccdf236e614667e4bbe6a` compiled and ran
@@ -181,3 +181,22 @@ explicit replacement flag to the owning runtime and returns a 64-bit request
 token. A busy refusal is zero. Cleanup must use the accepted token; a newer user
 playback request invalidates it, so late diagnostic cleanup cannot stop that
 new request. The runtime owns the atomic generation and locking checks.
+
+## Built-in TIDAL client
+
+`TidalRequest(action: s, payload: s) -> s` accepts bounded JSON requests for local
+account status, explicit session refresh, device authorization, logout, search,
+collections, favorites and playback. Catalogue/account network work runs in a
+bounded worker, outside the desktop loop. Unknown actions/fields, invalid page
+sizes and oversized input are rejected. Playback selects Atmos or lossless for
+that request and follows the same owned-player route audits as other sources.
+
+The native `TidalControls.qml` card and `TidalState.js` helper receive authorization
+links/codes only through direct `login_start` and `login_status` replies. The
+local-only `login_status` action takes no fields and restores the daemon's bounded
+in-memory attempt when the browser handoff closes the popup. Hiding or destroying
+the card pauses polling without cancelling the attempt; explicit `login_cancel`,
+logout and expiry still end it. No hidden card starts further network polls.
+Ordinary `State` contains safe account readiness, never codes, tokens or signed
+stream URLs; pending authorization details are not persisted. See [the client guide](tidal-runtime.md) and
+[account/source contracts](tidal-reference.md).

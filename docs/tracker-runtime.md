@@ -3,7 +3,8 @@
 `spatial.trackers.run` discovers physical Linux HID devices and feeds actual
 orientation observations into the policy engine. The daemon does not use replay
 data or create trackers from a saved name. Each adapter retries independently.
-The Sony reader is an upstream helper process; Slime readers use independent
+The Sony reader is a packaged upstream helper process with explicit absolute
+orientation and host-timestamped report modes; Slime readers use independent
 nonblocking file descriptors and tasks. These are fault boundaries, not security
 containers.
 
@@ -22,7 +23,8 @@ Module names are `sony_tracker` and `optional_tracker`. `engine.device` is the
 selected Bluetooth address. Changing its connection epoch stops the previous
 Sony helper. Optional discovery continues independently. Samples use local
 monotonic arrival time; UI publication and pose delivery remain owned by the
-daemon runtime. Dependencies are Python's standard library and `sony-tracker`.
+daemon runtime. The Sony provider uses `dbus-next` and the `sony-tracker`
+executable supplied by `sony-tracker-spatial`.
 
 ## Sony WF-1000XM5
 
@@ -37,7 +39,31 @@ Discovery requires all of the following:
 5. Feature report 2 contains the `#AndroidHeadTracker#` marker.
 6. The helper actually delivers finite, correctly sized orientation packets.
 
-The daemon starts `sony-tracker --device <that exact hidraw path> --port <port>`.
+When the selected connected headphone has no Sony HID device, the provider
+checks fresh BlueZ properties on that exact selected adapter/device path. Only a
+paired, connected device with resolved services and advertised HID UUID 0x1124
+can receive a targeted `ConnectProfile` request. Selection and connection epochs
+are rechecked across asynchronous calls. This neither pairs devices nor changes
+Bluetooth settings or audio profiles. Existing unsupported or inaccessible HID
+is not reconnected, and profile activation alone never establishes telemetry.
+The read-only discovery provider remains unchanged.
+
+The daemon requires `sony-tracker-spatial>=1.0.0-2` and starts:
+
+```text
+sony-tracker --absolute --timestamped --device <exact hidraw path> --port <private port>
+```
+
+The 34-byte `SPT1` packet contains a little-endian uint64 host-monotonic capture
+time, uint64 per-helper sequence, and the original 14-byte HID report. Capture
+means successful host HID read, not sensor acquisition time. Malformed, future,
+stale, duplicate and reordered packets cannot refresh the source. Raw gyro values
+are scaled only after their descriptor usage/offset/scale is verified; zero values
+remain zero. See [timing and optional prediction](head-tracking-timing.md).
+
+The helper's default legacy six-double UDP behavior remains unchanged for other
+applications; `--absolute` alone also retains its Euler packet format. The daemon
+requires the raw mode and never silently falls back to relative output.
 It binds an ephemeral IPv4 loopback port before launch and never captures the
 default OpenTrack port 4242. Late reports cannot attach to a different headphone
 connection. Helper exit or three seconds without valid packets triggers restart
@@ -120,18 +146,21 @@ The canonical orientation is a normalized `w,x,y,z` **head-to-world** quaternion
 with right-handed axes **X right, Y up, Z back**. Consumer adapters must explicitly
 convert this frame to their own coordinate system and direction.
 
-Sony's UDP packet contains six native-endian doubles. The last three are the
-Euler output of upstream's Z-Y-X extraction, so we reconstruct
-`qz(yaw) * qy(pitch) * qx(roll)`. Android reports a **reference-to-head**
-rotation vector in X-right/Y-forward/Z-up axes; the helper first remaps that
-vector to `(-ry, rx, -rz)`. Accounting for this remap, the transform direction,
-and the canonical basis gives **`(w,x,y,z) → (w,-y,z,-x)`** for the reconstructed
-helper quaternion. This final map is a proper basis rotation, so the helper's
-`inverse(reference) * current` remains the correct canonical relative pose even
-when its startup reference is not identity. Treating helper output as unmodified
-Android axes would swap physical nod and tilt. Tests compare packets generated
-by the pinned upstream C functions against independent Android rotation matrices,
-including combined rotations and nonidentity startup references.
+Android's orientation is an active head-to-world rotation in
+X-right/Y-forward/Z-up coordinates. The raw rotation vector becomes a quaternion,
+then its vector part changes basis to canonical right/up/back: `(w, rx, rz, -ry)`.
+Body angular velocity changes by the same proper basis: `(vx, vz, -vy)`.
+
+The earlier adapter treated the helper output as a passive world-to-head mapping
+and removed a startup reference before undoing an improper axis map. On the actual
+headset, sound followed the turn. The corrected absolute path retains the sensor
+reference until Engine recenters with `reference.inverse() * current`.
+Tests cover independent Rodrigues matrices, real upstream C/UDP behavior and
+nonidentity startup/combined recenter poses. The canonical acoustic targets are
+unchanged; raw-wire comparisons account only for int16 quantization.
+
+See [Android's quaternion contract](https://android.googlesource.com/platform/frameworks/av/+/d9a58d33c3/media/libheadtracking/include/media/QuaternionUtil.h)
+and [the physical correction record](local-pc-validation-20260928.md).
 
 The Slime decoder applies the same world-axis correction as the upstream server:
 −90° about X, multiplied on the left of the decoded device quaternion. It does
@@ -146,12 +175,13 @@ command is sent to SlimeVR or to hardware.
 identity filtering, wrong-report rejection, known rotations, corrupt quaternion
 rejection, slot reuse, stale data, late epochs, independent restart, disabled
 modules, and subprocess cleanup. The transport tests launch a real subprocess
-which uses the upstream UDP packet format and pass verified wire fixtures
+which uses the versioned raw UDP packet format and pass verified wire fixtures
 through real nonblocking file descriptors. Those fixtures test the adapters;
 they are not a claim that physical hardware was attached during development.
 
-No Sony headset or Slime receiver is attached to the development environment.
-Actual HID permission, firmware compatibility, physical axes, and simultaneous
-receiver use with SlimeVR remain local hardware acceptance checks. In particular,
-this code does not claim that successful Companion controls establish WF motion
-sensor support.
+Protocol tests do not establish physical acceptance. The September 28 local PC
+has a real WF-1000XM5 with supported HID, fresh telemetry, and verified A2DP/EQ
+routing. Physical listening exposed the direction error described above;
+correction and remaining acceptance are tracked in
+[the local validation record](local-pc-validation-20260928.md). SlimeVR mounting,
+physical axes and simultaneous receiver use remain separate hardware checks.

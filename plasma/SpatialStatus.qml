@@ -86,10 +86,12 @@ QQC2.ScrollView {
             Layout.rightMargin: Kirigami.Units.largeSpacing
         }
         PlasmaComponents3.Label {
-            text: root.serviceAvailable ? i18n("Spatial Audio is running")
-                : watcher.registered ? i18n("Waiting for Spatial Audio status") : i18n("Spatial Audio service is unavailable")
+            text: root.serviceAvailable ? i18n("BudsLink Spatial Companion is running")
+                : watcher.registered ? i18n("Waiting for BudsLink Spatial Companion status") : i18n("BudsLink Spatial Companion is unavailable")
             textFormat: Text.PlainText
-            Layout.alignment: Qt.AlignHCenter
+            wrapMode: Text.Wrap
+            horizontalAlignment: Text.AlignHCenter
+            Layout.fillWidth: true
         }
         PlasmaComponents3.Label {
             text: root.budsLinkRunning ? i18n("BudsLink is running") : i18n("BudsLink is not running")
@@ -119,6 +121,13 @@ QQC2.ScrollView {
             onClicked: controlProps.updateAll()
             Layout.alignment: Qt.AlignHCenter
             Layout.bottomMargin: Kirigami.Units.largeSpacing * 2
+        }
+        Loader {
+            active: root.visible
+            Layout.alignment: Qt.AlignHCenter
+            sourceComponent: TidalControls {
+                cardWidth: Math.max(240, root.availableWidth - Kirigami.Units.largeSpacing * 2)
+            }
         }
     }
 }

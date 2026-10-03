@@ -1,4 +1,4 @@
-# Audio runtime
+# Playback and renderer reference
 
 `spatial.audio_runtime.AudioRuntime` runs an installed **mpv-omniphony** and
 communicates over its JSON IPC and the embedded renderer's loopback OSC port.

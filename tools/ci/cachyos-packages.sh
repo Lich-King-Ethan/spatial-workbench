@@ -7,8 +7,8 @@ if [[ ${GITHUB_ACTIONS:-} != true || $EUID -eq 0 ]]; then
     exit 1
 fi
 case ${1:-} in
-    core|companion|orender) package=$1 ;;
-    *) printf '%s\n' 'Usage: cachyos-packages.sh core|companion|orender' >&2; exit 2 ;;
+    core|companion|orender|sony) package=$1 ;;
+    *) printf '%s\n' 'Usage: cachyos-packages.sh core|companion|orender|sony' >&2; exit 2 ;;
 esac
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 evidence="$root/dist/cachyos-evidence"

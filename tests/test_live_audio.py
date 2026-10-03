@@ -148,10 +148,12 @@ class LivePureTests(unittest.TestCase):
         live, objects = running(), graph()
         self.assertEqual(live.audit(objects)["state"], "ready")
         self.assertEqual(live.verified_input_ids(objects), {"20"})
+        self.assertEqual(live.verified_pcm_routes(objects), {"100": {"20"}})
         objects.pop()
         self.assertEqual(live.audit(objects)["state"], "waiting")
         self.assertEqual(live.pending_input_ids(objects), {"20"})
         self.assertEqual(live.verified_input_ids(objects), set())
+        self.assertEqual(live.verified_pcm_routes(objects), {})
         objects[9]["metadata"] = []
         self.assertEqual(live.audit(objects)["state"], "violation")
         self.assertEqual(live.pending_input_ids(objects), set())
@@ -291,6 +293,44 @@ class LivePureTests(unittest.TestCase):
         live._authorized_filter_inputs = lambda _: {"60"}
         self.assertEqual(live.audit(objects)["state"], "violation")
 
+    def test_extra_unsettled_renderer_links_block_otherwise_complete_output(self):
+        for target in (5, 60):
+            for label, extra_info in (
+                ("unenumerated output", {"output-port-id": 399}),
+                ("unenumerated input", {"input-port-id": 1399}),
+                ("negotiating", {"state": "negotiating"}),
+            ):
+                with self.subTest(target=target, link=label):
+                    objects = graph()
+                    for item in objects:
+                        if item["id"] in (450, 451):
+                            item["info"]["input-node-id"] = target
+                        elif item["id"] in (1301, 1302):
+                            item["info"]["props"]["node.id"] = target
+                    live = running(authorized_filter_inputs=lambda _: {"60"})
+                    self.assertEqual(live.audit(objects)["state"], "ready")
+                    extra = link(999, 30, target, 301)
+                    extra["info"].update(extra_info)
+                    objects.append(extra)
+                    self.assertEqual(live.audit(objects)["state"], "waiting")
+                    self.assertEqual(live.verified_input_ids(objects), set())
+                    objects.pop()
+                    self.assertEqual(live.audit(objects)["state"], "ready")
+
+    def test_mono_source_still_allows_positioned_stereo_adapter_output(self):
+        objects = graph()
+        objects[2]["info"]["params"]["Format"] = [pcm_format(("MONO",))]
+        self.assertEqual(running().audit(objects)["state"], "ready")
+
+    def test_unsettled_extra_source_link_cannot_authorize_owned_pcm(self):
+        for state, expected in (("init", "waiting"), ("negotiating", "waiting"), ("error", "violation")):
+            with self.subTest(state=state):
+                live, objects = running(), graph(SURROUND_CHANNELS)
+                self.assertEqual(live.verified_pcm_routes(objects), {"100": {"20"}})
+                objects.append(link(999, 10, 20, 101, state=state))
+                self.assertEqual(live.audit(objects)["state"], expected)
+                self.assertEqual(live.verified_pcm_routes(objects), {})
+
     def test_external_diagnostics_reuse_graph_audit_and_reject_stale_session(self):
         live, objects = running(), graph()
         live.audit(objects)
@@ -298,10 +338,12 @@ class LivePureTests(unittest.TestCase):
         result = audit_snapshot(objects, status, SINK)
         self.assertEqual(result["state"], "ready")
         self.assertEqual(result["verified_inputs"], {"20"})
+        self.assertEqual(result["verified_pcm_routes"], {"100": {"20"}})
         objects[-1]["info"]["input-node-id"] = 99
         result = audit_snapshot(objects, status, SINK)
         self.assertEqual(result["state"], "violation")
         self.assertEqual(result["pending_inputs"], set())
+        self.assertEqual(result["verified_pcm_routes"], {})
         status["input_serial"] = "replaced"
         self.assertEqual(audit_snapshot(graph(), status, SINK)["state"], "violation")
 

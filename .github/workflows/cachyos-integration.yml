@@ -45,9 +45,9 @@ jobs:
         run: |
           bash tools/ci/package-check.sh release-sources dist/cachyos-evidence -- \
             runuser -u builder -- python tools/make-release.py
-      - name: Build, check, and install core and Companion
+      - name: Build, check, and install core, Companion and Sony tracker
         run: |
-          for package in core companion; do
+          for package in core companion sony; do
             bash tools/ci/package-check.sh "cachyos-$package" dist/cachyos-evidence -- \
               runuser -u builder -- bash tools/ci/cachyos-packages.sh "$package"
           done
@@ -72,6 +72,10 @@ jobs:
         run: |
           bash tools/ci/package-check.sh harletty-bridge dist/cachyos-evidence -- \
             runuser -u builder -- bash tools/ci/cachyos-bridge.sh
+      - name: Build and install the pinned mpv player for owned multichannel PCM
+        run: |
+          bash tools/ci/package-check.sh mpv-omniphony dist/cachyos-evidence -- \
+            runuser -u builder -- bash tools/ci/cachyos-mpv.sh
       - name: Decode real Atmos objects and measure binaural head rotation through the installed FFI
         timeout-minutes: 5
         run: |
@@ -118,6 +122,8 @@ jobs:
             dist/arch/core/*.pkg.tar.*
             dist/arch/companion/*.pkg.tar.*
             dist/arch/orender/*.pkg.tar.*
+            dist/arch/sony/*.pkg.tar.*
             dist/aur/harletty-bridge/*.pkg.tar.*
+            dist/aur/mpv-omniphony/*.pkg.tar.*
           if-no-files-found: error
           retention-days: 14

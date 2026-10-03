@@ -8,7 +8,7 @@ channels and two binaural channels. It uses the production headphone config and
 quaternion over private loopback OSC; turning the head must measurably change
 the decoded binaural waveform compared with two identical neutral runs.
 
-After installing `spatial-workbench`, `orender-spatial` and `harletty-bridge`:
+After installing `budslink-spatial-companion`, `orender-spatial` and `harletty-bridge`:
 
 ```sh
 python tools/ci/decoder-smoke.py --download-fixture --report decoder-smoke.json

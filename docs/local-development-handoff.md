@@ -1,5 +1,64 @@
 # Local development handoff
 
+## Current handoff — October 3, 2026
+
+The user paused physical testing and requested code review/cleanup, the **BudsLink
+Spatial Companion** rename, AGPL-3.0-only for original project code, and a native
+TIDAL mini-client. Stay on `fix/positioned-surround-audit`, preserve local work,
+and do not resume installs, audible playback or movement tests without the user's
+new instruction. Existing package prompts, settings and runtime identifiers stay.
+
+The timestamps/predictor and TIDAL source changes pass 469 Python tests without
+skips, including the WirePlumber guard startup-race and sign-in recovery regressions.
+The Companion passes 7 native Qt checks, including actual window hiding, card
+recreation and sign-in completion while closed. Browser handoff preserves the
+bounded daemon attempt; reopening resumes checks without hidden network polling.
+Two consecutive isolated pinned-stack runs pass all 15 audio gates:
+eight independent input lanes, owned 7.1, 18 PCM windows/74 checks, four Atmos captures
+with 15 decoded objects and cleanup. The reports are
+`native-pinned-review-20261003.abukawxy/` and
+`native-pinned-review-20261003.rbtb2hc1/` under `build/local-validation/`.
+An earlier Atmos startup graph-stability failure remains unexplained and retained.
+See [status](../STATUS.md) for the complete evidence boundary.
+
+These new packages are not installed or physically accepted. The live host's
+audio dependencies have drifted, and the isolated pass does not repair them.
+September 28's corrected yaw was close to anchored and settled when still, with
+perceived delay. Pitch, roll, off-center recenter and real TIDAL account/Atmos
+checks remain open.
+
+When physical testing resumes, first inspect and repair the audio package group
+through normal package prompts. October 3 inspection
+found `orender` reporting `omniphony-renderer v0.2.5` without the required marker,
+`orender-spatial` absent, and `harletty-bridge 0.8.0-1` (supported pin: `0.7.3-1`).
+The installed mpv 0.5.2 also cannot load `libcdio_paranoia.so.2`,
+`libcdio_cdda.so.2`, `libmujs.so`, `libuchardet.so.0`, `libsixel.so.1` and
+`libXpresent.so.1`. Do not fabricate markers, create ABI-guessing symlinks, or
+weaken gates. Rebuild/resolve the compatible group against its actual dependencies.
+The retained failed preflight is `build/local-validation/native-review-20261003.1hatAl/`.
+Keep desktop dependencies unchanged during this code-only pass; use isolated builds.
+
+Start with [current status](../STATUS.md), [architecture](architecture.md),
+[timing](head-tracking-timing.md), [TIDAL](tidal-runtime.md) and
+[licensing](licensing.md). The material below is retained historical context;
+its old package names and exact local checkout path describe that session.
+
+
+## Actual-PC continuation — September 28, 2026
+
+See [the local acceptance record](local-pc-validation-20260928.md) before replaying
+the procedure below. This checkout preserved earlier work on
+`preserve/local-pc-20260928`, fast-forwarded to `9740dd5`, built/installed the
+stack with normal prompts, and established actual WF-1000XM5 HID/A2DP/EQ readiness.
+The user confirmed clear channel direction changes after the owned PCM fixes.
+Physical movement then exposed a separate reversed Sony orientation mapping,
+despite green synthetic renderer tests. Its absolute-helper/reference correction
+was installed, with 356 core tests and all 15 native gates passing. The later
+corrected yaw check passed with perceived lag that settled when the user held
+still. Pitch, roll and off-center recenter remain unaccepted. See the latest
+[physical record](local-pc-validation-20260928.md); private raw evidence remains
+under ignored `build/local-validation/`.
+
 ## Physical WF-1000XM5 smoke test — September 28, 2026
 
 The current implementation is on `fix/positioned-surround-audit`, at `9656676`

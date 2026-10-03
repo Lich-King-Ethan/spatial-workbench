@@ -43,9 +43,11 @@ def links(source, target, first_port):
     return result
 
 
-def graph():
-    return [node(1, **{"media.class": "Stream/Output/Audio", "application.process.id": 77,
-                       "object.serial": "10"}),
+def graph(*, mute_values=(False,)):
+    source = node(1, **{"media.class": "Stream/Output/Audio", "application.process.id": 77,
+                       "object.serial": "10"})
+    source["info"]["params"] = {"Props": [{"mute": value} for value in mute_values]}
+    return [source,
             node(2, **{"object.serial": "20"}),
             node(3, **{"node.name": "eq.output", "object.serial": "30"}),
             node(4, **{"node.name": SINK.name, "object.serial": SINK.serial}),
@@ -120,16 +122,20 @@ class Tracker:
 
 
 class MediaReportTests(unittest.IsolatedAsyncioTestCase):
-    async def exercise(self, directory, *, cleanup_failure=False, lose_readiness=False):
+    async def exercise(self, directory, *, cleanup_failure=False, lose_readiness=False,
+                       mute_values=(False,)):
         player = FakePlayer()
-        objects = graph()
+        objects = graph(mute_values=mute_values)
         async def until(name, predicate, **kwargs):
             if name == "actual-atmos-player-cleaned-up":
                 if cleanup_failure:
                     raise RuntimeError("owned player nodes remain")
                 self.assertTrue(predicate([]))
             else:
-                self.assertTrue(predicate(objects))
+                if not predicate(objects):
+                    # The real gate polls until its deadline. This fixed graph
+                    # cannot settle, so fail without inventing successful state.
+                    raise TimeoutError("The fixture graph did not become verified")
             return objects
         async def window(name, **kwargs):
             capture = directory / (name + ".f32le")
@@ -159,14 +165,37 @@ class MediaReportTests(unittest.IsolatedAsyncioTestCase):
             saved = json.loads((directory / "media-spatial-smoke.json").read_text())
             self.assertEqual(saved, result)
             self.assertEqual(saved["status"], "passed")
+            self.assertEqual(saved["player_source_mute"], [False])
             self.assertFalse(saved["initial_player"]["tracking"])
             self.assertEqual(saved["initial_player"]["routing"]["state"], "waiting")
             self.assertTrue(saved["player"]["tracking"])
             self.assertEqual(saved["player"]["routing"]["state"], "verified")
+            self.assertTrue(all(saved["last_graph_check"]["checks"].values()))
             for window in saved["windows"].values():
                 self.assertTrue(window["player"]["renderer_ready"])
                 self.assertTrue(window["player"]["tracking"])
                 self.assertEqual(window["renderer_pose"], window["expected_renderer_pose"])
+
+    async def test_muted_player_is_rejected_before_acoustic_capture(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            with self.assertRaisesRegex(RuntimeError, "source is muted"):
+                await self.exercise(directory, mute_values=(True,))
+            saved = json.loads((directory / "media-spatial-smoke.json").read_text())
+            self.assertEqual(saved["status"], "failed")
+            self.assertEqual(saved["player_source_mute"], [True])
+            self.assertEqual(saved["windows"], {})
+
+    async def test_missing_unknown_or_ambiguous_mute_evidence_cannot_pass(self):
+        for mute_values in ((), (None,), (False, False)):
+            with self.subTest(mute_values=mute_values), tempfile.TemporaryDirectory() as temporary:
+                directory = Path(temporary)
+                with self.assertRaisesRegex(TimeoutError, "did not become verified"):
+                    await self.exercise(directory, mute_values=mute_values)
+                saved = json.loads((directory / "media-spatial-smoke.json").read_text())
+                self.assertEqual(saved["status"], "failed")
+                self.assertEqual(saved["player_source_mute"], list(mute_values))
+                self.assertEqual(saved["windows"], {})
 
     async def test_cleanup_failure_cannot_leave_a_passed_report(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -185,6 +214,14 @@ class MediaReportTests(unittest.IsolatedAsyncioTestCase):
             saved = json.loads((directory / "media-spatial-smoke.json").read_text())
             self.assertEqual(saved["status"], "failed")
             self.assertIn("during capture", saved["error"])
+            evidence = saved["last_graph_check"]
+            self.assertFalse(evidence["checks"]["renderer_ready"])
+            self.assertFalse(evidence["checks"]["spatial_source"])
+            self.assertTrue(evidence["checks"]["route_verified"])
+            self.assertTrue(evidence["checks"]["source_to_eq_stereo"])
+            self.assertTrue(evidence["checks"]["eq_to_sink_stereo"])
+            self.assertFalse(evidence["player"]["renderer_ready"])
+            self.assertEqual(json.loads((directory / evidence["snapshot"]).read_text()), graph())
 
 
 if __name__ == "__main__":

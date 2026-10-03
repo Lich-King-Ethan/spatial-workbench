@@ -48,30 +48,51 @@ def rotation(axis, degrees):
 
 PITCH_ROLL_REFERENCE = rotation(0, -45) * rotation(2, 90)
 
-# Exact mathematical poses (no int16 quantization) checked by compiling the
-# pinned upstream remap_vec3 -> rotvec_to_quat -> quat_to_euler_deg functions.
-# Android reports reference-to-head; these Euler values include the upstream
-# AXIS_MAP_DEFAULT. They must not be interpreted as unmodified physical axes.
-FIXTURES = {
-    "pose_neutral": ((0, 0, 0), IDENTITY),
-    "pose_yaw_plus90": ((90, 0, 0), rotation(1, 90)),
-    "pose_yaw_minus90": ((-90, 0, 0), rotation(1, -90)),
-    "pose_yaw_180": ((180, 0, 0), rotation(1, 180)),
-    "pose_pitch_plus45": ((0, -45, 0), rotation(0, 45)),
-    "pose_pitch_minus45": ((0, 45, 0), rotation(0, -45)),
-    "pose_roll_plus45": ((0, 0, -45), rotation(2, 45)),
-    "pose_roll_minus45": ((0, 0, 45), rotation(2, -45)),
-    "pose_pitch_plus45_roll_plus90": ((0, -45, -90), rotation(0, 45) * rotation(2, 90)),
-    "pose_pitch_minus45_roll_plus90": ((0, 45, -90), PITCH_ROLL_REFERENCE),
-    "pose_neutral_repeat": ((0, 0, 0), IDENTITY),
+def raw_android_report(pose):
+    """Encode canonical head-to-world orientation at the real HID resolution."""
+    w, x, y, z = pose.values()
+    if w < 0:
+        w, x, y, z = (-v for v in (w, x, y, z))
+    length = math.hypot(x, y, z)
+    angle = 2 * math.atan2(length, w)
+    scale = angle / length if length else 0.
+    # Canonical right/up/back -> Android right/forward/up.
+    vector = (x * scale, -z * scale, y * scale)
+    raw = [max(-32767, min(32767, round((v * 1e8 + 314159264) * 65534 / 628318529 - 32767)))
+           for v in vector]
+    return struct.pack("<B6hB", 1, *raw, 0, 0, 0, 0)
+
+
+# The absolute rotation-vector quantizer has <=sqrt(3)*pi/65534 rad error.
+# Recenter compounds two such errors; quaternion component distance is <=half
+# the rotation-angle error. This tolerance accounts only for wire quantization,
+# never renderer/acoustic output. Acoustic test thresholds remain unchanged.
+WIRE_QUATERNION_TOLERANCE = math.sqrt(3) * math.pi / 65534 + 1e-8
+
+
+# Keep these canonical acoustic targets unchanged when adapting the source
+# protocol. Independent C/report-vector tests establish its absolute convention.
+CANONICAL_POSES = {
+    "pose_neutral": IDENTITY,
+    "pose_yaw_plus90": rotation(1, 90),
+    "pose_yaw_minus90": rotation(1, -90),
+    "pose_yaw_180": rotation(1, 180),
+    "pose_pitch_plus45": rotation(0, 45),
+    "pose_pitch_minus45": rotation(0, -45),
+    "pose_roll_plus45": rotation(2, 45),
+    "pose_roll_minus45": rotation(2, -45),
+    "pose_pitch_plus45_roll_plus90": rotation(0, 45) * rotation(2, 90),
+    "pose_pitch_minus45_roll_plus90": PITCH_ROLL_REFERENCE,
+    "pose_neutral_repeat": IDENTITY,
     # Source pose is reference * yaw(+90); Engine must apply reference^-1 on
     # the left to recover the relative yaw. Reversing the order fails this.
-    "pose_recentered_yaw_plus90": ((-180, 45, 90),
-                                    PITCH_ROLL_REFERENCE * rotation(1, 90)),
+    "pose_recentered_yaw_plus90": PITCH_ROLL_REFERENCE * rotation(1, 90),
 }
+FIXTURES = {name: (raw_android_report(pose), pose)
+            for name, pose in CANONICAL_POSES.items()}
 
 
-def same_rotation(left, right, tolerance=1e-9):
+def same_rotation(left, right, tolerance=WIRE_QUATERNION_TOLERANCE):
     return min(max(abs(a - sign*b) for a, b in zip(left.values(), right.values()))
                for sign in (-1, 1)) <= tolerance
 
@@ -93,7 +114,7 @@ class SonyPoseFixtures:
         self._private = tempfile.TemporaryDirectory(prefix="spatial-ci-sony-")
         directory = Path(self._private.name)
         self._control = directory / "fixture.json"
-        self._write((0, 0, 0))
+        self._write(raw_android_report(IDENTITY))
         helper = directory / "sony-fixture-helper"
         helper.write_text(f"#!{sys.executable}\nimport runpy\n"
                           f"runpy.run_path({str(Path(__file__).resolve())!r}, run_name='__main__')\n")
@@ -104,7 +125,7 @@ class SonyPoseFixtures:
             lambda state, detail: self.status.append({"state": state, "detail": detail}),
             str(helper)))
         try:
-            await self._drive((0, 0, 0), IDENTITY)
+            await self._drive(raw_android_report(IDENTITY), IDENTITY)
         except BaseException:
             await self.__aexit__(None, None, None)
             raise
@@ -124,15 +145,15 @@ class SonyPoseFixtures:
             if self._private is not None:
                 self._private.cleanup()
 
-    def _write(self, euler):
+    def _write(self, report):
         staged = self._control.with_suffix(".new")
-        staged.write_text(json.dumps({"euler_degrees": list(euler)}))
+        staged.write_text(json.dumps({"raw_report_hex": report.hex()}))
         staged.chmod(0o600)
         os.replace(staged, self._control)
 
-    async def _drive(self, euler, expected_source):
+    async def _drive(self, report, expected_source):
         previous = self.source.sequence
-        self._write(euler)
+        self._write(report)
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             if self._task.done():
@@ -145,31 +166,31 @@ class SonyPoseFixtures:
                 self.engine.select()
                 return
             await asyncio.sleep(0.01)
-        raise RuntimeError(f"Sony UDP fixture did not reach its expected orientation: {euler}")
+        raise RuntimeError(f"Sony UDP fixture did not reach its expected orientation: {report.hex()}")
 
     async def pose(self, name):
         if name not in POSE_NAMES:
             raise ValueError(f"Unknown CI orientation: {name}")
         if name == "pose_recentered":
-            euler, source_pose = FIXTURES["pose_pitch_minus45_roll_plus90"]
-            await self._drive(euler, source_pose)
+            report, source_pose = FIXTURES["pose_pitch_minus45_roll_plus90"]
+            await self._drive(report, source_pose)
             self.engine.recenter_active()
             self._recentered = True
             expected = IDENTITY
         elif name == "pose_recentered_yaw_plus90":
             if not self._recentered:
                 await self.pose("pose_recentered")
-            euler, source_pose = FIXTURES[name]
+            report, source_pose = FIXTURES[name]
             expected = rotation(1, 90)
-            await self._drive(euler, source_pose)
+            await self._drive(report, source_pose)
         else:
             if self._recentered:
-                await self._drive((0, 0, 0), IDENTITY)
+                await self._drive(raw_android_report(IDENTITY), IDENTITY)
                 self.engine.recenter_active()
                 self._recentered = False
-            euler, expected = FIXTURES[name]
+            report, expected = FIXTURES[name]
             source_pose = expected
-            await self._drive(euler, source_pose)
+            await self._drive(report, source_pose)
         state = self.engine.snapshot()
         if state["active_id"] != ADDRESS or not same_rotation(self.engine.pose, expected):
             raise RuntimeError(f"Engine selected an incorrect canonical pose for {name}")
@@ -180,8 +201,9 @@ class SonyPoseFixtures:
             "renderer": list(renderer_pose(canonical)),
             "source": {
                 "type": "CI synthetic Sony helper UDP; no physical HID/Bluetooth",
-                "wire_euler_degrees": list(euler),
-                "wire_packet_hex": struct.pack("=6d", 0, 0, 0, *euler).hex(),
+                "helper_mode": "absolute timestamped",
+                "wire_raw_report_hex": report.hex(),
+                "wire_quaternion_tolerance": WIRE_QUATERNION_TOLERANCE,
                 "source_canonical": list(source_pose.values()),
                 "upstream_commit": UPSTREAM_COMMIT,
                 "accepted_sequence": self.source.sequence,
@@ -203,9 +225,11 @@ def helper(control, port):
     """Only launched by the production sony.session subprocess supervisor."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         sock.bind(("127.0.0.1", 0))
+        sequence = 0
         while True:
             value = json.loads(control.read_text())
-            packet = struct.pack("=6d", 0, 0, 0, *value["euler_degrees"])
+            sequence += 1
+            packet = b"SPT1" + struct.pack("<QQ", time.monotonic_ns(), sequence) + bytes.fromhex(value["raw_report_hex"])
             sock.sendto(packet, ("127.0.0.1", port))
             time.sleep(0.02)
 
@@ -214,9 +238,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--port", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--absolute", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--timestamped", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args()
     if args.device is not None and args.port is not None:
+        if not args.absolute or not args.timestamped:
+            parser.error("Sony helper fixture requires --absolute --timestamped")
         helper(args.device, args.port)
         return 0
     report = {"status": "failed", "physical_hardware_validated": False}

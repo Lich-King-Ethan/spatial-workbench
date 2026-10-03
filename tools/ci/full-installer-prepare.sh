@@ -49,9 +49,9 @@ cp /etc/pam.d/sddm-autologin /etc/pam.d/system-local-login \
 printf '%s\n' 'builder ALL=(ALL) NOPASSWD: /usr/bin/pacman, /usr/bin/udevadm' > /etc/sudoers.d/spatial-ci
 chmod 0440 /etc/sudoers.d/spatial-ci
 visudo -cf /etc/sudoers.d/spatial-ci
-mkdir -p /home/builder/spatial-workbench /ci-output /var/lib/systemd/linger
-tar -xf /source.tar -C /home/builder/spatial-workbench
-chown -R builder:builder /home/builder/spatial-workbench
+mkdir -p /home/builder/budslink-spatial-companion /ci-output /var/lib/systemd/linger
+tar -xf /source.tar -C /home/builder/budslink-spatial-companion
+chown -R builder:builder /home/builder/budslink-spatial-companion
 rm /source.tar
 touch /var/lib/systemd/linger/builder
 # These are defaults for the disposable guest only; the application installer
@@ -138,7 +138,7 @@ Requires=user@1000.service
 After=network-online.target systemd-udev-trigger.service user@1000.service sddm.service
 [Service]
 Type=oneshot
-ExecStart=/usr/bin/bash /home/builder/spatial-workbench/tools/ci/full-installer-guest.sh
+ExecStart=/usr/bin/bash /home/builder/budslink-spatial-companion/tools/ci/full-installer-guest.sh
 TimeoutStartSec=90min
 StandardOutput=journal+console
 StandardError=journal+console

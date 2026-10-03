@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import uuid
 
 from . import pipewire
-from .audio_runtime import AudioError, RendererTelemetry, config_text, renderer_pose
+from .audio_runtime import AudioError, PCM_CHANNELS, RendererTelemetry, config_text, renderer_pose
 from .core import Sink
 from .pose import IDENTITY, Quaternion
 from .processes import stop_child
@@ -88,7 +88,7 @@ async def _command(*args, timeout=5):
 
 
 GUARD_KEY = "spatiald.live-target"
-LIVE_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
+LIVE_CHANNELS = PCM_CHANNELS
 
 
 def _raw_positions(objects, node):
@@ -494,6 +494,7 @@ class LiveAudio:
         renderer_targets = {node: set() for node in outputs}
         renderer_inputs = set()
         pending_output = False
+        pending_source = False
         for obj in objects:
             if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
                 continue
@@ -508,6 +509,7 @@ class LiveAudio:
                 if source != selected:
                     return result("violation", "An unselected stream is entering the live capture input")
                 incoming = incoming or established
+                pending_source |= not established
                 if established:
                     source_port = str(info.get("output-port-id"))
                     target_port = str(info.get("input-port-id"))
@@ -530,11 +532,14 @@ class LiveAudio:
                     # own bounded audit must finish before accepting this path.
                     pending_output = True
                     continue
+                if not established:
+                    pending_output = True
                 if established:
                     source_port = str(info.get("output-port-id"))
                     target_port = str(info.get("input-port-id"))
                     source_props, target_props = ports.get(source_port), ports.get(target_port)
                     if source_props is None or target_props is None:
+                        pending_output = True
                         continue  # Ports may follow links in a settling graph.
                     if (str(source_props.get("node.id")) != source
                             or str(target_props.get("node.id")) != target
@@ -586,7 +591,7 @@ class LiveAudio:
                 return result("violation", "The application's native PCM channels were lost before the renderer")
         if (incoming and selected_targets <= inputs and outputs and complete
                 and capture_positioned and source_positioned
-                and outgoing == outputs and not pending_output and self.telemetry.ready):
+                and outgoing == outputs and not pending_output and not pending_source and self.telemetry.ready):
             return result("ready", "Selected application → binaural renderer → physical headphones")
         return result("waiting", "Waiting for the selected application's complete audio path")
 
@@ -611,6 +616,11 @@ class LiveAudio:
     def verified_input_ids(self, objects):
         pending = self.pending_input_ids(objects)
         return pending if self._audit.get("state") == "ready" else set()
+
+    def verified_pcm_routes(self, objects):
+        """Source-session-bound authorization after the full PCM/output audit."""
+        inputs = self.verified_input_ids(objects)
+        return {self._stream_serial: inputs} if inputs else {}
 
     async def _watch(self):
         missing_since = None
@@ -637,7 +647,7 @@ class LiveAudio:
     def set_pose(self, pose):
         self._pose = Quaternion.parse(pose.values()) if pose is not None else IDENTITY
         if self.telemetry.ready:
-            self.telemetry.send("/omniphony/control/head/quat", *map(float, renderer_pose(self._pose)))
+            return self.telemetry.send("/omniphony/control/head/quat", *map(float, renderer_pose(self._pose)))
 
     async def update_sink(self, sink):
         if (self.process is not None or self._state == "starting") and (sink is None or not sink.usable or self._sink is None
@@ -752,7 +762,7 @@ def audit_snapshot(objects, status, sink, *, allowed_filter_inputs=(), pending_f
     Telemetry readiness comes from the running daemon. Every identity, link and
     routing protection is independently checked against this fresh graph.
     """
-    empty = {"pending_inputs": set(), "verified_inputs": set()}
+    empty = {"pending_inputs": set(), "verified_inputs": set(), "verified_pcm_routes": {}}
     if not isinstance(status, dict) or not status.get("running"):
         return {"state": "idle", "reason": "Not enabled", **empty}
     try:
@@ -782,4 +792,5 @@ def audit_snapshot(objects, status, sink, *, allowed_filter_inputs=(), pending_f
     result = live.audit(objects)
     result["pending_inputs"] = live.pending_input_ids(objects)
     result["verified_inputs"] = live.verified_input_ids(objects)
+    result["verified_pcm_routes"] = live.verified_pcm_routes(objects)
     return result

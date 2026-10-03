@@ -110,8 +110,15 @@ class InstallerContractTests(unittest.TestCase):
                 result = subprocess.run(["/bin/bash", "-c", program], capture_output=True, text=True,
                                         env={**os.environ, "PATH": empty_path}, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines(), ["build:harletty-bridge", "build:mpv-omniphony",
-                    "helper:-S --needed sony-tracker" if helper else "build:sony-tracker"])
+                self.assertEqual(result.stdout.splitlines(), ["build:harletty-bridge", "build:mpv-omniphony"])
+
+    def test_absolute_sony_package_uses_local_build_and_normal_transaction(self):
+        sony_build = 'build_package "$project_dir/dist/arch/sony" \'Build and test the pinned Sony tracker\''
+        self.assertIn(sony_build, SCRIPT)
+        self.assertLess(SCRIPT.index(sony_build), SCRIPT.index(
+            'sudo pacman -U "${package_files[@]}"'))
+        self.assertNotIn("yay -S --needed sony-tracker", SCRIPT)
+        self.assertNotIn("paru -S --needed sony-tracker", SCRIPT)
 
     def pinned_recipe_fixture(self, *, altered_hash=False, missing_files=False):
         with tempfile.TemporaryDirectory() as directory:
@@ -177,6 +184,38 @@ class InstallerContractTests(unittest.TestCase):
         result, _ = self.pinned_recipe_fixture(missing_files=True)
         self.assertEqual(result.returncode, 17)
         self.assertNotIn("Reuse installed", result.stdout)
+
+
+class BrandingContractTests(unittest.TestCase):
+    def test_renamed_packages_preserve_old_ownership_and_runtime_contracts(self):
+        root = Path(__file__).resolve().parents[1]
+        import tomllib
+        metadata = tomllib.loads((root / "pyproject.toml").read_text())["project"]
+        self.assertEqual(metadata["name"], "budslink-spatial-companion")
+        self.assertEqual(metadata["license"], "AGPL-3.0-only")
+        self.assertEqual(metadata["scripts"]["budslink-spatial"], metadata["scripts"]["spatialctl"])
+        for recipe, name, previous in (
+                ("PKGBUILD.in", "budslink-spatial-companion", "spatial-workbench"),
+                ("companion-PKGBUILD.in", "plasma-budslink-spatial-companion", "plasma-budslink-companion-spatial")):
+            source = (root / "packaging" / recipe).read_text()
+            self.assertIn(f"pkgname={name}\n", source)
+            self.assertIn(f'provides=("{previous}=$pkgver")', source)
+            self.assertIn(f"conflicts=('{previous}')", source)
+        core = (root / "packaging/PKGBUILD.in").read_text()
+        self.assertIn("sony-tracker-spatial>=1.0.0-2:", core)
+        self.assertIn("/systemd/user/spatiald.service", core)
+        self.assertIn("--with-tidal", (root / "install.sh").read_text())
+
+    def test_publisher_has_every_new_release_file_without_private_evidence(self):
+        root = Path(__file__).resolve().parents[1]
+        script = (root / "tools/publish-github.sh").read_text()
+        listed = script.split("mapfile -t source_files <<'SOURCE_FILES'\n", 1)[1].split("\nSOURCE_FILES", 1)[0].splitlines()
+        self.assertEqual(len(listed), len(set(listed)))
+        for path in ("LICENSES/AGPL-3.0-only.txt", "docs/licensing.md", "docs/head-tracking-timing.md",
+                     "spatial/timing.py", "tests/test_runtime_timing.py", "tests/test_tidal_desktop.py"):
+            self.assertIn(path, listed)
+        self.assertFalse(any(path.startswith(("build/", "dist/", ".venv/")) for path in listed))
+        self.assertEqual((root / "LICENSE").read_bytes(), (root / "LICENSES/AGPL-3.0-only.txt").read_bytes())
 
 
 if __name__ == "__main__":

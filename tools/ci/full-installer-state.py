@@ -61,16 +61,16 @@ def main():
     assert not installed_module.is_relative_to(Path(__file__).resolve().parents[2]), \
         "Ownership check imported the source checkout instead of the installed package"
     paths = {
-        "spatial-workbench": [str(installed_module), "/usr/bin/spatialctl",
+        "budslink-spatial-companion": [str(installed_module), "/usr/bin/spatialctl", "/usr/bin/budslink-spatial",
             "/usr/bin/spatial-diagnostics", "/usr/bin/spatial-verify",
             "/usr/lib/systemd/user/spatiald.service", "/usr/lib/udev/rules.d/69-spatiald-trackers.rules",
             "/usr/share/wireplumber/scripts/spatial-live-guard.lua",
             "/usr/share/wireplumber/wireplumber.conf.d/90-spatial-live-guard.conf"],
-        "plasma-budslink-companion-spatial": [f"/usr/share/plasma/plasmoids/{COMPANION}/metadata.json"],
+        "plasma-budslink-spatial-companion": [f"/usr/share/plasma/plasmoids/{COMPANION}/metadata.json"],
         "orender-spatial": ["/usr/bin/orender", "/usr/lib/liborender.so.0"],
         "mpv-omniphony": ["/usr/bin/mpv"],
         "harletty-bridge": ["/usr/lib/orender/libharletty_bridge.so"],
-        "sony-tracker": ["/usr/bin/sony-tracker"],
+        "sony-tracker-spatial": ["/usr/bin/sony-tracker"],
     }
     ownership = {}
     for expected_owner, files in paths.items():
@@ -79,6 +79,9 @@ def main():
             assert owner == expected_owner, (filename, expected_owner, owner)
             ownership[filename] = owner
     subprocess.run(["pacman", "-Qk", *paths], check=True)
+    tracker_help = subprocess.check_output(["sony-tracker", "--help"], text=True)
+    assert "--absolute" in tracker_help and "--timestamped" in tracker_help, \
+        "Installed Sony helper lacks timestamped absolute orientation"
     report = {"status": "pass", "preserved_config_sha256": preserved,
               "companion_backups": len(backups), "package_file_ownership": ownership}
     args.report.write_text(json.dumps(report, indent=2) + "\n")

@@ -17,24 +17,27 @@ project's code and revision-specific patches.
 | WirePlumber | Official `wireplumber`, version 0.5+ | Smart-filter EQ policy plus a scoped packaged hook preventing selected-app fallback |
 | BlueZ | Existing official host stack | Bluetooth identity and connection events |
 | BudsLink | User's existing upstream installation | Sole Sony control provider; not replaced by this installer |
-| Companion | Local `plasma-budslink-companion-spatial` | Pinned upstream widget plus native playback/tracking/application cards |
+| Companion | Local `plasma-budslink-spatial-companion` | Pinned upstream widget plus native playback/tracking/application cards |
 | mpv-omniphony | Reviewed AUR recipe pinned to 0.5.2-1 | Encoded source playback and embedded Omniphony decoder |
 | Omniphony engine | Local `orender-spatial` from upstream 0.5.2 plus included patch | Matching CLI/library, verifiable loopback-only control |
 | Decoder bridge | Reviewed AUR `harletty-bridge` recipe pinned to 0.7.3-1 | Compatible upstream format decoding and spatial metadata |
-| Sony helper | Existing AUR `sony-tracker` | Motion packets from a verified Sony HID sensor interface |
+| Sony helper | Local `sony-tracker-spatial` from upstream 1.0.0 plus included patch | Version >=1.0.0-2: raw HID reports with host-monotonic capture time |
 | SWH LADSPA plugins | Official `swh-plugins` | Actual stereo look-ahead limiter after headphone PEQ |
 | tidalapi | Official `python-tidalapi`; Python extra `>=0.8.11,<0.9` | Device authorization, catalogue requests and clear stream manifests |
 
 `bash install.sh` builds and installs the full selection. It installs missing
 official build tools, checks out the exact reviewed bridge and player AUR commits,
 and builds them directly with makepkg, including when `yay`/`paru` is available.
-The Sony tracker uses an existing helper when available or a reviewed direct
-makepkg build otherwise. Package review prompts remain enabled.
+The Sony helper uses the checksummed local `sony-tracker-spatial` recipe. It
+provides the existing `sony-tracker` executable and adds the daemon's required
+`--absolute --timestamped` options while preserving legacy behavior without
+those flags. Package
+review and replacement prompts remain enabled.
 
 The supported audio set is Omniphony 0.5.2 with Harletty 0.7.3 and mpv-omniphony
-0.5.2. Current AUR HEAD cannot be substituted independently: upstream
+0.5.2. The AUR HEAD inspected on September 28 cannot be substituted independently: upstream
 [Omniphony 0.6.0](https://github.com/mgth/Omniphony/releases/tag/v0.6.0) and Harletty
-0.8.0 change the decoder bridge ABI from 0.3 to 0.4, and current mpv-omniphony 0.6.0
+0.8.0 change the decoder bridge ABI from 0.3 to 0.4, and the inspected mpv-omniphony 0.6.0
 requires `orender>=0.6.0`. Future upgrades must update and test this set together.
 Decoder capability, ABI and actual playback checks remain essential after
 installation. Native software-chain evidence does not establish physical headset

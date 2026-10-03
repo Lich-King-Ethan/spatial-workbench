@@ -19,7 +19,7 @@ SCRIPT = Path(__file__).resolve().parents[1] / "wireplumber/scripts/spatial-live
 
 @unittest.skipUnless(LUA, "Lua shared library required for WirePlumber policy execution")
 class GuardTests(unittest.TestCase):
-    def test_real_lua_policy_protects_only_current_explicit_session(self):
+    def _run_policy(self, assertions):
         lib = ctypes.CDLL(LUA)
         lib.luaL_newstate.restype = ctypes.c_void_p
         # Lua 5.5 makes luaL_openlibs a header macro. ctypes must call the
@@ -49,11 +49,29 @@ hooks = {}
 props = { ["media.class"] = "Stream/Output/Audio", ["node.id"] = "8", ["object.serial"] = "31" }
 flags = {}
 entries = {}
-metadata = {}
-function metadata:find(subject, key) return entries[tostring(subject).."|"..key] end
-function metadata:set(subject, key, kind, value)
-  entries[tostring(subject).."|"..key] = value
-  self.last_type = kind
+function new_metadata(values)
+  local object = {values=values}
+  function object:find(subject, key) return self.values[tostring(subject).."|"..key] end
+  function object:set(subject, key, kind, value)
+    self.values[tostring(subject).."|"..key] = value
+    self.last_type = kind
+  end
+  return object
+end
+metadata = new_metadata(entries)
+metadata_available = true
+manager_available = true
+metadata_manager = {}
+function metadata_manager:lookup(interest)
+  assert(#interest == 1 and #interest[1] == 3)
+  assert(interest[1][1] == "metadata.name" and interest[1][2] == "=")
+  assert(interest[1][3] == "default")
+  return metadata_available and metadata or nil
+end
+source = {}
+function source:call(action, kind)
+  assert(action == "get-object-manager" and kind == "metadata")
+  return manager_available and metadata_manager or nil
 end
 target = nil
 can_link = true
@@ -66,12 +84,25 @@ function om:lookup(interest)
   return target
 end
 local lu = {}
-function lu:unwrap_select_target_event(event) return {}, om, {}, props, flags, event.target end
+function lu:unwrap_select_target_event(event)
+  return event:get_source(), om, {}, props, flags, event.target
+end
 function lu.canLink(p, t) return can_link end
 function lu.checkPassthroughCompatibility(s, t) return compatible, false end
 package.preload["linking-utils"] = function() return lu end
+-- Native WirePlumber can deliver initial metadata before the global plugin
+-- lookup succeeds. Keep the old helper's failure mode visible to this fixture.
+plugin_lookups = 0
+Plugin = {find=function(name)
+  assert(name == "standard-event-source")
+  plugin_lookups = plugin_lookups + 1
+  return nil
+end}
 package.preload["common-utils"] = function()
-  return {get_default_metadata_object=function() return metadata end}
+  return {get_default_metadata_object=function()
+    return Plugin.find("standard-event-source"):call("get-object-manager", "metadata")
+      :lookup {Constraint {"metadata.name", "=", "default"}}
+  end}
 end
 function Constraint(value) return value end
 function EventInterest(value) return value end
@@ -79,17 +110,61 @@ function SimpleEventHook(value)
   function value:register() hooks[self.name] = self end
   return value
 end
+function new_event()
+  local event = {}
+  function event:get_source() return source end
+  function event:stop_processing() self.stopped = true end
+  function event:set_data(key, value) self[key] = value end
+  return event
+end
 '''
-            assertions = r'''
+            code = harness + "\ndofile(" + json.dumps(str(SCRIPT)) + ")\n" + assertions
+            result = lib.luaL_loadstring(state, code.encode())
+            if result == 0:
+                result = lib.lua_pcallk(state, 0, 0, 0, 0, None)
+            message = lib.lua_tolstring(state, -1, None) if result else b""
+            self.assertEqual(result, 0, (message or b"Lua execution failed").decode("utf-8", "replace"))
+        finally:
+            lib.lua_close(state)
+
+    def test_metadata_event_precedes_global_plugin_discovery(self):
+        self._run_policy(r'''
+local announce = hooks["spatiald/announce-live-guard"]
+-- Announce only the actual default metadata after all guard hooks registered.
+assert(hooks["spatiald/protect-live-target"] and hooks["spatiald/verify-live-target"])
+manager_available = false
+announce.execute(new_event())
+assert(not entries["0|spatiald.live-guard"])
+manager_available = true
+metadata_available = false
+announce.execute(new_event())
+assert(not entries["0|spatiald.live-guard"])
+metadata_available = true
+announce.execute(new_event())
+assert(entries["0|spatiald.live-guard"] == "1" and metadata.last_type == "Spa:String")
+-- Resolve new metadata on the next event instead of caching a removed proxy.
+local previous = metadata
+metadata = new_metadata({})
+announce.execute(new_event())
+assert(metadata ~= previous and metadata.values["0|spatiald.live-guard"] == "1")
+-- Target selection also reads this event source's current metadata.
+metadata.values["8|spatiald.live-target"] = "31:47"
+metadata.values["8|target.object"] = "47"
+local event = new_event()
+hooks["spatiald/protect-live-target"].execute(event)
+assert(event.stopped)
+assert(plugin_lookups == 0)
+''')
+
+    def test_real_lua_policy_protects_only_current_explicit_session(self):
+        self._run_policy(r'''
 assert(hooks["spatiald/protect-live-target"].before == "linking/find-defined-target")
 assert(hooks["spatiald/verify-live-target"].after == "linking/get-filter-from-target")
 assert(hooks["spatiald/verify-live-target"].before == "linking/prepare-link")
-hooks["spatiald/announce-live-guard"].execute({})
+hooks["spatiald/announce-live-guard"].execute(new_event())
 assert(entries["0|spatiald.live-guard"] == "1" and metadata.last_type == "Spa:String")
 function run()
-  local event = {}
-  function event:stop_processing() self.stopped = true end
-  function event:set_data(key, value) self[key] = value end
+  local event = new_event()
   hooks["spatiald/protect-live-target"].execute(event)
   return event
 end
@@ -129,12 +204,5 @@ assert(not run().stopped and not run().target)
 props["object.serial"] = "31"
 entries["8|spatiald.live-target"] = "malformed"
 assert(not run().stopped and not run().target)
-'''
-            code = harness + "\ndofile(" + json.dumps(str(SCRIPT)) + ")\n" + assertions
-            result = lib.luaL_loadstring(state, code.encode())
-            if result == 0:
-                result = lib.lua_pcallk(state, 0, 0, 0, 0, None)
-            message = lib.lua_tolstring(state, -1, None) if result else b""
-            self.assertEqual(result, 0, (message or b"Lua execution failed").decode("utf-8", "replace"))
-        finally:
-            lib.lua_close(state)
+assert(plugin_lookups == 0)
+''')

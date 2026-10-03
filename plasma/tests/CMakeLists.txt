@@ -9,7 +9,7 @@ find_package(Qt6 6.6 REQUIRED COMPONENTS Quick Qml Test DBus)
 find_package(KF6I18n 6.8 REQUIRED)
 
 set(SPATIAL_COMPANION_QML_DIR "" CACHE PATH "Patched Companion contents/ui directory")
-foreach(card SpatialControls PlaybackControls LiveAudioControls SpatialStatus FullRepresentation)
+foreach(card SpatialControls PlaybackControls LiveAudioControls SpatialStatus FullRepresentation TidalControls)
     if(NOT EXISTS "${SPATIAL_COMPANION_QML_DIR}/${card}.qml")
         message(FATAL_ERROR "Missing patched Companion component: ${card}.qml")
     endif()

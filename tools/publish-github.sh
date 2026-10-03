@@ -4,7 +4,7 @@ set -Eeuo pipefail
 umask 077
 
 project_dir=$(CDPATH= cd -P -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-repository_name=spatial-workbench
+repository_name=budslink-spatial-companion
 expected_owner=''
 dry_run=0
 usage() {
@@ -13,7 +13,7 @@ Usage: bash tools/publish-github.sh [--name REPOSITORY] [--owner LOGIN] [--dry-r
 
 Creates a PUBLIC GitHub repository under the authenticated personal account,
 commits the reviewed source files, and pushes the current branch. The default
-name is spatial-workbench. --owner checks the signed-in account; it does not
+name is budslink-spatial-companion. --owner checks the signed-in account; it does not
 select another person or organization. Existing remotes/repositories are refused.
 
 On Arch/CachyOS, missing git/github-cli packages are installed with normal
@@ -48,7 +48,9 @@ mapfile -t source_files <<'SOURCE_FILES'
 .gitignore
 CONTRIBUTING.md
 LICENSE
+LICENSES/AGPL-3.0-only.txt
 LICENSES/GPL-3.0.txt
+LICENSES/MIT-legacy.txt
 MANIFEST.in
 Makefile
 README.md
@@ -56,6 +58,8 @@ STATUS.md
 build.sh
 config/modules.toml
 config/omniphony-headphones.yaml
+docs/README.md
+docs/architecture-reference.md
 docs/architecture.md
 docs/audio-runtime.md
 docs/automatic-diagnostics.md
@@ -65,11 +69,16 @@ docs/desktop-runtime.md
 docs/equalizer.md
 docs/feature-modules.md
 docs/full-installer-ci.md
+docs/head-tracking-timing.md
 docs/install.md
+docs/licensing.md
 docs/live-audio.md
 docs/local-development-handoff.md
+docs/local-pc-validation-20260928.md
 docs/orender-loopback.md
 docs/publishing.md
+docs/release-history.md
+docs/tidal-reference.md
 docs/tidal-runtime.md
 docs/tracker-runtime.md
 docs/upstream-report.md
@@ -82,10 +91,14 @@ packaging/PKGBUILD.in
 packaging/README.md
 packaging/companion-PKGBUILD.in
 packaging/companion-PROVENANCE.md
-packaging/orender-PKGBUILD.in
 packaging/orender-Cargo.lock
+packaging/orender-PKGBUILD.in
 packaging/orender-live-channels.patch
 packaging/orender-loopback.patch
+packaging/sony-PKGBUILD.in
+packaging/sony-PROVENANCE.md
+packaging/sony-absolute.patch
+packaging/sony-native-test.py
 packaging/spatiald.service
 plasma/LiveAudioControls.qml
 plasma/PlaybackControls.qml
@@ -93,6 +106,8 @@ plasma/PlaybackState.js
 plasma/README.md
 plasma/SpatialControls.qml
 plasma/SpatialStatus.qml
+plasma/TidalControls.qml
+plasma/TidalState.js
 plasma/companion.patch
 plasma/tests/CMakeLists.txt
 plasma/tests/README.md
@@ -127,6 +142,7 @@ spatial/retry.py
 spatial/runtime.py
 spatial/settings.py
 spatial/tidal.py
+spatial/timing.py
 spatial/trackers/__init__.py
 spatial/trackers/common.py
 spatial/trackers/hid.py
@@ -134,6 +150,7 @@ spatial/trackers/slime.py
 spatial/trackers/sony.py
 tests/test_audio_runtime.py
 tests/test_audio_stack_smoke.py
+tests/test_control.py
 tests/test_control_unit.py
 tests/test_core.py
 tests/test_desktop.py
@@ -155,15 +172,22 @@ tests/test_processes.py
 tests/test_qml_private_session.py
 tests/test_retry.py
 tests/test_runtime.py
+tests/test_runtime_timing.py
 tests/test_settings.py
+tests/test_sony_profile.py
 tests/test_spatial_metrics.py
 tests/test_tidal.py
+tests/test_tidal_client.py
+tests/test_tidal_desktop.py
+tests/test_tidal_qml.py
+tests/test_timing.py
 tests/test_trackers.py
 tests/test_trackers_runtime.py
 tests/test_wireplumber_guard.py
 tools/ci/audio-stack-smoke.py
 tools/ci/cachyos-bridge.sh
 tools/ci/cachyos-installed-tests.py
+tools/ci/cachyos-mpv.sh
 tools/ci/cachyos-packages.sh
 tools/ci/cachyos-prepare.sh
 tools/ci/cachyos-provenance.sh
@@ -254,7 +278,7 @@ fi
 [[ -n $(git config --get user.email || true) ]] || git config --local user.email "$account_id+$account_login@users.noreply.github.com"
 git add -- "${source_files[@]}"
 if ! git diff --cached --quiet; then
-    git commit -m 'Publish Spatial Workbench source'
+    git commit -m 'Publish BudsLink Spatial Companion source'
 fi
 git rev-parse --verify HEAD >/dev/null || fail 'There is no source commit to publish.'
 gh auth setup-git --hostname github.com

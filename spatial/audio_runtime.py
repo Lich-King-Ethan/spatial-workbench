@@ -7,6 +7,7 @@ states. Credentials in a media URL are never included in status or exceptions.
 from __future__ import annotations
 
 import asyncio
+from collections import deque
 import contextlib
 import json
 import math
@@ -24,6 +25,8 @@ from .core import Sink
 from .errors import PublicError
 from .osc import decode, encode
 from .pose import IDENTITY, Quaternion
+
+PCM_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
 
 
 class AudioError(PublicError):
@@ -113,14 +116,16 @@ def config_text(bridge_path):
             "      enabled: false\n")
 
 
-def playback_argv(binary, config, ipc, sink, osc_port, monitor_port, library_path=None):
+def playback_argv(binary, config, ipc, sink, osc_port, monitor_port, library_path=None,
+                  *, allow_pcm_route=False):
     if not isinstance(sink, Sink) or not sink.usable:
         raise AudioError("Waiting for the selected headphones' A2DP output")
     args = [binary, "--no-config", "--load-scripts=no", "--ytdl=no",
             "--terminal=no", "--idle=yes", "--pause=yes", "--keep-open=no",
-            "--title=Spatial audio", "--force-media-title=Spatial audio",
-            "--audio-client-name=Spatial audio", "--volume-max=100",
-            "--ao=pipewire", "--ad=orender", "--audio-channels=stereo",
+            "--title=BudsLink Spatial Companion", "--force-media-title=BudsLink Spatial Companion",
+            "--audio-client-name=BudsLink Spatial Companion", "--volume-max=100",
+            "--ao=pipewire", "--ad=orender",
+            "--audio-channels=" + ("auto" if allow_pcm_route else "stereo"),
             "--audio-buffer=0.05", "--audio-device=pipewire/" + sink.name,
             "--input-ipc-server=" + str(ipc), "--ad-orender-config=" + str(config),
             "--ad-orender-osc", "--ad-orender-osc-bind=127.0.0.1",
@@ -148,6 +153,7 @@ class RendererTelemetry(asyncio.DatagramProtocol):
         self.object_count = None
         self.registered = False
         self.error = ""
+        self.observed_poses = deque(maxlen=512)
 
     def connection_made(self, transport):
         self.transport = transport
@@ -160,10 +166,14 @@ class RendererTelemetry(asyncio.DatagramProtocol):
         self.config_path = self.config_status = None
         self.last_seen = 0.0
         self.clipping = self.master_gain = self.object_count = None
+        self.observed_poses.clear()
 
     def send(self, address, *values):
         if self.transport is not None and self.target is not None:
-            self.transport.sendto(encode(address, *values), self.target)
+            packet = encode(address, *values)
+            sent_ns = time.monotonic_ns()
+            self.transport.sendto(packet, self.target)
+            return sent_ns
 
     def datagram_received(self, data, addr):
         # Omniphony transmits from a separate ephemeral socket, not its RX port.
@@ -196,6 +206,9 @@ class RendererTelemetry(asyncio.DatagramProtocol):
                 if not isinstance(value.get("binaural", {}), dict):
                     return
                 self.renderer = value
+                head = value.get("binaural", {}).get("headPose")
+                if isinstance(head, dict):
+                    self._observe_pose([head.get(axis) for axis in ("w", "x", "y", "z")])
             self.last_seen = time.monotonic()
         elif key == "heartbeat/ack":
             self.last_seen = time.monotonic()
@@ -214,6 +227,16 @@ class RendererTelemetry(asyncio.DatagramProtocol):
         elif key == "state/render/bridge_error" and args and isinstance(args[0], str):
             self.error = ("The decoder bridge reported an error; check the installed engine/bridge pair"
                           if args[0] else "")
+        elif key == "state/head_pose" and len(args) == 4:
+            self._observe_pose(args)
+
+    def _observe_pose(self, values):
+        try:
+            pose = Quaternion.parse(values)
+        except (TypeError, ValueError, OverflowError):
+            return
+        self.observed_poses.append({"received_ns": time.monotonic_ns(),
+                                    "renderer_pose": list(pose.values())})
 
     @property
     def ready(self):
@@ -364,14 +387,14 @@ class AudioRuntime:
                 control_port = reservation.getsockname()[1]
             self.telemetry.target = ("127.0.0.1", control_port)
             args = playback_argv(probe["binary"], config, ipc, sink, control_port,
-                                 monitor_port, self.library_path)
+                                 monitor_port, self.library_path, allow_pcm_route=self.allow_pcm_route)
             env = os.environ.copy()
             env["OMNIPHONY_OSC_BIND"] = "127.0.0.1"
             env["PIPEWIRE_PROPS"] = json.dumps({"node.dont-fallback": True,
                 "node.dont-reconnect": not self.allow_pcm_route,
                 "node.dont-move": not self.allow_pcm_route,
                 "target.object": sink.serial,
-                "application.name": "Spatial audio"})
+                "application.name": "BudsLink Spatial Companion"})
             self.process = await asyncio.create_subprocess_exec(
                 *args, env=env, stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
@@ -495,14 +518,15 @@ class AudioRuntime:
     def set_pose(self, pose):
         self._pose = Quaternion.parse(pose.values()) if pose is not None else None
         if self.telemetry.ready:
-            self._send_pose()
+            return self._send_pose()
 
     def _send_pose(self, *, force=False):
         pose = self._offset * self._pose if self._pose else IDENTITY
         values = tuple(map(float, renderer_pose(pose)))
         if force or values != self._last_sent:
-            self.telemetry.send("/omniphony/control/head/quat", *values)
+            sent_ns = self.telemetry.send("/omniphony/control/head/quat", *values)
             self._last_sent = values
+            return sent_ns
 
     def recenter(self):
         """Standalone API; daemon callers should instead recenter Engine then set_pose."""
@@ -535,7 +559,8 @@ class AudioRuntime:
                    (self._sink.device, self._sink.name, self._sink.serial)):
             await self.stop("headphones disconnected")
 
-    def verify_output(self, objects, *, allowed_filter_inputs=(), pending_filter_inputs=()):
+    def verify_output(self, objects, *, allowed_filter_inputs=(), pending_filter_inputs=(),
+                      verified_pcm_routes=None):
         """Audit the owned stream against a real ``pw-dump`` snapshot.
 
         The desktop provider may call this whenever its graph changes. A
@@ -546,6 +571,10 @@ class AudioRuntime:
         ``pending_filter_inputs`` contains independently validated owned inputs
         still awaiting their output links. Their supervisor must enforce a
         bounded connection timeout; they are reported as waiting, never verified.
+        ``verified_pcm_routes`` maps the selected source's current object serial
+        to capture IDs whose complete native PCM and binaural output chain was
+        independently verified in this same snapshot. Only that source may use
+        multichannel input; direct physical and other filter paths stay stereo.
         Nothing is linked, moved, or created here.
         """
         if self.process is None or self._sink is None:
@@ -575,6 +604,11 @@ class AudioRuntime:
                       if props.get("node.name") == self._sink.name
                       and str(props.get("object.serial")) == self._sink.serial}
         target_ids.update(str(node) for node in allowed_filter_inputs)
+        pcm_routes = ({str(serial): set(map(str, inputs))
+                       for serial, inputs in (verified_pcm_routes or {}).items()}
+                      if self.allow_pcm_route else {})
+        pcm_targets = {node: pcm_routes.get(str(nodes[node].get("object.serial")), set())
+                       for node in output_ids}
         for node in output_ids:
             props = nodes[node]
             if (str(props.get("target.object")) not in (self._sink.name, self._sink.serial)
@@ -597,44 +631,52 @@ class AudioRuntime:
                 if destination in pending_ids:
                     pending = True
                     continue
-                if destination not in target_ids:
+                if destination not in target_ids | pcm_targets[source]:
                     self._routing = {"state": "violation", "reason": "The playback stream is linked to another output"}
                     return dict(self._routing)
                 if info.get("state") not in ("active", "paused"):
+                    pending = True
                     continue
                 output_port, input_port = str(info.get("output-port-id")), str(info.get("input-port-id"))
                 output_props, input_props = ports.get(output_port), ports.get(input_port)
                 if output_props is None or input_props is None:
+                    pending = True
                     continue  # A graph snapshot may precede port enumeration.
                 if (str(output_props.get("node.id")) != source
                         or str(input_props.get("node.id")) != destination
                         or output_props.get("port.direction") != "out"
                         or input_props.get("port.direction") != "in"
-                        or output_props.get("audio.channel") not in ("FL", "FR")
+                        or output_props.get("audio.channel") not in
+                           (PCM_CHANNELS if destination in pcm_targets[source] else ("FL", "FR"))
                         or output_props.get("audio.channel") != input_props.get("audio.channel")):
-                    self._routing = {"state": "violation", "reason": "The player's stereo channels are not linked to matching input channels"}
+                    self._routing = {"state": "violation", "reason": "The player's channels are not linked to matching input channels"}
                     return dict(self._routing)
                 if output_port in linked[source] or input_port in linked_inputs:
-                    self._routing = {"state": "violation", "reason": "The player's stereo channels have duplicate links"}
+                    self._routing = {"state": "violation", "reason": "The player's channels have duplicate links"}
                     return dict(self._routing)
                 linked[source].add(output_port)
                 linked_inputs.add(input_port)
                 linked_targets[source].add(destination)
                 if len(linked_targets[source]) > 1:
-                    self._routing = {"state": "violation", "reason": "The player's stereo channels are split between inputs"}
+                    self._routing = {"state": "violation", "reason": "The player's channels are split between inputs"}
                     return dict(self._routing)
         if pending:
-            self._routing = {"state": "waiting", "reason": "Waiting for the equalizer's physical output link"}
+            self._routing = {"state": "waiting", "reason": "Waiting for the player's complete audio path"}
             return dict(self._routing)
         complete = True
         for node in output_ids:
             outputs = {port: props for port, props in ports.items()
                        if str(props.get("node.id")) == node and props.get("port.direction") == "out"}
             channels = [props.get("audio.channel") for props in outputs.values()]
-            complete &= (len(channels) == 2 and set(channels) == {"FL", "FR"}
-                         and set(outputs) == linked[node])
-        self._routing = ({"state": "verified", "reason": "Both player channels are linked to the selected physical headphones"}
-                         if complete else {"state": "waiting", "reason": "Waiting for the player's complete stereo PipeWire links"})
+            pcm = bool(linked_targets[node]) and linked_targets[node] <= pcm_targets[node]
+            if pcm and len(set(channels)) != len(channels):
+                self._routing = {"state": "violation", "reason": "The player's PCM channel positions are duplicated"}
+                return dict(self._routing)
+            positioned = (bool(channels) and set(channels) <= set(PCM_CHANNELS) if pcm
+                          else len(channels) == 2 and set(channels) == {"FL", "FR"})
+            complete &= positioned and set(outputs) == linked[node]
+        self._routing = ({"state": "verified", "reason": "All player channels have a verified path to the selected physical headphones"}
+                         if complete else {"state": "waiting", "reason": "Waiting for the player's complete PipeWire links"})
         return dict(self._routing)
 
     async def stop(self, reason="stopped"):

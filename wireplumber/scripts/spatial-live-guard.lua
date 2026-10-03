@@ -1,9 +1,18 @@
--- SPDX-License-Identifier: MIT
+-- SPDX-License-Identifier: AGPL-3.0-only
 -- Protect only an explicitly redirected application during a live PCM session.
 -- Runs in WirePlumber's target-selection transaction, so renderer death cannot
 -- race a Python poll loop and send the stream to the default speakers.
 local lutils = require ("linking-utils")
-local cutils = require ("common-utils")
+
+local function default_metadata (source)
+  -- Initial metadata-added can run before Plugin.find can discover the event
+  -- source. Use the source that delivered this event, as stock metadata hooks
+  -- do, and resolve its current default metadata without retaining a proxy.
+  local manager = source:call ("get-object-manager", "metadata")
+  if manager then
+    return manager:lookup { Constraint { "metadata.name", "=", "default" } }
+  end
+end
 
 local function announce (metadata)
   if metadata then
@@ -17,7 +26,7 @@ local function protect_target (event)
   if props ["media.class"] ~= "Stream/Output/Audio" then
     return
   end
-  local metadata = cutils.get_default_metadata_object ()
+  local metadata = default_metadata (source)
   if not metadata then
     return
   end
@@ -91,7 +100,7 @@ SimpleEventHook {
     },
   },
   execute = function (event)
-    announce (cutils.get_default_metadata_object ())
+    announce (default_metadata (event:get_source ()))
   end,
 }:register ()
 

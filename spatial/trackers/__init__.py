@@ -24,12 +24,12 @@ async def _supervise(factory, stop, reporter):
 
 async def run(engine, stop, on_change=None, status=None, *, sony_executable="sony-tracker",
               sony_enabled=True, optional_enabled=True,
-              sysfs="/sys/class/hidraw", devdir="/dev"):
+              sysfs="/sys/class/hidraw", devdir="/dev", selected_bluetooth=None):
     tasks = []
     if sony_enabled:
         factory = lambda: sony.run(
             engine, stop, on_change, status, executable=sony_executable,
-            sysfs=sysfs, devdir=devdir)
+            sysfs=sysfs, devdir=devdir, selected_bluetooth=selected_bluetooth)
         tasks.append(asyncio.create_task(_supervise(factory, stop, Reporter("sony_tracker", status))))
     else:
         Reporter("sony_tracker", status)("disabled", "Earbud provider disabled in configuration")

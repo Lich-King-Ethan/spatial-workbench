@@ -54,7 +54,7 @@ finish() {
 from pathlib import Path
 import sys
 
-sys.path.insert(0, '/home/builder/spatial-workbench')
+sys.path.insert(0, '/home/builder/budslink-spatial-companion')
 from spatial.diagnostics_privacy import Redactor
 
 redactor = Redactor()
@@ -124,18 +124,18 @@ ps -eLo pid,tid,comm,cls,rtprio,ni > /ci-output/thread-scheduling-before.txt
 desktop_user pw-dump > /ci-output/pipewire-before.json
 systemctl is-active sddm.service
 install -d -o builder -g builder /ci-output/desktop
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-desktop.py \
     --report-dir /ci-output/desktop/before
 snapshot_resources before-build
 
 if [[ "$ci_validation_scope" == desktop ]]; then
-    desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py --desktop-only
+    desktop_user python /home/builder/budslink-spatial-companion/tools/ci/full-installer-pty.py --desktop-only
     snapshot_resources after-desktop-install
     desktop_user systemctl --user is-enabled spatiald.service
     desktop_user systemctl --user is-active spatiald.service pipewire.service wireplumber.service
     desktop_user spatialctl status > /ci-output/daemon-status.json
-    pacman -Qk spatial-workbench plasma-budslink-companion-spatial
-    desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+    pacman -Qk budslink-spatial-companion plasma-budslink-spatial-companion
+    desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-desktop.py \
         --installed --report-dir /ci-output/desktop/installed
     python - <<'PY'
 import json
@@ -169,10 +169,10 @@ PY
 fi
 
 install -d -o builder -g builder /ci-output/install-state
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py seed
-desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-state.py seed
+desktop_user python /home/builder/budslink-spatial-companion/tools/ci/full-installer-pty.py
 snapshot_resources after-full-install
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-state.py check \
     --report /ci-output/install-state/first-install.json
 python - <<'PY'
 from pathlib import Path
@@ -186,9 +186,9 @@ PY
 # Re-run the real reduced installer over the live full installation. This
 # exercises package replacement, configuration preservation and service restart
 # without spending another renderer build on the same pinned source.
-desktop_user python /home/builder/spatial-workbench/tools/ci/full-installer-pty.py --core-only
+desktop_user python /home/builder/budslink-spatial-companion/tools/ci/full-installer-pty.py --core-only
 snapshot_resources after-repeat-install
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-state.py check \
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-state.py check \
     --report /ci-output/install-state/repeat-core-install.json
 
 desktop_user systemctl --user is-enabled spatiald.service
@@ -196,19 +196,19 @@ desktop_user systemctl --user is-active spatiald.service pipewire.service wirepl
 desktop_user spatialctl status > /ci-output/daemon-status.json
 desktop_user pw-dump > /ci-output/pipewire-after.json
 systemctl is-active systemd-udevd.service
-pacman -Q spatial-workbench plasma-budslink-companion-spatial orender-spatial \
-    harletty-bridge mpv-omniphony sony-tracker python-tidalapi
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/full-installer-desktop.py \
+pacman -Q budslink-spatial-companion plasma-budslink-spatial-companion orender-spatial \
+    harletty-bridge mpv-omniphony sony-tracker-spatial python-tidalapi
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/full-installer-desktop.py \
     --installed --report-dir /ci-output/desktop/installed
 
 # Exercise the installed native decoder and complete software audio path. The
 # private PipeWire endpoints and head-pose packets remain explicit test inputs;
 # they do not turn the separate physical-host checks below into hardware PASSes.
 install -d -o builder -g builder /ci-output/audio
-desktop_user python -I /home/builder/spatial-workbench/tools/ci/decoder-smoke.py \
+desktop_user python -I /home/builder/budslink-spatial-companion/tools/ci/decoder-smoke.py \
     --download-fixture --report /ci-output/audio/decoder-smoke.json
 desktop_user timeout --signal=TERM --kill-after=10s 10m dbus-run-session -- \
-    python -I /home/builder/spatial-workbench/tools/ci/audio-stack-smoke.py \
+    python -I /home/builder/budslink-spatial-companion/tools/ci/audio-stack-smoke.py \
     --require-media-audio --bridge /usr/lib/orender/libharletty_bridge.so \
     --report-dir /ci-output/audio/pipewire
 snapshot_resources after-audio

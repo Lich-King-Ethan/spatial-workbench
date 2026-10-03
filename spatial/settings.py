@@ -32,6 +32,8 @@ class Settings:
     automatic_diagnostics: bool = True
     sample_timeout: float = 0.5
     readiness_timeout: float = 30.0
+    head_prediction_enabled: bool = False
+    head_prediction_max_ms: float = 80.0
 
     @classmethod
     def load(cls, path=None):
@@ -53,12 +55,16 @@ class Settings:
                 values[key] = values[key] or None
         if values.get("bluetooth_address"):
             values["bluetooth_address"] = address(values["bluetooth_address"])
-        for key in ("sony_enabled", "slime_enabled", "equalizer_enabled", "live_enabled", "stereo_spatialization", "tidal_require_atmos", "automatic_diagnostics"):
+        for key in ("sony_enabled", "slime_enabled", "equalizer_enabled", "live_enabled", "stereo_spatialization", "tidal_require_atmos", "automatic_diagnostics", "head_prediction_enabled"):
             if key in values and type(values[key]) is not bool:
                 raise ValueError(f"{key} must be a boolean")
         for key in ("sample_timeout", "readiness_timeout"):
             if key in values and (type(values[key]) not in (int, float) or not 0 < values[key] <= 120):
                 raise ValueError(f"{key} must be positive and at most 120 seconds")
+        if "head_prediction_max_ms" in values:
+            value = values["head_prediction_max_ms"]
+            if type(value) not in (int, float) or not 0 < value <= 150:
+                raise ValueError("head_prediction_max_ms must be positive and at most 150 milliseconds")
         for key in ("mpv_binary", "sony_binary", "orender_binary"):
             if key in values and (not isinstance(values[key], str) or not values[key].strip()):
                 raise ValueError(f"{key} must be nonempty text")
@@ -75,7 +81,7 @@ class Settings:
         return "/usr/lib/orender/libharletty_bridge.so"
 
 
-DEFAULT_CONFIG = '''# Spatial audio companion. Empty address selects the unique WF-1000XM5.
+DEFAULT_CONFIG = '''# BudsLink Spatial Companion. Empty address selects the unique WF-1000XM5.
 schema = 1
 bluetooth_address = ""
 mpv_binary = "mpv"
@@ -99,6 +105,9 @@ tidal_require_atmos = true
 automatic_diagnostics = true
 sample_timeout = 0.5
 readiness_timeout = 30.0
+# Experimental bounded prediction; timestamp snapshots work while this is off.
+head_prediction_enabled = false
+head_prediction_max_ms = 80.0
 '''
 
 

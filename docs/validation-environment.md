@@ -1,19 +1,67 @@
-# Validation environment and remaining hardware checks
+# Validation evidence and environment history
 
-## What this environment can establish
+## Local software validation — October 3, 2026
 
-The development runtime is Ubuntu 24.04, with Python 3.12. The project's supported
-installation target is Arch/CachyOS with a user session running KDE Plasma,
-PipeWire, WirePlumber, and BlueZ. Those are different environments.
+After the rename, timestamp/prediction and TIDAL mini-client changes, the full
+Python source suite passes 469 tests without skips, including the guard and
+TIDAL sign-in recovery regressions. The Companion passes 7 native Qt checks,
+including actual window hiding, card recreation and recovered sign-in completion.
+These checks also reject hidden polling and stale-session restoration after logout.
+Sony 1.0.0-2 package checks verify legacy, absolute and
+timestamped modes.
+
+The initial staged-wheel audio rerun failed before audio: the installed renderer
+lacks the required patch marker, the renderer/bridge versions no longer match
+the supported group, and mpv has unresolved shared libraries. That failure remains
+in `build/local-validation/native-review-20261003.1hatAl/`.
+
+The isolated compatible stack uncovered a real WirePlumber 0.5.18 guard startup
+race (`native-pinned-review-20261003.9ziqmjq3/`). The production fix obtains the
+metadata manager from the event source; a Lua regression preserves the fail-closed
+routing contract. The pinned bridge 0.7.3 was rebuilt, the pinned player binary
+was verified against pacman's package checksum, and missing libraries were
+extracted from signed packages into the isolated environment. Host packages were
+not repaired or replaced.
+
+All 15 gates subsequently passed twice consecutively, in
+`native-pinned-review-20261003.abukawxy/` and
+`native-pinned-review-20261003.rbtb2hc1/`:
+eight independent input lanes, automatic owned 7.1 routing, 18 PCM capture windows
+with 74 acoustic assertions, four genuine Atmos captures retaining 15 objects,
+and cleanup/route invariants. A previous isolated attempt,
+`native-pinned-review-20261003.ji60e8_s/`, failed the Atmos startup graph-stability
+gate. More detailed failure instrumentation was added without changing any
+acceptance predicate. The successful follow-up does not establish a cause for
+that earlier failure. Both successful runs retained the same acceptance predicates.
+
+These builds use 8 jobs on the local 32-thread, 31 GiB CachyOS machine. Core
+`makepkg --nodeps` covers two missing pacman frontend records only: `python-build`
+and `python-installer` are available in a private virtual environment, and the
+other build/check dependencies were verified with pacman. Package `check()` was
+executed completely; no tests were skipped to make the build pass.
+
+No new package was installed on the live desktop and no physical/account test
+was resumed. Snapshot history records accepted selected-provider packets; it is
+not a lossless capture of the Bluetooth transport. The earbud-side clock and
+acoustic output delay are not established by host-monotonic timestamps.
+
+
+## Original cloud environment — September 2026
+
+The initial development runtime was Ubuntu 24.04 with Python 3.12. Development
+continued on the actual CachyOS desktop on September 28 and October 3. The supported
+installation target is Arch/CachyOS with KDE Plasma, PipeWire, WirePlumber and BlueZ.
+This reference retains dated evidence from each environment; [current status](../STATUS.md)
+summarizes the latest branch. Physical testing is currently paused.
 
 Pure Python tests, binary protocol fixtures, real child-process lifecycle checks,
-source-matched patch checks, archive checksums, and wheel construction can run
-here. Tests which replace an external service with a fixture establish the
+source-matched patch checks, archive checksums, and wheel construction ran
+in that cloud environment. Tests which replace an external service with a fixture establish the
 client's behavior against that fixture; they do not establish hardware or upstream
 interoperability.
 
-The automated suite is run with the separately installed `dbus-next` test
-dependency:
+The original cloud suite used separately installed test dependencies as below.
+For current development, use the [contributor commands](../CONTRIBUTING.md).
 
 ```sh
 PYTHONPATH=../test-deps:. \

@@ -40,7 +40,7 @@ def main():
     prompts = [
         r':: Proceed with installation\? \[Y/n\]\s*',
         r'Enter a number \(default=1\):\s*',
-        r'Build and install (?:harletty-bridge|mpv-omniphony|sony-tracker) from the recipe above\? \[Y/n\]\s*',
+        r'Build and install (?:harletty-bridge|mpv-omniphony) from the recipe above\? \[Y/n\]\s*',
         # Detect other common confirmation prompts, but never approve them.
         r'[^\r\n]*\? \[[yYnN]/[yYnN]\]\s*',
         r'\[sudo\] password for [^:]+:\s*',

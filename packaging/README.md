@@ -1,6 +1,12 @@
-# Arch package workflow
+# BudsLink Spatial Companion packages
 
-Use `./build.sh` to build both local packages, or
+Core: `budslink-spatial-companion` (AGPL-3.0-only plus retained MIT notices).
+Widget: `plasma-budslink-spatial-companion` (GPL-3.0-or-later).
+Both declare provides/conflicts for their former names; pacman performs upgrades
+with ordinary prompts. The service, CLI compatibility alias, config directories
+and plugin ID remain stable. [License map](../docs/licensing.md).
+
+Use `./build.sh` to build the core and widget packages, or
 `bash install.sh` to install and activate the full
 set of modules. See [installation](../docs/install.md) for prerequisites,
 configuration, upstream package sources, rollback and diagnostics.
@@ -43,7 +49,7 @@ The old recipe's Apache-only metadata does not describe that combined binary.
 Do not replace either recipe with current AUR HEAD independently. Upstream
 [Omniphony 0.6.0](https://github.com/mgth/Omniphony/releases/tag/v0.6.0) changes
 `bridge_api` from 0.3 to 0.4, requires Harletty 0.8.0, and rejects the older bridge;
-the newer bridge likewise cannot load in the 0.5.2 renderer. Current
+the newer bridge likewise cannot load in the 0.5.2 renderer. The inspected
 mpv-omniphony 0.6.0 also requires `orender>=0.6.0`. A future upgrade must move the
 renderer, its patches, the decoder and the native audio acceptance tests together.
 These pins establish compatibility rather than reducing codec support.

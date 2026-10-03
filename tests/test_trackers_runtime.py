@@ -15,21 +15,27 @@ from spatial.trackers import slime, sony, run
 
 
 class RuntimeTests(unittest.IsolatedAsyncioTestCase):
-    async def test_upstream_compatible_helper_uses_private_port_and_is_reaped(self):
+    async def test_timestamped_helper_uses_private_port_and_is_reaped(self):
         with tempfile.TemporaryDirectory() as tmp:
             helper = Path(tmp) / "fixture-helper"
             identity = Path(tmp) / "selected HID identity.json"
             helper.write_text(f"#!{sys.executable}\n" + '''
 import argparse,json,os,socket,struct,time
 p=argparse.ArgumentParser();p.add_argument('--device');p.add_argument('--port',type=int)
+p.add_argument('--absolute',action='store_true',required=True)
+p.add_argument('--timestamped',action='store_true',required=True)
 a=p.parse_args()
-with open(a.device,'w') as f: json.dump({'pid':os.getpid(),'port':a.port},f)
+with open(a.device,'w') as f: json.dump({'pid':os.getpid(),'port':a.port,'absolute':a.absolute,'timestamped':a.timestamped},f)
 s=socket.socket(socket.AF_INET,socket.SOCK_DGRAM)
+sequence=0
 while True:
-    s.sendto(struct.pack('=6d',0,0,0,45,0,0),('127.0.0.1',a.port))
+    sequence+=1
+    packet=b'SPT1'+struct.pack('<QQB6hB',time.monotonic_ns(),sequence,1,0,0,8192,0,0,0,7)
+    s.sendto(packet,('127.0.0.1',a.port))
     time.sleep(.01)
 ''')
             helper.chmod(0o755)
+            (Path(tmp) / "report_descriptor").write_bytes(b"")
             engine = Engine()
             engine.connect("AA:BB:CC:DD:EE:FF")
             available = asyncio.Event()
@@ -49,6 +55,13 @@ while True:
                 await asyncio.wait_for(available.wait(), 3)
                 details = json.loads(identity.read_text())
                 self.assertNotEqual(details["port"], 4242)
+                self.assertTrue(details["absolute"])
+                self.assertTrue(details["timestamped"])
+                timing = engine.trackers[engine.device].timing
+                self.assertEqual(timing["clock"], "host-monotonic")
+                self.assertEqual(timing["discontinuity"], 7)
+                self.assertEqual(len(timing["raw_report_hex"]), 28)
+                self.assertLessEqual(timing["captured_ns"], timing["received_ns"])
                 self.assertEqual(received[0]["id"], engine.device)
                 # A new headphone epoch terminates this helper and rejects late packets.
                 engine.disconnect()
@@ -64,6 +77,36 @@ while True:
                 stop.set()
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
+
+    async def test_legacy_relative_helper_cannot_silently_supply_absolute_poses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            helper = Path(tmp) / "legacy-helper"
+            invocations = Path(tmp) / "invocations.json"
+            helper.write_text(f"#!{sys.executable}\n" + '''
+import argparse,json,sys
+from pathlib import Path
+path=Path(sys.argv[sys.argv.index('--device')+1])
+previous=json.loads(path.read_text()) if path.exists() else []
+path.write_text(json.dumps([*previous,sys.argv[1:]]))
+p=argparse.ArgumentParser();p.add_argument('--device');p.add_argument('--port',type=int)
+p.parse_args()  # Legacy protocol deliberately rejects the required --absolute.
+''')
+            helper.chmod(0o755)
+            (Path(tmp) / "report_descriptor").write_bytes(b"")
+            engine = Engine()
+            engine.connect("AA:BB:CC:DD:EE:FF")
+            source = EngineSource(engine)
+            device = HidDevice(str(invocations), Path(tmp), 5, 0x54C, 0xDF1,
+                               "WF-1000XM5", engine.device)
+            with self.assertRaisesRegex(RuntimeError, "absolute"):
+                await asyncio.wait_for(sony.session(
+                    engine, asyncio.Event(), device, source,
+                    Reporter("sony_tracker"), str(helper)), 3)
+            calls = json.loads(invocations.read_text())
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--absolute", calls[0])
+            self.assertIn("--timestamped", calls[0])
+            self.assertIsNone(engine.snapshot()["earbud"])
 
     async def test_passive_receiver_read_and_expiry_without_registration_heartbeat(self):
         read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)

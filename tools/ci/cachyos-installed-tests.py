@@ -34,7 +34,7 @@ def main():
         if installed.is_relative_to(root):
             raise RuntimeError(f"Imported the checkout instead of the package: {installed}")
         owner = subprocess.check_output(["pacman", "-Qqo", str(installed)], text=True).strip()
-        if owner != "spatial-workbench":
+        if owner != "budslink-spatial-companion":
             raise RuntimeError(f"Unexpected owner of installed Python module: {owner!r}")
         for executable in ("node", "cc", "luac", "dbus-daemon", "orender", "pw-dump", "wpctl"):
             if not shutil.which(executable):
@@ -42,11 +42,11 @@ def main():
         if not any(ctypes.util.find_library(name) for name in ("lua5.5", "lua5.4", "lua5.3", "lua")):
             raise RuntimeError("Lua shared library is missing")
         report.update(module_path=str(installed), package_owner=owner,
-                      version=importlib.metadata.version("spatial-workbench"),
+                      version=importlib.metadata.version("budslink-spatial-companion"),
                       limiter=str(find_limiter()))
         subprocess.run(["spatialctl", "--version"], check=True)
-        subprocess.run(["pacman", "-Qk", "spatial-workbench",
-                        "plasma-budslink-companion-spatial", "orender-spatial"], check=True)
+        subprocess.run(["pacman", "-Qk", "budslink-spatial-companion",
+                        "plasma-budslink-spatial-companion", "orender-spatial"], check=True)
         suite = unittest.defaultTestLoader.discover(str(root / "tests"))
         result = unittest.TextTestRunner(verbosity=2).run(suite)
         report.update(tests_run=result.testsRun,
@@ -68,7 +68,7 @@ def main():
                 modules[name] = str(path)
         owners = subprocess.check_output(
             ["pacman", "-Qqo", *sorted(set(modules.values()))], text=True).splitlines()
-        if not owners or set(owners) != {"spatial-workbench"}:
+        if not owners or set(owners) != {"budslink-spatial-companion"}:
             raise RuntimeError(f"Unexpected owners of installed spatial modules: {owners!r}")
         if any(Path(entry).resolve() == root for entry in sys.path if entry):
             raise RuntimeError("A test helper reinserted the source root into the isolated import path")

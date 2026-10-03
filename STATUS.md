@@ -1,72 +1,83 @@
-# Release status — 0.2.3
+# BudsLink Spatial Companion — status
 
-This release contains operational modules and a single-command Arch installation
-workflow. It is ready for building and desktop acceptance testing; it is **not
-hardware-validated or production-certified**. No software has been installed on
-the user's computer from this workspace.
+**October 3, 2026 · development branch `fix/positioned-surround-audit`**
 
-## Implemented
+The project is now named **BudsLink Spatial Companion** (formerly Spatial Workbench).
+Original code now uses AGPL-3.0-only; compatibility names and user settings remain.
+Physical testing is **paused at the user's request**. The current source changes
+must not be confused with the packages installed for the September 28 listening tests.
 
-| Component | Current implementation |
-|---|---|
-| Desktop discovery | Live BlueZ and BudsLink D-Bus observation, bounded PipeWire snapshots, reconnect epochs and independent retry |
-| Tracking | Identity-checked Sony HID helper, passive SlimeVR nRF HID readers, fresh-packet selection, independent permissions and recentering |
-| Media playback | Owned mpv-omniphony process, protected native headphone targeting, verified renderer telemetry, queue and MPRIS controls |
-| Ordinary music and applications | Standalone Omniphony PCM rendering; automatic routing of this player's native PCM and explicit selection for another application's stream |
-| TIDAL | Browser device authorization through tidalapi, protected session storage that respects concurrent login/logout, track/album/playlist resolution, strict Atmos manifest and renderer checks |
-| Reference EQ | Device-scoped PipeWire smart filter, sourced AutoEQ five-band profile, separate SWH limiter, graph auditing and disconnect cleanup |
-| Native UI | Revision-specific Companion patch with playback, application audio, fresh-device tracker rows and backend-confirmed state |
-| Packaging | Checksummed Arch recipes, pinned patched engine and matching library, one-command install, user service, diagnostics and host verifier |
-| Automatic diagnostics | Persistent-error detection, local redacted reports, private bounded retention, rate limiting and independent collector cleanup |
+## Validation matrix
 
-The runtime uses separately supervised tasks and external processes where
-appropriate. It does not claim one container or process per Python module.
-BudsLink controls, sensor permissions, source access and renderer readiness are
-independent capabilities. See [architecture](docs/architecture.md).
+| Area | Evidence | Remaining work |
+|---|---|---|
+| Surround channel integrity | Two consecutive October 3 isolated runs pass all 15 gates: eight independent lanes, owned 7.1, 18 PCM windows/74 acoustic checks, four Atmos captures with 15 objects and cleanup | Live host needs dependency repair; earlier Atmos startup failure retained without a claimed cause |
+| Actual WF-1000XM5 output | September 28 installed A2DP → renderer → EQ → headphones route; user heard clear channel direction changes | New build's physical regression pass |
+| Physical yaw | September 28 corrected orientation compensates at unit gain; user reported near-centered anchoring that settles when still | Evaluate remaining motion lag |
+| Pitch, roll and off-center recenter | Software fixtures cover rotations and recenter order | Physical listening acceptance pending |
+| Timestamp capture | Packaged SPT1 helper passed native C/UDP checks; canonical pose, packet rejection and selected-report history checks pass in the full suite | Physical timing capture remains paused |
+| Prediction | Bounded predictor, latency evidence and all accepted selected-packet history pass software regression; disabled by default | Physical lag/overshoot acceptance |
+| TIDAL mini-client | Provider, D-Bus, credential ordering and catalogue/playback tests pass; Qt/JavaScript checks cover controls and sign-in recovery after browser handoff | Account authorization, real service playback and entitled Atmos acceptance |
+| Rename and licensing | Renamed core/widget packages built; CLI aliases, compatibility metadata, source contents and retained licenses checked | Installed ownership and old-name upgrade acceptance |
+| Optional SlimeVR receiver | Protocol, identity, freshness and policy tests | Physical receiver acceptance |
 
-## Evidence available
+Synthetic endpoints and protocol fixtures prove software behavior; they do not
+establish headset acoustics, a real user's account entitlement, or a complete
+physical acceptance pass. Timing snapshots describe host events, not a sensor
+clock or a measured acoustic output timestamp.
 
-The September 19 audit withdrew the earlier **complete PCM spatial validation**
-claim. The supposedly 7.1 source had only two graph outputs; the renderer exposed
-eight unpositioned inputs. Front and rear source captures were effectively
-identical because WirePlumber retained a stereo downmix. Earlier assertions had
-incorrectly been changed to accept that result. A phase-sensitive spectral
-estimator also introduced false differences between repeated captures.
+## October 3 software build
 
-Version 0.2.3 repairs the native SPA position declaration, rejects lost or swapped
-channels in production, and measures complete stimulus periods. The integration
-gate now requires eight matching channel links and records eight independently
-frequency-tagged input lanes before running the spatial position/rotation checks.
-Regression tests deliberately reject downmix, tracking/roll/recenter no-ops,
-wrong rotation signs, and swapped ears. The repaired native software path passed
-fresh hosted validation; its retained graphs and raw PCM were independently
-rechecked on September 28.
+The full Python source suite passes **469 tests** without skips, including the
+WirePlumber startup-race and TIDAL sign-in recovery regressions.
+The Companion passes **7 native Qt checks**; its JavaScript state tests are included
+in the suite. Recovery checks hide the actual popup window, recreate its card,
+and handle sign-in completion while closed without restarting hidden polling or
+restoring a logged-out session. Local package builds have completed for
+`budslink-spatial-companion 0.2.3-2`,
+`plasma-budslink-spatial-companion 0.2.0.spatial0.2.3-3`, and
+`sony-tracker-spatial 1.0.0-2`. None was installed into the live desktop session.
 
-- [CI run 35410414111](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414111) passed at `2f20be1`: 296 tests without skips on each Python 3.11–3.13 lane, Arch core/Companion packages, and five native Qt test passes.
-- [Renderer run 35410414135](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414135) built the actual patched CLI and FFI library at `2f20be1`. Both bind-policy tests and both positioned-format/PCM-lane tests passed.
-- [CachyOS integration run 35410253252](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410253252), implementation `50d542b`, retained eight correctly named active source-to-renderer links and independent input tones. All 18 post-EQ capture windows passed 74 acoustic checks. Independent raw-audio reanalysis confirmed these results and rejected deliberately collapsed rear channels, frozen tracking and reversed yaw.
-- [Booted installer VM run 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), also `50d542b`, passed the full installer, actual file-ownership checks, and a repeat core install preserving settings and the Companion backup. Its separate genuine E-AC-3 JOC/mpv/renderer/EQ route retained 15 decoded objects, verified routing/tracking across four captures and successful player cleanup.
+Build concurrency was capped at 8 on the 32-thread, 31 GiB machine. The core
+build used `makepkg --nodeps` only because pacman lacked records for
+`python-build` and `python-installer`; the actual frontends were installed in the
+private virtual environment. Other build dependencies were checked with pacman,
+and the full package `check()` ran. This is local build evidence, not a fresh
+clean-chroot or physical-upgrade result.
 
-The September 28 continuation adds stricter live/EQ stereo-output audits and a
-full Plasma Wayland VM with fish and nano. The continuing audit, exact tested
-commits, fresh run results and artifact links are recorded in
-[pull request #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
-Earlier minimal-VM evidence must not be described as a full desktop test.
+The October 3 private PipeWire rerun **failed before audio started**. The host now
+has `omniphony-renderer v0.2.5` without the required patch marker, no installed
+`orender-spatial`, Harletty `0.8.0-1` instead of pinned `0.7.3-1`, and an mpv binary
+with unresolved shared-library dependencies. The installed audio stack is not
+currently validated or working as the supported set. Failure evidence is retained
+in `build/local-validation/native-review-20261003.1hatAl/`.
 
-No physical headphones, XM5 HID, Slime receiver or TIDAL account were available.
-The synthetic endpoint establishes only the software behavior actually tested.
-See [the audit and validation details](docs/validation-environment.md).
+The isolated compatible stack then exposed a real WirePlumber 0.5.18 startup race
+in the route guard. The fix obtains the metadata manager from the event's source,
+matching the installed stock hooks, with a regression test. After that fix, all
+15 native gates passed twice consecutively in `native-pinned-review-20261003.abukawxy/`
+and `native-pinned-review-20261003.rbtb2hc1/`. An earlier
+isolated run, `native-pinned-review-20261003.ji60e8_s/`, failed an Atmos startup
+graph-stability check. Its evidence is retained. The successful repeats do not
+establish that failure's root cause, and no acceptance predicate was relaxed.
 
-The user's Companion compatibility confirmation is recorded for September 17, 2026, Arch Linux, Midwest USA. Its upstream comment submission was rejected by GitHub with HTTP 403; maintainers have not received it through this session. The ready-to-submit report is in [upstream-report.md](docs/upstream-report.md).
+This validation uses an isolated pinned renderer/bridge/player and extracted
+signed dependency packages. It does **not** repair or validate the installed
+host audio stack. No desktop repair or hardware test was performed.
 
-## Checks still required on the target PC
+## Evidence and history
 
-These are the remaining physical/account acceptance checks; they are deliberately not represented by synthetic hosted evidence.
+- [September 28 physical-PC record](docs/local-pc-validation-20260928.md): installation,
+  preserved settings, original rotation failure, corrected yaw and remaining delay.
+- [Software validation details](docs/validation-environment.md): independent captures,
+  withdrawn earlier claims, regression gates and limitations.
+- [Release history](docs/release-history.md): exact prior hosted run links and tested
+  commits. Those runs predate the current TIDAL, timestamp and branding changes.
+- [PR #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1): continuing branch review.
+- [Development handoff](docs/local-development-handoff.md): current next steps followed
+  by the retained historical procedure.
 
-- **Target-PC install and desktop acceptance:** build/install the packages on the intended Arch/CachyOS machine, confirm package ownership/uninstall behavior, start the user service, and inspect KDE Plasma appearance, keyboard navigation and theme integration.
-- **Physical XM5:** connect the actual WF-1000XM5, confirm BlueZ/HID exposure, A2DP sink identity, reconnects and the real final PipeWire route. Confirm listening localization, clipping behavior and recovery after stopping/restarting the renderer.
-- **Physical SlimeVR (optional):** connect the receiver, check all three axes and recentering while the XM5 tracker is present, and verify independent provider failures/restarts do not disturb ordinary playback.
-- **TIDAL account and entitlement:** authorize the account on the target machine and test an entitled Atmos track. Verify the returned manifest is genuinely E-AC-3/JOC and that unsupported/encrypted/stereo fallback paths are rejected.
-- **Listening and desktop behavior:** select a real application stream, verify only that stream moves, and test deliberate output changes, disconnect/reconnect and renderer-crash recovery on the user's session.
-
-Run 'spatial-verify' after installation for a read-only report. For an explicit media check, use 'spatial-verify --media /path/to/known-atmos-sample.mka --require-spatial'. The command preserves existing playback unless '--replace' is explicitly supplied and reports waiting/failed checks instead of substituting fixtures.
+When physical testing resumes, finish pitch/roll/recenter, prediction comparison,
+selected-application routing, disconnect/reconnect and recovery checks. TIDAL
+Atmos requires both an eligible returned stream and actual decoded-object
+confirmation. No account or physical result is assumed from catalogue labels.

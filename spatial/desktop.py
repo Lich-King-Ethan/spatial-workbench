@@ -5,6 +5,7 @@ import inspect
 import json
 import signal
 import time
+from collections.abc import Mapping
 
 from dbus_next import DBusError, RequestNameReply, NameFlag
 from dbus_next.aio import MessageBus
@@ -23,7 +24,8 @@ class Control(ServiceInterface):
     def __init__(self, engine, preference_path=None, *, on_change=None,
                  extra_state=None, on_play=None, on_stop=None,
                  on_live_start=None, on_live_stop=None, on_stop_if_process=None,
-                 on_play_if_idle=None, on_begin_test_playback=None, on_stop_if_request=None):
+                 on_play_if_idle=None, on_begin_test_playback=None, on_stop_if_request=None,
+                 on_timing_snapshot=None, on_tidal_request=None):
         super().__init__(BUS)
         self.engine = engine
         self.preference_path = preference_path
@@ -37,6 +39,8 @@ class Control(ServiceInterface):
         self.on_play_if_idle = on_play_if_idle
         self.on_begin_test_playback = on_begin_test_playback
         self.on_stop_if_request = on_stop_if_request
+        self.on_timing_snapshot = on_timing_snapshot
+        self.on_tidal_request = on_tidal_request
         self.serialized = ""
         self.publish()
 
@@ -59,6 +63,50 @@ class Control(ServiceInterface):
     @dbus_property(access=PropertyAccess.READ)
     def State(self) -> 's':
         return self.serialized
+
+    @method()
+    def TimingSnapshot(self) -> 's':
+        """Explicit bounded pull; never publish sensor-rate samples as State."""
+        if self.on_timing_snapshot is None:
+            raise DBusError(BUS + ".Unavailable", "Head-tracking timing snapshots are unavailable")
+        try:
+            snapshot = self.on_timing_snapshot()
+            if not isinstance(snapshot, Mapping):
+                if inspect.iscoroutine(snapshot):
+                    snapshot.close()
+                raise ValueError("Timing snapshot must be a synchronous mapping")
+            snapshot = dict(snapshot)
+            histories = ["samples", "applications"]
+            if "renderer_observations" in snapshot:
+                histories.append("renderer_observations")
+            for name in histories:
+                if not isinstance(snapshot.get(name), list):
+                    raise ValueError("Timing history must be a list")
+                snapshot[name] = snapshot[name][-512:]
+            encoded = json.dumps(snapshot, ensure_ascii=False, allow_nan=False)
+            if len(encoded.encode("utf-8")) > 2 * 1024 * 1024:
+                raise ValueError("Timing snapshot exceeds the bounded response size")
+            return encoded
+        except Exception:
+            raise DBusError(BUS + ".Failed", "Head-tracking timing snapshot could not be produced") from None
+
+    @method()
+    async def TidalRequest(self, action: 's', payload: 's') -> 's':
+        """Explicit music-client actions; authorization codes never enter State."""
+        if (len(action) > 32 or len(payload.encode("utf-8")) > 8192
+                or self.on_tidal_request is None):
+            raise DBusError(BUS + ".Unavailable", "The TIDAL client is unavailable")
+        try:
+            arguments = json.loads(payload)
+            if not isinstance(arguments, dict):
+                raise ValueError("TIDAL request must be an object")
+            result = await self.on_tidal_request(action, arguments)
+            encoded = json.dumps(result, ensure_ascii=False, allow_nan=False)
+            if len(encoded.encode("utf-8")) > 1024 * 1024:
+                raise ValueError("TIDAL response exceeds the supported page size")
+            return encoded
+        except Exception as exc:
+            raise DBusError(BUS + ".Rejected", public_message(exc)) from None
 
     @method()
     def SetTrackerEnabled(self, tracker_id: 's', enabled: 'b'):
@@ -188,7 +236,8 @@ class DesktopRuntime:
                  companion_path="", on_change=None, extra_state=None,
                  on_play=None, on_stop=None, on_live_start=None, on_live_stop=None,
                  on_stop_if_process=None, on_play_if_idle=None,
-                 on_begin_test_playback=None, on_stop_if_request=None, clock=time.monotonic):
+                 on_begin_test_playback=None, on_stop_if_request=None,
+                 on_timing_snapshot=None, on_tidal_request=None, clock=time.monotonic):
         self.engine = engine
         self.selected_address = pipewire.address(selected_address) if selected_address else None
         self.preferences = preferences
@@ -203,11 +252,14 @@ class DesktopRuntime:
         self.on_play_if_idle = on_play_if_idle
         self.on_begin_test_playback = on_begin_test_playback
         self.on_stop_if_request = on_stop_if_request
+        self.on_timing_snapshot = on_timing_snapshot
+        self.on_tidal_request = on_tidal_request
         self.clock = clock
         self.control = None
         self.bluetooth = None
         self.companion_paths = []
         self.pipewire_objects = []
+        self.pipewire_observed_ns = None
         self.pipewire_probe_session = None
         self.discovery_state = {"bluez": "waiting", "pipewire": "waiting", "budslink": "waiting",
                                 "selection": "waiting", "candidates": []}
@@ -251,10 +303,12 @@ class DesktopRuntime:
             if is_new:
                 # A previous pw-dump response cannot establish a new session's sink.
                 self.pipewire_objects = []
+                self.pipewire_observed_ns = None
                 self.discovery_state["pipewire"] = "waiting"
         elif self.engine.connected:
             self.engine.disconnect()
             self.pipewire_objects = []
+            self.pipewire_observed_ns = None
         self._controls()
         self.publish()
 
@@ -264,6 +318,7 @@ class DesktopRuntime:
         self.discovery_state["candidates"] = []
         self.bluetooth = None
         self.pipewire_objects = []
+        self.pipewire_observed_ns = None
         if self.engine.connected:
             self.engine.disconnect()
         self._controls()
@@ -300,10 +355,15 @@ class DesktopRuntime:
         if self.engine.connected:
             sinks = pipewire.parse_sinks(objects, self.engine.device)
             self.engine.observe_sink(self.engine.epoch, sinks[0] if sinks else None)
+        # Refresh only after a successful read for the current session. Polling
+        # State or receiving a late read while disconnected cannot make cached
+        # output-latency evidence fresh again.
+        self.pipewire_observed_ns = time.monotonic_ns() if self.engine.connected else None
         self.publish()
 
     def pipewire_unavailable(self, reason):
         self.pipewire_objects = []
+        self.pipewire_observed_ns = None
         self.discovery_state["pipewire"] = reason
         if self.engine.connected:
             self.engine.observe_sink(self.engine.epoch, None)
@@ -315,7 +375,8 @@ class DesktopRuntime:
             extra_state=self.state, on_play=self.on_play, on_stop=self.on_stop,
             on_live_start=self.on_live_start, on_live_stop=self.on_live_stop,
             on_stop_if_process=self.on_stop_if_process, on_play_if_idle=self.on_play_if_idle,
-            on_begin_test_playback=self.on_begin_test_playback, on_stop_if_request=self.on_stop_if_request)
+            on_begin_test_playback=self.on_begin_test_playback, on_stop_if_request=self.on_stop_if_request,
+            on_timing_snapshot=self.on_timing_snapshot, on_tidal_request=self.on_tidal_request)
 
         async def ticker():
             while not stop.is_set():
@@ -345,6 +406,7 @@ class DesktopRuntime:
             await asyncio.gather(*tasks, disconnected, stopped, return_exceptions=True)
             bus.disconnect()
             self.control = None
+            self.pipewire_observed_ns = None
 
 
 async def observe(engine, selected_address=None, companion_path="", preferences=None):

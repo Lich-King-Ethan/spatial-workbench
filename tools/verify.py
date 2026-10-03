@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Verify this computer's real Spatial Audio installation and optional playback."""
+"""Verify this computer's real BudsLink Spatial Companion installation and playback."""
 from __future__ import annotations
 
 import argparse
@@ -109,15 +109,18 @@ def audit_playback_graph(state, objects):
         pending = result.get("pending_input_node_ids") or []
     live = runtime.get("live") or {}
     live_audit = None
+    pcm_routes = {}
     if live.get("running"):
         from spatial.live_audio import audit_snapshot
         live_audit = audit_snapshot(objects, live, sink, allowed_filter_inputs=allowed,
                                     pending_filter_inputs=pending)
         if live_audit["state"] == "violation":
             return "fail", live_audit["reason"]
-        allowed = [*allowed, *(live_audit.get("verified_inputs") or ())]
+        pcm_routes = live_audit.get("verified_pcm_routes") or {}
         pending = [*pending, *(live_audit.get("pending_inputs") or ())]
     pending = set(map(str, pending)) - set(map(str, allowed))
+    for capture_ids in pcm_routes.values():
+        pending -= set(map(str, capture_ids))
     if not audio.get("running") or not audio.get("process_id"):
         if live_audit is not None:
             return ("pass" if live_audit["state"] == "ready" else "wait"), live_audit["reason"]
@@ -127,7 +130,7 @@ def audit_playback_graph(state, objects):
     observer = SimpleNamespace(process=SimpleNamespace(pid=audio["process_id"]), _sink=sink,
                                allow_pcm_route=audio.get("pcm_route_allowed") is True)
     result = AudioRuntime.verify_output(observer, objects, allowed_filter_inputs=allowed,
-                                        pending_filter_inputs=pending)
+                                        pending_filter_inputs=pending, verified_pcm_routes=pcm_routes)
     return {"verified": "pass", "violation": "fail"}.get(result["state"], "wait"), result["reason"]
 
 

@@ -268,7 +268,7 @@ def companion_accessibility(directory, process, timeout=45):
     if snapshot.get("schema") != 1 or snapshot.get("connected") is not False:
         raise RuntimeError("This VM's disconnected UI check requires actual disconnected daemon state")
     runtime = snapshot.get("runtime", {})
-    labels = ["No compatible headphones connected", "Spatial Audio is running",
+    labels = ["No compatible headphones connected", "BudsLink Spatial Companion is running",
               "Headphone output: Waiting", "Refresh status",
               "Application audio: " + module_label(runtime.get("live")),
               "Equalizer: " + module_label(runtime.get("equalizer"))]

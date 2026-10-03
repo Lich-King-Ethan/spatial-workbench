@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Arch/CachyOS package build and install. Run as the desktop user, never as root.
+# BudsLink Spatial Companion package build and install. Run as the desktop user, never as root.
 set -Eeuo pipefail
 umask 077
 # Scope editor defaults to this invocation and its package-review subprocesses.
@@ -24,7 +24,8 @@ installed through pacman; standard sudo and package-review prompts stay visible.
 --with-audio builds the pinned local-control renderer and matching reviewed AUR
 mpv-omniphony 0.5.2-1 and harletty-bridge 0.7.3-1 recipes. These two packages use
 the same pinned makepkg path whether yay/paru is present or not. Sony tracking
-uses yay/paru when available, otherwise reviewed makepkg. --with-tidal installs
+uses the checksummed local sony-tracker-spatial recipe with opt-in host-timestamped absolute
+orientation; its legacy CLI behavior remains the default. --with-tidal installs
 official python-tidalapi. Existing incompatible audio packages are reported
 before package transactions; the installer never silently downgrades that stack.
 Both options require --install. Existing user settings are preserved.
@@ -215,12 +216,13 @@ build_package() {
         package_files+=("$package_file")
     done <<< "$package_list"
 }
-build_package "$project_dir/dist/arch/core" 'Build and test Spatial Audio'
+build_package "$project_dir/dist/arch/core" 'Build and test BudsLink Spatial Companion'
 if (( with_companion )); then
-    build_package "$project_dir/dist/arch/companion" 'Build the native BudsLink Companion integration'
+    build_package "$project_dir/dist/arch/companion" 'Build the native BudsLink Spatial Companion widget'
 fi
 if (( with_audio )); then
     build_package "$project_dir/dist/arch/orender" 'Build and test the pinned renderer'
+    build_package "$project_dir/dist/arch/sony" 'Build and test the pinned Sony tracker'
 fi
 for package_file in "${package_files[@]}"; do message "[INFO] Package: $package_file"; done
 if (( ! install_packages )); then
@@ -307,13 +309,8 @@ install_audio_modules() {
     message '[INFO] The renderer, player and decoder bridge use one tested version group. Pinned recipes are used even when an AUR helper is installed.'
     build_aur_package harletty-bridge
     build_aur_package mpv-omniphony
-    if command -v yay >/dev/null 2>&1; then
-        run_step 'Install maintained Sony tracker module' yay -S --needed sony-tracker
-    elif command -v paru >/dev/null 2>&1; then
-        run_step 'Install maintained Sony tracker module' paru -S --needed sony-tracker
-    else
-        build_aur_package sony-tracker
-    fi
+    # Sony's checksummed absolute-mode package was built and installed with the
+    # local packages above. A helper must not replace it with the legacy recipe.
 }
 if (( with_audio )); then
     install_audio_modules
@@ -334,8 +331,8 @@ if (( with_companion )); then
 fi
 run_logged_step 'Create or validate user configuration' spatialctl setup
 run_logged_step 'Reload user services' systemctl --user daemon-reload
-run_logged_step 'Enable Spatial Audio for this desktop account' systemctl --user enable spatiald.service
-run_logged_step 'Start Spatial Audio' systemctl --user restart spatiald.service
+run_logged_step 'Enable BudsLink Spatial Companion for this desktop account' systemctl --user enable spatiald.service
+run_logged_step 'Start BudsLink Spatial Companion' systemctl --user restart spatiald.service
 
 spatial_current_step='Wait for the actual daemon control interface'
 spatial_ready_deadline=$((SECONDS + 20))
