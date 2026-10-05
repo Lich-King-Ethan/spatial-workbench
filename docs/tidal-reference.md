@@ -64,6 +64,20 @@ arguments, which is useful while developing before installation.
 
 ## Capability checks
 
+The mini-client quality ceiling uses the SDK's `HI_RES_LOSSLESS`, `LOSSLESS`,
+`HIGH` (AAC 320) and `LOW` (AAC 96) tiers. Max tries them in that order; CD starts
+at LOSSLESS, AAC 320 starts at HIGH, and AAC 96 requests LOW only. A lower returned
+rendition is accepted immediately. Only the SDK's specific `StreamNotAvailable`
+exception permits another request; transport, authorization and validation errors
+do not trigger fallback. Atmos and legacy strict-lossless requests retain their
+format requirements. Requested and actual quality are separate metadata fields.
+
+The library uses bounded SDK collection requests for saved tracks/albums and
+followed artists. Playlist pages use the SDK's mixed collection endpoint, including
+folders and owned/saved playlists. A folder ID is a validated UUID, never a URL;
+its items are fetched only when opened. Raw server offsets are retained when
+unsupported future row types are filtered, so later items remain reachable.
+
 | Response | Behavior |
 |---|---|
 | `DOLBY_ATMOS`, clear E-AC-3 BTS manifest | Original HTTPS media URL passed through |

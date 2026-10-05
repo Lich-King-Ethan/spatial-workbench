@@ -43,8 +43,10 @@ Plasma loads them. The existing widget identity and panel placement are retained
 The TIDAL card combines Search and Library navigation, artwork, collection
 browsing, playback controls and visible playback errors. Authorization happens on TIDAL's own page in your browser;
 reopen the Companion after authorizing to finish sign-in. No separate music
-application is required. The panel starts with **Lossless**; choose **Dolby Atmos
-only** for a strict spatial request. It never silently substitutes stereo. This is an unofficial
+application is required. Your library includes saved tracks/albums, followed
+artists and owned/saved playlists, including folders. The panel starts with
+**Max (best available)** and uses a lower available rendition when needed. Choose
+CD quality, AAC 320/96 kbps or strict **Atmos only** from the quality menu. This is an unofficial
 client: desktop Atmos availability is not guaranteed, and a catalogue badge does
 not prove that TIDAL returned an Atmos stream. See [TIDAL usage and limits](docs/tidal-runtime.md).
 

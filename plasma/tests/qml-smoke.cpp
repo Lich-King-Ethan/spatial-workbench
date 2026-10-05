@@ -9,6 +9,7 @@
 #include <QDBusConnection>
 #include <QDBusMessage>
 #include <QEvent>
+#include <QFile>
 #include <QGuiApplication>
 #include <QJSValue>
 #include <QJsonArray>
@@ -20,6 +21,7 @@
 #include <QQmlError>
 #include <QQuickItem>
 #include <QQuickWindow>
+#include <QSignalSpy>
 #include <QTest>
 #include <QTimer>
 #include <memory>
@@ -144,7 +146,7 @@ public slots:
                           {"reference", "tidal:album:12"}};
         QJsonObject artist{{"kind", "artist"}, {"id", "7"}, {"title", "Fixture artist"}, {"reference", ""}};
         QJsonObject playlist{{"kind", "playlist"}, {"id", "list-1"}, {"title", "Fixture playlist"},
-                             {"reference", "tidal:playlist:list-1"}};
+                             {"reference", "tidal:playlist:list-1"}, {"owned", true}};
         QJsonObject result{{"offset", args["offset"].toInt()}, {"limit", 20}, {"has_more", args["offset"].toInt() == 0}};
         QJsonArray tracks{track};
         if (manyTracks) for (int i = 1; i < 20; ++i) {
@@ -156,7 +158,28 @@ public slots:
         if (args["offset"].toInt() > 0)
             for (const auto &key : {"tracks", "albums", "artists", "playlists"}) result[key] = QJsonArray{};
         if (action == "collection") result["item"] = args["kind"] == "artist" ? artist : album;
-        if (action == "library") result["items"] = result[args["kind"].toString()];
+        if (action == "library") {
+            result["items"] = result[args["kind"].toString()];
+            if (args["kind"] == "tracks" && args["offset"].toInt() == 0) result["next_offset"] = 7;
+            if (args["kind"] == "playlists") {
+                const QString folderId = args["folder_id"].toString("root");
+                result["folder_id"] = folderId;
+                QJsonObject folder{{"kind", "folder"}, {"id", "11111111-1111-1111-1111-111111111111"},
+                    {"title", "Fixture folder"}, {"reference", ""}, {"item_count", 2}};
+                if (folderId == "root") {
+                    auto saved = playlist; saved["title"] = "Saved fixture playlist"; saved["owned"] = false;
+                    result["items"] = QJsonArray{playlist, saved, folder};
+                    result["total"] = 3; result["has_more"] = false;
+                } else if (folderId == folder["id"].toString()) {
+                    folder["id"] = "22222222-2222-2222-2222-222222222222";
+                    folder["title"] = "Empty fixture folder"; folder["item_count"] = 0;
+                    result["items"] = QJsonArray{playlist, folder};
+                    result["total"] = 2; result["has_more"] = false;
+                } else {
+                    result["items"] = QJsonArray{}; result["total"] = 0; result["has_more"] = false;
+                }
+            }
+        }
         return json(result);
     }
 };
@@ -451,11 +474,20 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(play, "clicked"));
         QTRY_VERIFY(!item->property("busy").toBool());
         QCOMPARE(fixture.requests.last().toObject()["action"].toString(), QStringLiteral("play"));
-        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("lossless"));
-        QVERIFY(control("tidalQuality")->setProperty("currentIndex", 1));
-        QVERIFY(QMetaObject::invokeMethod(control("tidalQuality"), "activated", Q_ARG(int, 1)));
-        QVERIFY(QMetaObject::invokeMethod(play, "clicked"));
-        QTRY_VERIFY(!item->property("busy").toBool());
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("max"));
+        QCOMPARE(control("tidalQuality")->property("count").toInt(), 5);
+        const QStringList qualities{QStringLiteral("max"), QStringLiteral("cd"), QStringLiteral("aac320"),
+            QStringLiteral("aac96"), QStringLiteral("atmos")};
+        for (int qualityIndex = 1; qualityIndex < qualities.size(); ++qualityIndex) {
+            const int beforeSelection = fixture.requests.size();
+            QVERIFY(control("tidalQuality")->setProperty("currentIndex", qualityIndex));
+            QVERIFY(QMetaObject::invokeMethod(control("tidalQuality"), "activated", Q_ARG(int, qualityIndex)));
+            // Selecting a limit does not replace or restart the current track.
+            QTest::qWait(25); QCOMPARE(fixture.requests.size(), beforeSelection);
+            QVERIFY(QMetaObject::invokeMethod(play, "clicked"));
+            QTRY_VERIFY(!item->property("busy").toBool());
+            QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), qualities[qualityIndex]);
+        }
         QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("atmos"));
         // Require the native Plasma palette on real controls, not BasicTheme
         // black text accidentally paired with dark Plasma SVG backgrounds.
@@ -484,12 +516,19 @@ private slots:
         QCOMPARE(item->property("quality").toString(), QStringLiteral("atmos")); // No automatic fallback.
         const int failedRequests = fixture.requests.size(); QTest::qWait(50);
         QCOMPARE(fixture.requests.size(), failedRequests);
+        QVERIFY(control("tidalQuality")->setProperty("currentIndex", 0));
+        QVERIFY(QMetaObject::invokeMethod(control("tidalQuality"), "activated", Q_ARG(int, 0)));
         QJsonObject playback{{"running", true}, {"loaded", true}, {"paused", false},
-            {"position", 12}, {"duration", 180}, {"renderer_ready", true}, {"source_mode", "pcm"}};
+            {"position", 12}, {"duration", 180}, {"renderer_ready", true}, {"source_mode", "pcm"},
+            {"codec", "aac"}, {"sample_rate", 44100}, {"bitrate", 96200}, {"channels", 2}};
         QJsonObject playing{{"audio", playback}, {"queue_length", 3}, {"queue_index", 1},
-            {"track", QJsonObject{{"title", "Playing fixture"}, {"artist", "Fixture artist"}}}};
+            {"track", QJsonObject{{"title", "Playing fixture"}, {"artist", "Fixture artist"},
+                {"source", "TIDAL"}, {"requested_quality", "max"}, {"quality", "LOW"}}}};
         fixture.snapshot["runtime"] = playing; QVERIFY(fixture.publish());
         QTRY_COMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Playing"));
+        QTRY_COMPARE(control("tidalStreamQuality")->property("text").toString(), QStringLiteral("Stream quality: 96 kbps tier"));
+        QTRY_COMPARE(control("tidalDecodedFormat")->property("text").toString(), QStringLiteral("AAC · 44.1 kHz · 2 ch · 96 kbps"));
+        QCOMPARE(item->property("quality").toString(), QStringLiteral("max"));
         QTRY_VERIFY(control("tidalPlayPause")->isEnabled());
         QVERIFY(click("tidalPlayPause")); QTRY_VERIFY(!mediaFixture.calls.isEmpty()); QCOMPARE(mediaFixture.calls.last(), QStringLiteral("PlayPause"));
         QTRY_VERIFY(!item->property("transportBusy").toBool());
@@ -506,6 +545,8 @@ private slots:
         fixture.snapshot["runtime"] = playing; QVERIFY(fixture.publish());
         QTRY_COMPARE(control("tidalError")->property("text").toString(), QStringLiteral("Fixture decoder refused the media"));
         QCOMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Playback unavailable"));
+        QCOMPARE(control("tidalStreamQuality")->property("text").toString(), QString());
+        QCOMPARE(control("tidalDecodedFormat")->property("text").toString(), QString());
         playback["loaded"] = true; playback.remove("state"); playback.remove("end_reason");
         playback.remove("error"); playing["audio"] = playback;
         fixture.snapshot["runtime"] = playing; fixture.snapshot["audio_ready"] = false;
@@ -554,13 +595,45 @@ private slots:
         QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["kind"].toString(), QStringLiteral("artist"));
         QVERIFY(!control("tidalPlayCollection")->isVisible());
         QVERIFY(click("tidalBack"));
+        // The playlist library contains both personal and saved playlists,
+        // with nested folders using the same paged library API. Folders browse
+        // without becoming playable and Back restores each cached parent.
+        QVERIFY(control("tidalCategory")->setProperty("currentIndex", 3));
+        QVERIFY(QMetaObject::invokeMethod(control("tidalCategory"), "activated", Q_ARG(int, 3)));
+        QVERIFY(click("tidalLibrary")); QTRY_VERIFY(!item->property("busy").toBool());
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["kind"].toString(), QStringLiteral("playlists"));
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("My playlist")) != nullptr);
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("Saved playlist")) != nullptr);
+        QVERIFY(control("tidalBrowse2") && control("tidalBrowse2")->isVisible());
+        QVERIFY(control("tidalPlay2") && !control("tidalPlay2")->isVisible());
+        QVERIFY(click("tidalBrowse2")); QTRY_VERIFY(!item->property("busy").toBool());
+        QCOMPARE(fixture.requests.last().toObject()["action"].toString(), QStringLiteral("library"));
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["folder_id"].toString(), QStringLiteral("11111111-1111-1111-1111-111111111111"));
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("Fixture folder")) != nullptr);
+        QVERIFY(!control("tidalNextPage")->isEnabled());
+        QVERIFY(click("tidalBrowse1")); QTRY_VERIFY(!item->property("busy").toBool());
+        QTRY_VERIFY(findVisualLabel(item, QStringLiteral("No results on this page."))->isVisible());
+        QVERIFY(!control("tidalNextPage")->isEnabled());
+        QVERIFY(click("tidalBack"));
+        QCOMPARE(item->property("location").value<QJSValue>().property("folder_id").toString(), QStringLiteral("11111111-1111-1111-1111-111111111111"));
+        QVERIFY(control("tidalCategory")->setProperty("currentIndex", 1));
+        QVERIFY(QMetaObject::invokeMethod(control("tidalCategory"), "activated", Q_ARG(int, 1)));
+        QTRY_VERIFY(!item->property("busy").toBool());
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["kind"].toString(), QStringLiteral("albums"));
+        QVERIFY(!fixture.requests.last().toObject()["payload"].toObject().contains("folder_id"));
+        QVERIFY(!item->property("location").value<QJSValue>().hasProperty("folder_id"));
+        QVERIFY(click("tidalBack"));
+        QCOMPARE(item->property("categoryIndex").toInt(), 3);
+        QVERIFY(click("tidalBack"));
         QVERIFY(control("tidalCategory")->setProperty("currentIndex", 0));
         QVERIFY(QMetaObject::invokeMethod(control("tidalCategory"), "activated", Q_ARG(int, 0)));
         QVERIFY(click("tidalLibrary")); QTRY_VERIFY(!item->property("busy").toBool());
         QCOMPARE(fixture.requests.last().toObject()["action"].toString(), QStringLiteral("library"));
         QVERIFY(click("tidalNextPage")); QTRY_VERIFY(!item->property("busy").toBool());
-        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["offset"].toInt(), 20);
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["offset"].toInt(), 7);
         QTRY_VERIFY(findVisualLabel(item, QStringLiteral("No results on this page."))->isVisible());
+        QVERIFY(click("tidalPreviousPage")); QTRY_VERIFY(!item->property("busy").toBool());
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["offset"].toInt(), 0);
         QVERIFY(click("tidalBack"));
         fixture.failSearch = true;
         QVERIFY(click("tidalSearch"));
@@ -655,6 +728,99 @@ private slots:
             QVERIFY(!fixture.requests[i].toObject()["payload"].toObject()["refresh"].toBool());
         object.reset(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         fixture.delayLogin = false; fixture.manyTracks = false;
+        QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
+    }
+
+    void tidalQualityPreference()
+    {
+        fixture.signedIn = fixture.savedSession = true;
+        fixture.delayLogin = fixture.delaySearch = fixture.failSearch = false;
+        fixture.snapshot = QJsonObject{{"schema", 1}, {"connected", false}, {"audio_ready", false}};
+        QVERIFY(fixture.publish());
+        QStringList warnings;
+        QQmlEngine engine; Plasma::setupPlasmaStyle(&engine);
+        connect(&engine, &QQmlEngine::warnings, &engine, [&warnings](const QList<QQmlError> &errors) {
+            for (const auto &error : errors) warnings.append(error.toString());
+        });
+        auto *translations = new KLocalizedQmlContext(&engine);
+        translations->setTranslationDomain(QStringLiteral("spatial-companion-smoke"));
+        engine.rootContext()->setContextObject(translations);
+        QQmlEngine::setContextForObject(translations, engine.rootContext());
+        // Upstream's own demo values provide the complete headphone-card
+        // schema. The fixture is not a replacement for any QML component.
+        QFile mainFile(QStringLiteral(SPATIAL_COMPANION_QML_DIR) + QStringLiteral("/main.qml"));
+        QVERIFY(mainFile.open(QIODevice::ReadOnly));
+        const QString mainSource = QString::fromUtf8(mainFile.readAll());
+        const int configStart = mainSource.indexOf(QStringLiteral("function createDemoConfig()"));
+        const int demoEnd = mainSource.indexOf(QStringLiteral("function getDemoDevice()"));
+        QVERIFY(configStart > 0 && demoEnd > configStart);
+        const auto device = engine.evaluate(mainSource.mid(configStart, demoEnd - configStart)
+            + QStringLiteral("\n({path:'/fixture/XM5', alias:'Preference fixture', config:createDemoConfig(), state:getDemoState()})"));
+        QVERIFY2(!device.isError(), qPrintable(device.toString()));
+        QVERIFY(mainSource.contains(QStringLiteral("tidalQuality: Plasmoid.configuration.tidalPlaybackQuality")));
+        QVERIFY(mainSource.contains(QStringLiteral("onTidalQualitySelected: quality => Plasmoid.configuration.tidalPlaybackQuality = quality")));
+        QFile schemaFile(QStringLiteral(SPATIAL_COMPANION_QML_DIR) + QStringLiteral("/../config/main.xml"));
+        QVERIFY(schemaFile.open(QIODevice::ReadOnly));
+        const QByteArray schema = schemaFile.readAll();
+        QVERIFY(schema.contains("name=\"tidalPlaybackQuality\" type=\"String\""));
+        QVERIFY(schema.contains("<default>max</default>"));
+        // A persistent owner mirrors Plasma's per-widget config binding. The
+        // actual FullRepresentation, DevicePage and card signal chain must
+        // survive Loader destruction without breaking that binding.
+        QQmlComponent harness(&engine);
+        harness.setData(R"QML(
+            import QtQuick
+            Item {
+                id: owner
+                property string savedQuality: "aac96"
+                property var fixtureDevice
+                property bool pageActive: true
+                Component {
+                    id: representation
+                    FullRepresentation {
+                        isEditMode: false
+                        isDesktopMode: true
+                        tidalQuality: owner.savedQuality
+                        onTidalQualitySelected: quality => owner.savedQuality = quality
+                        Component.onCompleted: addDeviceTab(owner.fixtureDevice)
+                    }
+                }
+                Loader { anchors.fill: parent; active: owner.pageActive; sourceComponent: representation }
+            }
+        )QML", QUrl::fromLocalFile(QStringLiteral(SPATIAL_COMPANION_QML_DIR) + QStringLiteral("/PreferenceHarness.qml")));
+        QTRY_VERIFY_WITH_TIMEOUT(harness.status() != QQmlComponent::Loading, 5000);
+        QVERIFY2(harness.isReady(), qPrintable(harness.errorString()));
+        std::unique_ptr<QObject> object(harness.createWithInitialProperties({{"fixtureDevice", device.toVariant()}}));
+        QVERIFY2(object != nullptr, qPrintable(harness.errorString()));
+        auto *item = qobject_cast<QQuickItem *>(object.get()); QVERIFY(item);
+        QQuickWindow window; Plasma::Theme theme; window.setColor(theme.color(Plasma::Theme::BackgroundColor));
+        window.resize(400, 1000); window.show(); item->setParentItem(window.contentItem()); item->setSize(QSizeF(400, 1000));
+        QQuickItem *card = nullptr;
+        QTRY_VERIFY_WITH_TIMEOUT((card = findVisualObject(item, QStringLiteral("tidalClient"))) != nullptr, 5000);
+        QTRY_VERIFY(card->property("authenticated").toBool());
+        QCOMPARE(card->property("quality").toString(), QStringLiteral("aac96"));
+        QSignalSpy selected(card, SIGNAL(qualitySelected(QString))); QVERIFY(selected.isValid());
+        auto *qualityControl = findVisualObject(card, QStringLiteral("tidalQuality")); QVERIFY(qualityControl);
+        QVERIFY(qualityControl->setProperty("currentIndex", 1));
+        QVERIFY(QMetaObject::invokeMethod(qualityControl, "activated", Q_ARG(int, 1)));
+        QTRY_COMPARE(item->property("savedQuality").toString(), QStringLiteral("cd"));
+        QCOMPARE(selected.size(), 1);
+        QCOMPARE(card->property("quality").toString(), QStringLiteral("cd"));
+        QVERIFY(item->setProperty("savedQuality", QStringLiteral("aac320")));
+        QTRY_COMPARE(card->property("quality").toString(), QStringLiteral("aac320"));
+        QCOMPARE(selected.size(), 1); // A config read cannot write it back.
+        QVERIFY(item->setProperty("savedQuality", QStringLiteral("unknown-old-choice")));
+        QTRY_COMPARE(card->property("quality").toString(), QStringLiteral("max"));
+        QCOMPARE(item->property("savedQuality").toString(), QStringLiteral("unknown-old-choice"));
+        QCOMPARE(selected.size(), 1);
+        QVERIFY(item->setProperty("savedQuality", QStringLiteral("aac96")));
+        QVERIFY(item->setProperty("pageActive", false));
+        QTRY_VERIFY(findVisualObject(item, QStringLiteral("tidalClient")) == nullptr);
+        QVERIFY(item->setProperty("pageActive", true));
+        QTRY_VERIFY_WITH_TIMEOUT((card = findVisualObject(item, QStringLiteral("tidalClient"))) != nullptr, 5000);
+        QTRY_COMPARE(card->property("quality").toString(), QStringLiteral("aac96"));
+        QCOMPARE(item->property("savedQuality").toString(), QStringLiteral("aac96"));
+        object.reset(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 };

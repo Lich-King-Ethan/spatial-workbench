@@ -1,7 +1,7 @@
 # Patched source package. Upstream remains the owner of the Companion UI.
 pkgname=plasma-budslink-spatial-companion
 pkgver=0.2.0.spatial@VERSION@
-pkgrel=4
+pkgrel=5
 pkgdesc='BudsLink Spatial Companion native Plasma widget'
 provides=("plasma-budslink-companion-spatial=$pkgver")
 conflicts=('plasma-budslink-companion-spatial')

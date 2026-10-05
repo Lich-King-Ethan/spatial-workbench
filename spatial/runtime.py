@@ -57,6 +57,7 @@ class Runtime:
         self._tidal = None
         self._queue_require_atmos = settings.tidal_require_atmos
         self._queue_require_lossless = False
+        self._queue_quality = None
         self._tidal_public_status = {"state": "unchecked", "authenticated": False}
         self._tidal_account_request = 0
         self._tidal_account_published = 0
@@ -218,6 +219,7 @@ class Runtime:
                 "diagnostics": self.diagnostics.status() if self.diagnostics is not None else {"state": "disabled"},
                 "playback_error": self.playback_error, "track": dict(self.metadata),
                 "tidal": {**self._tidal_public_status,
+                          "ui_default_quality": "max",
                           "default_quality": "atmos" if self.settings.tidal_require_atmos else "lossless"},
                 "queue_length": len(self.queue), "queue_index": self.queue_index,
                 "loading": self.loading}
@@ -226,7 +228,7 @@ class Runtime:
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
 
-    async def request_play(self, reference, *, require_atmos=None, require_lossless=False):
+    async def request_play(self, reference, *, require_atmos=None, require_lossless=False, quality=None):
         """Acknowledge a UI request promptly; readiness/decoder errors appear in State."""
         if not isinstance(reference, str) or not reference.strip():
             raise ValueError("select a media path or TIDAL URL")
@@ -245,7 +247,7 @@ class Runtime:
             self.notify()
             try:
                 await self.play(reference, _ui_token=ui_request, require_atmos=require_atmos,
-                                require_lossless=require_lossless)
+                                require_lossless=require_lossless, quality=quality)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -315,7 +317,7 @@ class Runtime:
             "login_cancel": {"login_id"}, "logout": set(),
             "search": {"query", "limit", "offset"},
             "collection": {"kind", "id", "limit", "offset"},
-            "library": {"kind", "limit", "offset"}, "play": {"reference", "quality"}}
+            "library": {"kind", "limit", "offset", "folder_id"}, "play": {"reference", "quality"}}
         if action not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[action]:
             raise PlaybackError("Unsupported TIDAL client request")
         provider = self._tidal_provider()
@@ -327,11 +329,13 @@ class Runtime:
         if action == "play":
             reference, quality = arguments.get("reference"), arguments.get("quality")
             from .tidal import parse_reference
-            if not isinstance(reference, str) or quality not in ("atmos", "lossless"):
-                raise PlaybackError("Choose a TIDAL selection and Atmos or lossless playback")
+            if not isinstance(reference, str) or quality not in ("auto", "max", "cd", "aac320", "aac96", "atmos", "lossless"):
+                raise PlaybackError("Choose a TIDAL selection and a supported playback quality")
+            quality = "max" if quality == "auto" else quality
             kind, identifier = parse_reference(reference)
             request = await self.request_play(f"tidal:{kind}:{identifier}", require_atmos=quality == "atmos",
-                                              require_lossless=quality == "lossless")
+                                              require_lossless=quality == "lossless",
+                                              quality=quality if quality not in ("atmos", "lossless") else None)
             return {"state": "loading", "request": request, "quality": quality}
         account_mutation = action in ("login_start", "login_cancel", "logout")
         account_request = None
@@ -424,7 +428,12 @@ class Runtime:
                 if not isinstance(kind, str):
                     raise PlaybackError("Choose a TIDAL collection type")
                 if action == "library":
-                    result = await self._worker(provider.library, kind, limit=limit, offset=offset)
+                    folder_id = arguments.get("folder_id", "root")
+                    if (not isinstance(folder_id, str) or len(folder_id) > 128
+                            or ("folder_id" in arguments and kind != "playlists")):
+                        raise PlaybackError("Choose a valid playlist folder")
+                    result = await self._worker(provider.library, kind, limit=limit, offset=offset,
+                                                **({"folder_id": folder_id} if "folder_id" in arguments else {}))
                 else:
                     identifier = arguments.get("id")
                     if not isinstance(identifier, str) or len(identifier) > 128:
@@ -471,7 +480,7 @@ class Runtime:
                 parsed.scheme in ("http", "https") and
                 (parsed.hostname or "").lower() in ("tidal.com", "www.tidal.com", "listen.tidal.com"))
 
-    async def play(self, reference, *, _ui_token=None, require_atmos=None, require_lossless=False):
+    async def play(self, reference, *, _ui_token=None, require_atmos=None, require_lossless=False, quality=None):
         if _ui_token is None:
             self._ui_request += 1
             self.loading = False
@@ -483,6 +492,12 @@ class Runtime:
             raise PlaybackError("Atmos playback selection must be true or false")
         if type(require_lossless) is not bool or (require_lossless and require_atmos is not False):
             raise PlaybackError("Lossless playback needs an explicit ordinary-audio selection")
+        if quality is not None:
+            if quality not in ("auto", "max", "cd", "aac320", "aac96", "atmos") or not self.is_tidal(reference):
+                raise PlaybackError("Choose a supported TIDAL playback quality")
+            quality = "max" if quality == "auto" else quality
+            if require_lossless or (require_atmos is True and quality != "atmos"):
+                raise PlaybackError("Choose one TIDAL playback quality")
         self._request += 1
         self._requested_tidal = self.is_tidal(reference)
         self._cancel_launch()
@@ -502,9 +517,10 @@ class Runtime:
                 raise PlaybackError("playback request was superseded")
             self.queue = queue
             self.queue_index = 0
-            self._queue_require_atmos = (self.settings.tidal_require_atmos
-                                        if require_atmos is None else require_atmos)
+            self._queue_require_atmos = (quality == "atmos" if quality is not None else
+                                        self.settings.tidal_require_atmos if require_atmos is None else require_atmos)
             self._queue_require_lossless = require_lossless
+            self._queue_quality = quality
             await self._start_current(request)
 
     async def _prepare_current(self):
@@ -515,7 +531,8 @@ class Runtime:
             track_id = reference.rsplit(":", 1)[-1]
             prepared = await self._worker(provider.prepare, track_id, require_atmos=self._queue_require_atmos,
                                           cleanup=lambda item: item.cleanup(),
-                                          **({"require_lossless": True} if self._queue_require_lossless else {}))
+                                          **({"require_lossless": True} if self._queue_require_lossless else {}),
+                                          **({"quality": self._queue_quality} if self._queue_quality is not None else {}))
             return prepared.media, dict(prepared.metadata), prepared
         if parsed.scheme == "file":
             if parsed.netloc not in ("", "localhost"):

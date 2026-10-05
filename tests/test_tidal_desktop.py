@@ -47,7 +47,7 @@ class FakeProvider:
         self.track_ids = Mock(return_value=["123", "124"])
         self.prepare = Mock(side_effect=self._prepare)
 
-    def _prepare(self, identifier, require_atmos=True, *, require_lossless=False):
+    def _prepare(self, identifier, require_atmos=True, *, require_lossless=False, quality=None):
         item = PreparedTrack("https://cdn.example/audio?token=private-stream-token", {
             "id": identifier, "title": "A track", "source": "TIDAL",
             "atmos_manifest": require_atmos, "renderer_confirmed_atmos": False})
@@ -106,6 +106,46 @@ class RuntimeSetup:
 
 
 class TidalOrchestration(RuntimeSetup, unittest.IsolatedAsyncioTestCase):
+    async def test_mobile_quality_ceiling_stays_with_queue_and_preserves_settings(self):
+        for quality in ("max", "cd", "aac320", "aac96", "auto"):
+            with self.subTest(quality=quality):
+                self.provider.prepare.reset_mock()
+                response = await self.runtime.tidal_request("play", {
+                    "reference": "tidal:album:45", "quality": quality})
+                await self.finish_launches()
+                await self.runtime.next()
+                expected = "max" if quality == "auto" else quality
+                self.assertEqual(response["quality"], expected)
+                calls = self.provider.prepare.call_args_list
+                self.assertEqual([call.kwargs["quality"] for call in calls], [expected, expected])
+                self.assertTrue(all(call.kwargs["require_atmos"] is False for call in calls))
+                self.assertTrue(all(not call.kwargs.get("require_lossless") for call in calls))
+                self.assertTrue(self.runtime.settings.tidal_require_atmos)
+                self.assertFalse(self.runtime.preferences_path.exists())
+        await self.runtime.tidal_request("play", {"reference": "123", "quality": "atmos"})
+        await self.finish_launches()
+        self.assertNotIn("quality", self.provider.prepare.call_args_list[-1].kwargs)
+        self.assertTrue(self.provider.prepare.call_args_list[-1].kwargs["require_atmos"])
+
+    async def test_playlist_folder_dispatch_is_scoped_and_paged(self):
+        folder = "11111111-2222-3333-4444-555555555555"
+        await self.runtime.tidal_request("library", {"kind": "playlists", "folder_id": folder,
+                                                    "limit": 20, "offset": 40})
+        self.provider.library.assert_called_once_with("playlists", folder_id=folder, limit=20, offset=40)
+        self.provider.library.reset_mock()
+        for arguments in ({"kind": "tracks", "folder_id": folder},
+                          {"kind": "playlists", "folder_id": [folder]}):
+            with self.subTest(arguments=arguments), self.assertRaises(PlaybackError):
+                await self.runtime.tidal_request("library", arguments)
+        self.provider.library.assert_not_called()
+
+    async def test_explicit_max_overrides_cli_atmos_default_without_leaking_to_local_files(self):
+        await self.runtime.play("tidal:track:123", quality="max")
+        self.provider.prepare.assert_called_once_with("123", require_atmos=False, quality="max")
+        self.assertTrue(self.runtime.settings.tidal_require_atmos)
+        await self.runtime.play("/tmp/ordinary-test-media.wav")
+        self.assertIsNone(self.runtime._queue_quality)
+
     async def test_login_recovery_is_local_and_never_replaces_public_account_state(self):
         before = self.runtime.state()["tidal"].copy()
         self.runtime._workers.update(object() for _ in range(5))

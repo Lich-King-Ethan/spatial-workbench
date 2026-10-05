@@ -37,6 +37,7 @@ class TidalPresentation(unittest.TestCase):
 
     def test_catalog_badge_does_not_make_an_artist_playable(self):
         self.assertFalse(self.evaluate("playable({kind:'artist',reference:'',catalogue_atmos:true})"))
+        self.assertFalse(self.evaluate("playable({kind:'folder',reference:'',id:'a-folder'})"))
         self.assertTrue(self.evaluate("playable({kind:'album',reference:'tidal:album:12'})"))
         self.assertFalse(self.evaluate("playable({kind:'track',reference:'https://example.com'})"))
 
@@ -46,6 +47,30 @@ class TidalPresentation(unittest.TestCase):
         self.assertEqual(self.evaluate("items({tracks:'text'},'tracks')"), [])
         for value in (None, [], True, "text", 1):
             self.assertEqual(self.evaluate("object(" + json.dumps(value) + ")"), {})
+
+    def test_decoded_format_uses_observed_audio_not_requested_or_catalog_quality(self):
+        audio = {"running": True, "loaded": True, "codec": "aac", "sample_rate": 44100,
+                 "channels": 2, "bitrate": 96340, "requested_quality": "max", "catalogue_atmos": True}
+        self.assertEqual(self.evaluate("decodedFormat(" + json.dumps(audio) + ")"),
+                         "AAC · 44.1 kHz · 2 ch · 96 kbps")
+        audio = {"running": True, "loaded": True, "codec": "flac",
+                 "audio_parameters": {"samplerate": 192000, "channel-count": 2, "format": "floatp"}}
+        # Decoded float samples do not establish source bit depth or bitrate.
+        self.assertEqual(self.evaluate("decodedFormat(" + json.dumps(audio) + ")"), "FLAC · 192 kHz · 2 ch")
+
+    def test_decoded_format_hides_stale_or_unavailable_decoder_properties(self):
+        for audio in ({"running": False, "loaded": True, "codec": "flac"},
+                      {"running": True, "loaded": False, "codec": "aac"}, None):
+            self.assertEqual(self.evaluate("decodedFormat(" + json.dumps(audio) + ")"), "")
+        audio = {"running": True, "loaded": True, "codec": "aac", "sample_rate": "48000",
+                 "bitrate": -1, "channels": None, "audio_parameters": []}
+        self.assertEqual(self.evaluate("decodedFormat(" + json.dumps(audio) + ")"), "AAC")
+
+    def test_pagination_uses_raw_server_offset_for_filtered_playlist_pages(self):
+        self.assertEqual(self.evaluate("nextOffset({offset:50,limit:20,next_offset:57})"), 57)
+        self.assertEqual(self.evaluate("nextOffset({offset:50,limit:20})"), 70)
+        for value in (50, 0, "57", None, -1):
+            self.assertEqual(self.evaluate("nextOffset({offset:50,limit:20,next_offset:" + json.dumps(value) + "})"), 70)
 
 
 if __name__ == "__main__":

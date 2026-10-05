@@ -61,8 +61,14 @@ inferred from an application's PCM output.
 ## TIDAL music panel
 
 The native mini-client combines Search and Library navigation, collection pages,
-artwork, a bounded scrolling list and integrated playback controls. Lossless is
-the initial UI selection; Atmos-only remains an explicit strict request. The
+artwork, a bounded scrolling list and integrated playback controls. Max is the
+initial selection and accepts the best available rendition. CD, AAC 320 and AAC
+96 provide lower ceilings; Atmos-only remains an explicit strict request. The
+widget saves the selected ceiling in its own KConfig entry, retaining it through
+popup recreation. Actual delivered tier and observed codec/rate/bitrate are shown
+separately. The library includes owned/saved playlists and nested folders, with
+raw server paging offsets and a Back action; followed artists and saved tracks
+and albums remain separate categories. The
 player reports asynchronous loading and stream/decoder errors within the same
 music panel, including failures that arrive after Play was accepted. Playback
 uses the existing MPRIS interface and control-service Stop, independent of pending

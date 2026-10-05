@@ -390,6 +390,68 @@ def prepare_stream(stream, metadata=None, *, require_atmos=True, require_lossles
     return PreparedTrack(media, details, directory)
 
 
+_QUALITY_REQUESTS = {
+    "max": ("HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"),
+    "cd": ("LOSSLESS", "HIGH", "LOW"),
+    "aac320": ("HIGH", "LOW"),
+    "aac96": ("LOW",),
+    "atmos": ("DOLBY_ATMOS",),
+}
+_QUALITY_RANK = {"LOW": 0, "HIGH": 1, "LOSSLESS": 2, "HI_RES_LOSSLESS": 3}
+
+
+def _quality_policy(quality, require_lossless):
+    if quality == "auto":
+        quality = "max"
+    if not isinstance(quality, str) or quality not in _QUALITY_REQUESTS:
+        raise TidalError("Choose Max, CD quality, AAC 320, AAC 96, or Atmos playback")
+    if require_lossless and quality not in ("max", "cd"):
+        raise TidalError("Lossless playback cannot use AAC or Atmos quality")
+    requests = _QUALITY_REQUESTS[quality]
+    if require_lossless:
+        requests = tuple(item for item in requests if item in ("HI_RES_LOSSLESS", "LOSSLESS"))
+    return quality, requests
+
+
+def _stream_unavailable(exc):
+    # Only the maintained provider's specific rendition-unavailable exception
+    # permits another request. Authentication, rate limits and malformed/unsafe
+    # manifests must never be mistaken for a reason to lower the quality.
+    try:
+        from tidalapi.exceptions import StreamNotAvailable
+    except ImportError:
+        return False
+    return isinstance(exc, StreamNotAvailable)
+
+
+def _validate_quality_ceiling(prepared, stream, requested):
+    actual = prepared.metadata["quality"]
+    if requested == "DOLBY_ATMOS":
+        return  # prepare_stream already requires the Atmos mode and E-AC-3.
+    if prepared.metadata["atmos_manifest"]:
+        raise TidalError("TIDAL returned Atmos audio for a stereo quality selection")
+    if actual not in _QUALITY_RANK:
+        raise TidalError("TIDAL returned an unknown audio quality; the selected limit cannot be verified")
+    if _QUALITY_RANK[actual] > _QUALITY_RANK[requested]:
+        raise TidalError("TIDAL returned audio above the selected quality limit")
+    codecs = set(prepared.metadata["codecs"])
+    if actual in ("HI_RES_LOSSLESS", "LOSSLESS"):
+        if not codecs <= {"FLAC", "ALAC"}:
+            raise TidalError("TIDAL's lossless quality does not match the stream codec")
+        # These values come from the service, not the catalogue. The SDK supplies
+        # defaults when absent, so they are a rejection guard, not measured audio
+        # resolution or a reason to label the decoded source as CD/HiRes.
+        ceiling = (16, 44100) if requested == "LOSSLESS" else (24, 192000)
+        for name, limit in zip(("bit_depth", "sample_rate"), ceiling):
+            value = getattr(stream, name, None)
+            if value is not None and (type(value) is not int or value <= 0 or value > limit):
+                raise TidalError("TIDAL returned audio resolution above or outside the selected quality limit")
+    elif not codecs <= {"AAC", "MP4A", "MP3"}:
+        raise TidalError("TIDAL's low quality does not match the stream codec")
+    if requested in ("HIGH", "LOW") and not codecs <= {"AAC", "MP4A"}:
+        raise TidalError("TIDAL returned no AAC stream within the selected quality limit")
+
+
 def _serialized(method):
     @wraps(method)
     def call(self, *args, **kwargs):
@@ -801,19 +863,78 @@ class TidalProvider:
         except Exception as exc:
             raise self._failure("collection lookup", exc) from None
 
+    @classmethod
+    def _folder_id(cls, identifier):
+        if identifier == "root":
+            return "root"
+        return cls._catalogue_id("playlist", identifier)
+
+    def _playlist_folder_page(self, folder_id, limit, offset):
+        # Favorites.playlists() deliberately excludes folders and only reads
+        # root. Use the same maintained collection endpoint with both types;
+        # Folder(id)'s constructor only searches the first 50 root folders.
+        response = self.session.request.request(
+            "GET", "my-collection/playlists/folders",
+            base_url=self.session.config.api_v2_location,
+            params={"folderId": folder_id, "limit": limit, "offset": offset,
+                    "includeOnly": "", "order": "NAME", "orderDirection": "ASC"}).json()
+        entries = response.get("items") if isinstance(response, dict) else None
+        if not isinstance(entries, list) or len(entries) > limit:
+            raise TidalError("TIDAL returned an invalid playlist folder page")
+        items = []
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("data"), dict):
+                raise TidalError("TIDAL returned an invalid playlist folder entry")
+            data, kind = entry["data"], entry.get("type")
+            if kind in (None, "PLAYLIST") and "uuid" in data:
+                self._catalogue_id("playlist", data["uuid"])
+                item = self.catalogue_item(self.session.parse_playlist(data), "playlist")
+                creator = data.get("creator")
+                owner_id = creator.get("id") if isinstance(creator, dict) else None
+                user_id = getattr(self.session.user, "id", None)
+                item["owned"] = (data.get("type") == "USER"
+                                 and owner_id is not None and user_id is not None
+                                 and str(owner_id) == str(user_id))
+                items.append(item)
+            elif kind in (None, "FOLDER") and "id" in data and "uuid" not in data:
+                identifier = self._catalogue_id("playlist", data["id"])
+                count = data.get("totalNumberOfItems")
+                items.append({"kind": "folder", "id": identifier,
+                              "title": self._label(entry.get("name")),
+                              "subtitle": "", "reference": "", "artwork": "",
+                              "item_count": max(0, count) if type(count) is int else 0})
+            elif kind in ("PLAYLIST", "FOLDER", None):
+                raise TidalError("TIDAL returned an invalid playlist folder entry")
+            # Future collection types are not playable. Keep their server page
+            # positions so filtering them cannot truncate or repeat later rows.
+        total = response.get("totalNumberOfItems")
+        total = total if type(total) is int and total >= 0 else None
+        next_offset = offset + len(entries)
+        result = {"items": items, "folder_id": folder_id, "next_offset": next_offset,
+                  "has_more": bool(entries) and (next_offset < total if total is not None
+                                                   else len(entries) == limit)}
+        if total is not None:
+            result["total"] = total
+        return result
+
     @_serialized
-    def library(self, kind: str, limit=50, offset=0) -> dict:
+    def library(self, kind: str, limit=50, offset=0, *, folder_id="root") -> dict:
         self._page(limit, offset)
         kinds = {"tracks": "track", "albums": "album", "artists": "artist", "playlists": "playlist"}
         if kind not in kinds:
             raise TidalError("Choose library tracks, albums, artists, or playlists")
+        folder_id = self._folder_id(folder_id)
+        if folder_id != "root" and kind != "playlists":
+            raise TidalError("Folders are available only for library playlists")
         self._ready()
         try:
-            # Favorites.playlists() uses the maintained root collection API,
-            # including the user's own and saved playlists (50 items maximum).
-            items = getattr(self.session.user.favorites, kind)(limit=limit, offset=offset)
-            result = {"kind": kind, "items": [self.catalogue_item(item, kinds[kind]) for item in items[:limit]],
-                      "offset": offset, "limit": limit, "has_more": len(items) >= limit}
+            if kind == "playlists":
+                result = self._playlist_folder_page(folder_id, limit, offset)
+            else:
+                items = getattr(self.session.user.favorites, kind)(limit=limit, offset=offset)
+                result = {"items": [self.catalogue_item(item, kinds[kind]) for item in items[:limit]],
+                          "has_more": len(items) >= limit}
+            result.update(kind=kind, offset=offset, limit=limit)
             self._save_authenticated()
             return result
         except Exception as exc:
@@ -843,9 +964,21 @@ class TidalProvider:
             raise self._failure("collection lookup", exc) from None
 
     @_serialized
-    def prepare(self, track_id: str, require_atmos=True, *, require_lossless=False) -> PreparedTrack:
-        if require_atmos and require_lossless:
+    def prepare(self, track_id: str, require_atmos=True, *, require_lossless=False,
+                quality=None) -> PreparedTrack:
+        """Select a rendition ceiling, retaining the legacy strict format flags.
+
+        Max/CD/AAC modes accept a lower available rendition. Another service
+        request is made only when the requested rendition is unavailable;
+        returned manifests always pass the normal transport/DRM/codec checks.
+        """
+        if quality is None and require_atmos and require_lossless:
             raise TidalError("Choose Atmos or lossless playback, not both")
+        if quality is None:
+            requests = ("DOLBY_ATMOS" if require_atmos else "HI_RES_LOSSLESS",)
+        else:
+            quality, requests = _quality_policy(quality, require_lossless)
+            require_atmos = quality == "atmos"
         kind, identifier = parse_reference(track_id)
         if kind != "track":
             raise TidalError("Choose a track for playback, or expand the album/playlist into a queue")
@@ -853,11 +986,22 @@ class TidalProvider:
         prepared = None
         try:
             session = self.session
-            session.config.quality = "DOLBY_ATMOS" if require_atmos else "HI_RES_LOSSLESS"
             track = session.track(identifier)
-            stream = track.get_stream()
-            prepared = prepare_stream(stream, self.track_metadata(track), require_atmos=require_atmos,
-                                      require_lossless=require_lossless)
+            for index, requested in enumerate(requests):
+                session.config.quality = requested
+                try:
+                    stream = track.get_stream()
+                except Exception as exc:
+                    if index + 1 < len(requests) and _stream_unavailable(exc):
+                        continue
+                    raise
+                prepared = prepare_stream(stream, self.track_metadata(track), require_atmos=require_atmos,
+                                          require_lossless=require_lossless)
+                if quality is not None:
+                    _validate_quality_ceiling(prepared, stream, requested)
+                    prepared.metadata.update({"requested_quality": quality,
+                                              "service_requested_quality": requested})
+                break
             self._save_authenticated()
             return prepared
         except Exception as exc:

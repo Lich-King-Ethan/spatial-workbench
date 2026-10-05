@@ -188,8 +188,17 @@ new request. The runtime owns the atomic generation and locking checks.
 account status, explicit session refresh, device authorization, logout, search,
 collections, favorites and playback. Catalogue/account network work runs in a
 bounded worker, outside the desktop loop. Unknown actions/fields, invalid page
-sizes and oversized input are rejected. Playback selects Atmos or lossless for
-that request and follows the same owned-player route audits as other sources.
+sizes and oversized input are rejected. Playback accepts `max` (also `auto`),
+`cd`, `aac320`, `aac96`, `atmos`, and the compatible strict `lossless` choice.
+The quality ceiling follows the whole queue without modifying daemon settings.
+Owned-player route audits remain the same as for other sources.
+
+`library` accepts `folder_id` only for `kind: "playlists"`: use `"root"` or a
+folder UUID returned by an earlier page. Pages contain typed playlist/folder rows
+and `next_offset`; use that offset rather than the visible row count, because the
+service page may also contain an unsupported collection type. Folder rows have
+no playable reference. Saved tracks/albums and followed artists remain separately
+paged library categories.
 
 The native `TidalControls.qml` card and `TidalState.js` helper receive authorization
 links/codes only through direct `login_start` and `login_status` replies. The

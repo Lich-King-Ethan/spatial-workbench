@@ -24,7 +24,12 @@ Item {
     property var location: ({mode: "search", query: ""})
     property var history: []
     property int categoryIndex: 0
-    property string quality: "lossless"
+    property string configuredQuality: ""
+    property string localQuality: "max"
+    readonly property var qualityChoices: ["max", "cd", "aac320", "aac96", "atmos"]
+    readonly property string quality: !root.configuredQuality ? root.localQuality
+        : root.qualityChoices.includes(root.configuredQuality) ? root.configuredQuality : "max"
+    signal qualitySelected(string quality)
     property string errorText: ""
     property string transportError: ""
     property bool transportBusy: false
@@ -215,11 +220,15 @@ Item {
         if (action === "search") payload.query = destination.query;
         else if (action === "collection") { payload.kind = destination.kind; payload.id = destination.id; }
         else payload.kind = root.category;
+        if (action === "library" && destination.folder_id) {
+            payload.kind = "playlists"; payload.folder_id = destination.folder_id;
+        }
         root.request(action, payload, result => {
             if (result.error) return;
             if (remember) root.history = root.history.concat([old]).slice(-20);
             root.location = destination; root.page = result;
             if (action === "collection") root.categoryIndex = 0;
+            else if (action === "library" && destination.folder_id) root.categoryIndex = 3;
         });
     }
     function search() {
@@ -227,7 +236,8 @@ Item {
         if (query.length) root.navigate({mode: "search", query: query}, root.location.mode !== "search");
     }
     function browse(item) {
-        if (item.kind !== "track") root.navigate({mode: "collection", kind: item.kind, id: item.id}, true);
+        if (item.kind === "folder") root.navigate({mode: "library", folder_id: item.id, title: item.title}, true);
+        else if (item.kind !== "track") root.navigate({mode: "collection", kind: item.kind, id: item.id}, true);
     }
     function back() {
         if (root.busy || !root.history.length) return;
@@ -239,7 +249,19 @@ Item {
         if (!root.canPlay || root.runtime.loading || !TidalState.playable(item)) return;
         root.request("play", {reference: item.reference, quality: root.quality}, () => props.updateAll());
     }
-    function paginate(offset) { root.navigate(Object.assign({}, root.location, {offset: offset}), false); }
+    function paginate(offset) {
+        const current = Number(root.page.offset || 0);
+        let previous = Array.isArray(root.location.pageOffsets) ? root.location.pageOffsets.slice() : [];
+        if (offset > current) previous.push(current);
+        else if (previous.length && previous[previous.length - 1] === offset) previous.pop();
+        else previous = [];
+        root.navigate(Object.assign({}, root.location, {offset: offset, pageOffsets: previous.slice(-100)}), false);
+    }
+    function previousPageOffset() {
+        const previous = root.location.pageOffsets;
+        return Array.isArray(previous) && previous.length ? previous[previous.length - 1]
+            : Math.max(0, Number(root.page.offset || 0) - Number(root.page.limit || 20));
+    }
 
     function showSearch() {
         if (root.busy) return;
@@ -290,14 +312,38 @@ Item {
         }
         return i18n("Choose music to play");
     }
+    function deliveredQualityText() {
+        if (!root.audio.running || !root.audio.loaded || root.track.source !== "TIDAL") return "";
+        const labels = {HI_RES_LOSSLESS: i18n("Hi-res lossless"), LOSSLESS: i18n("Lossless"),
+            HIGH: i18n("320 kbps tier"), LOW: i18n("96 kbps tier"), DOLBY_ATMOS: i18n("Dolby Atmos")};
+        const delivered = labels[root.track.quality];
+        return delivered ? i18n("Stream quality: %1", delivered) : "";
+    }
+    function qualityDescription() {
+        if (root.quality === "atmos") return i18n("Atmos must be available for this track and account. No stereo fallback.");
+        if (root.quality === "cd") return i18n("Up to CD quality. Lower quality plays when that is all the track offers.");
+        if (root.quality === "aac320") return i18n("Up to 320 kbps AAC for lighter streaming.");
+        if (root.quality === "aac96") return i18n("Up to 96 kbps AAC for the lightest streaming.");
+        return i18n("The best quality available for each track, including lossy audio when needed.");
+    }
+    function catalogueSubtitle(item) {
+        if (item.kind === "folder") return Number.isInteger(item.item_count) && item.item_count >= 0
+            ? i18n("%1 items", item.item_count) : i18n("Playlist folder");
+        let text = item.subtitle || "";
+        if (item.kind === "playlist" && typeof item.owned === "boolean")
+            text += (text ? " · " : "") + (item.owned ? i18n("My playlist") : i18n("Saved playlist"));
+        if (item.catalogue_atmos) text += (text ? " · " : "") + i18n("Atmos in catalog");
+        return text;
+    }
 
     component Cover: Item {
         property string artwork: ""
+        property string kind: ""
         implicitWidth: 44
         implicitHeight: 44
         Kirigami.Icon {
             anchors.fill: parent
-            source: "media-optical-audio"
+            source: parent.kind === "folder" ? "folder" : parent.kind === "playlist" ? "view-media-playlist" : "media-optical-audio"
             visible: cover.status !== Image.Ready
         }
         Image {
@@ -456,7 +502,7 @@ Item {
                         Layout.preferredHeight: 48
                     }
                     PC.Label {
-                        text: root.page.item ? root.page.item.title : root.location.mode === "library" ? i18n("Your favorites") : root.location.query || i18n("Find your next listen")
+                        text: root.page.item ? root.page.item.title : root.location.mode === "library" ? root.location.title || i18n("Your library") : root.location.query || i18n("Find your next listen")
                         textFormat: Text.PlainText
                         wrapMode: Text.WrapAnywhere
                         maximumLineCount: 2
@@ -494,6 +540,7 @@ Item {
                                 Cover {
                                     objectName: "tidalArtwork" + resultRow.index
                                     artwork: resultRow.modelData.artwork || ""
+                                    kind: resultRow.modelData.kind || ""
                                     Layout.preferredWidth: 44
                                     Layout.preferredHeight: 44
                                 }
@@ -509,7 +556,7 @@ Item {
                                         Layout.fillWidth: true
                                     }
                                     PC.Label {
-                                        text: (resultRow.modelData.subtitle || "") + (resultRow.modelData.catalogue_atmos ? " · " + i18n("Atmos in catalog") : "")
+                                        text: root.catalogueSubtitle(resultRow.modelData)
                                         textFormat: Text.PlainText
                                         elide: Text.ElideRight
                                         Layout.fillWidth: true
@@ -549,26 +596,30 @@ Item {
                         objectName: "tidalPreviousPage"
                         text: i18n("Previous page")
                         enabled: !root.busy && Number(root.page.offset || 0) > 0
-                        onClicked: root.paginate(Math.max(0, Number(root.page.offset) - Number(root.page.limit || 20)))
+                        onClicked: root.paginate(root.previousPageOffset())
                     }
                     Item { Layout.fillWidth: true }
                     PC.Button {
                         objectName: "tidalNextPage"
                         text: i18n("Next page")
                         enabled: !root.busy && root.page.has_more === true
-                        onClicked: root.paginate(Number(root.page.offset || 0) + Number(root.page.limit || 20))
+                        onClicked: root.paginate(TidalState.nextOffset(root.page))
                     }
                 }
                 PC.ComboBox {
                     objectName: "tidalQuality"
-                    model: [i18n("Lossless"), i18n("Dolby Atmos only")]
+                    model: [i18n("Max (best available)"), i18n("High (CD quality)"),
+                        i18n("Low (320 kbps)"), i18n("Low (96 kbps)"), i18n("Dolby Atmos only")]
                     Accessible.name: i18n("TIDAL playback quality")
                     Layout.fillWidth: true
-                    currentIndex: root.quality === "lossless" ? 0 : 1
-                    onActivated: root.quality = currentIndex === 0 ? "lossless" : "atmos"
+                    currentIndex: root.qualityChoices.indexOf(root.quality)
+                    onActivated: {
+                        const selected = root.qualityChoices[currentIndex];
+                        root.localQuality = selected; root.qualitySelected(selected);
+                    }
                 }
                 PC.Label {
-                    text: root.quality === "atmos" ? i18n("Atmos must be available for this track and account. No stereo fallback.") : i18n("Lossless music. Choose Atmos only when you want to require spatial audio.")
+                    text: root.qualityDescription() + " " + i18n("Used the next time you choose music to play.")
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
@@ -608,6 +659,24 @@ Item {
                     textFormat: Text.PlainText
                     wrapMode: Text.Wrap
                     Layout.fillWidth: true
+                }
+                PC.Label {
+                    objectName: "tidalStreamQuality"
+                    text: root.deliveredQualityText()
+                    visible: !!text
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
+                }
+                PC.Label {
+                    objectName: "tidalDecodedFormat"
+                    text: TidalState.decodedFormat(root.audio)
+                    visible: !!text
+                    textFormat: Text.PlainText
+                    wrapMode: Text.Wrap
+                    Layout.fillWidth: true
+                    font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
                 }
                 PC.ProgressBar {
                     from: 0; to: 1

@@ -504,5 +504,150 @@ class SourceRequests(unittest.TestCase):
             self.assertIn("tidal login", errors.getvalue())
 
 
+class QualitySelection(unittest.TestCase):
+    @contextmanager
+    def provider_with_streams(self, response):
+        with tempfile.TemporaryDirectory() as temp:
+            provider, fake = restored_provider(Path(temp) / "session.json")
+            track = SimpleNamespace(id=123, name="Song", get_stream=Mock(side_effect=response))
+            fake.track = Mock(return_value=track)
+            yield provider, fake, track
+
+    def rendition(self, quality, codec=None, **resolution):
+        value = bts(codec=codec or ("FLAC" if "LOSSLESS" in quality else "AAC"), mode="STEREO")
+        value.audio_quality = quality
+        for name, item in resolution.items():
+            setattr(value, name, item)
+        return value
+
+    def test_mobile_quality_ceiling_maps_to_service_and_preserves_actual_format(self):
+        for selection, requested in (("auto", "HI_RES_LOSSLESS"), ("max", "HI_RES_LOSSLESS"),
+                                     ("cd", "LOSSLESS"), ("aac320", "HIGH"), ("aac96", "LOW")):
+            with self.subTest(selection=selection), self.provider_with_streams(
+                    lambda: self.rendition(requested)) as (provider, fake, track):
+                with provider.prepare("123", quality=selection) as prepared:
+                    self.assertFalse(prepared.metadata["atmos_manifest"])
+                    self.assertEqual(prepared.metadata["quality"], requested)
+                    self.assertEqual(prepared.metadata["requested_quality"], "max" if selection == "auto" else selection)
+                    self.assertEqual(prepared.metadata["service_requested_quality"], requested)
+                self.assertEqual(fake.config.quality, requested)
+                track.get_stream.assert_called_once()
+
+    def test_legitimate_lower_returned_quality_plays_without_another_request(self):
+        for selection, actual in (("max", "LOSSLESS"), ("max", "HIGH"), ("max", "LOW"),
+                                  ("cd", "HIGH"), ("aac320", "LOW")):
+            with self.subTest(selection=selection, actual=actual), self.provider_with_streams(
+                    lambda: self.rendition(actual)) as (provider, _, track):
+                with provider.prepare("123", quality=selection) as prepared:
+                    self.assertEqual(prepared.metadata["quality"], actual)
+                    self.assertEqual(prepared.metadata["requested_quality"], selection)
+                track.get_stream.assert_called_once()
+
+    def test_only_unavailable_renditions_step_down_and_the_ceiling_is_per_request(self):
+        class StreamNotAvailable(Exception):
+            pass
+
+        for selection, expected in (("max", ["HI_RES_LOSSLESS", "LOSSLESS", "HIGH", "LOW"]),
+                                    ("cd", ["LOSSLESS", "HIGH", "LOW"]),
+                                    ("aac320", ["HIGH", "LOW"]), ("aac96", ["LOW"])):
+            observed = []
+
+            def response():
+                observed.append(fake.config.quality)
+                if fake.config.quality != "LOW":
+                    raise StreamNotAvailable("private response secret")
+                return self.rendition("LOW")
+
+            with self.subTest(selection=selection), patch.dict("sys.modules", {
+                    "tidalapi.exceptions": SimpleNamespace(StreamNotAvailable=StreamNotAvailable)}), \
+                    self.provider_with_streams(response) as (provider, fake, track):
+                with provider.prepare("123", quality=selection) as prepared:
+                    self.assertEqual(prepared.metadata["quality"], "LOW")
+                    self.assertEqual(prepared.metadata["service_requested_quality"], "LOW")
+                    self.assertNotIn("secret", json.dumps(prepared.metadata))
+                self.assertEqual(observed, expected)
+                # The next selection starts at its own ceiling, rather than
+                # retaining the previous track's successful lower rendition.
+                observed.clear()
+                with provider.prepare("123", quality="aac96"):
+                    pass
+                self.assertEqual(observed, ["LOW"])
+
+    def test_auth_network_rate_limit_and_name_lookalikes_never_trigger_fallback(self):
+        class StreamNotAvailable(Exception):
+            pass
+
+        failures = [TimeoutError, ConnectionError, RuntimeError,
+                    type("AuthenticationError", (Exception,), {}),
+                    type("TooManyRequests", (Exception,), {}),
+                    type("StreamNotAvailable", (Exception,), {})]
+        for failure in failures:
+            with self.subTest(failure=failure.__name__), patch.dict("sys.modules", {
+                    "tidalapi.exceptions": SimpleNamespace(StreamNotAvailable=StreamNotAvailable)}), \
+                    self.provider_with_streams([failure("https://cdn.example/?token=secret")]) as (provider, fake, track):
+                with self.assertRaises(TidalError) as raised:
+                    provider.prepare("123", quality="max")
+                self.assertNotIn("secret", str(raised.exception))
+                self.assertEqual(fake.config.quality, "HI_RES_LOSSLESS")
+                track.get_stream.assert_called_once()
+
+    def test_manifest_safety_failures_do_not_trigger_lower_requests(self):
+        unsafe = [bts(codec="AAC", mode="STEREO", encryption="AES"),
+                  bts(codec="AAC", mode="STEREO", url="http://cdn.example/audio?token=secret"),
+                  stream("bad manifest secret"),
+                  stream(MPD.replace('<Representation id="1">',
+                                     '<Representation id="1"><ContentProtection/>'))]
+        for response in unsafe:
+            with self.subTest(response=response), self.provider_with_streams(
+                    lambda: response) as (provider, fake, track):
+                with self.assertRaises(TidalError) as raised:
+                    provider.prepare("123", quality="max")
+                self.assertNotIn("secret", str(raised.exception))
+                self.assertEqual(fake.config.quality, "HI_RES_LOSSLESS")
+                track.get_stream.assert_called_once()
+
+    def test_service_cannot_exceed_or_mislabel_selected_ceiling(self):
+        responses = [("cd", self.rendition("HI_RES_LOSSLESS")),
+                     ("cd", self.rendition("LOSSLESS", bit_depth=24, sample_rate=44100)),
+                     ("cd", self.rendition("LOSSLESS", bit_depth=16, sample_rate=96000)),
+                     ("aac320", self.rendition("LOSSLESS")),
+                     ("aac96", self.rendition("HIGH")),
+                     ("aac96", self.rendition("LOW", codec="FLAC")),
+                     ("aac320", self.rendition("HIGH", codec="MP3")),
+                     ("max", self.rendition("LOSSLESS", codec="AAC")),
+                     ("max", self.rendition("UNKNOWN")),
+                     ("max", self.rendition("HI_RES_LOSSLESS", bit_depth=32)),
+                     ("max", bts())]
+        for selection, response in responses:
+            with self.subTest(selection=selection, response=response), self.provider_with_streams(
+                    lambda: response) as (provider, _, track):
+                with self.assertRaises(TidalError):
+                    provider.prepare("123", quality=selection)
+                track.get_stream.assert_called_once()
+
+    def test_strict_atmos_and_legacy_lossless_requirements_are_preserved(self):
+        with self.provider_with_streams(lambda: bts()) as (provider, fake, _):
+            with provider.prepare("123", require_atmos=False, quality="atmos") as prepared:
+                self.assertTrue(prepared.metadata["atmos_manifest"])
+            self.assertEqual(fake.config.quality, "DOLBY_ATMOS")
+        with self.provider_with_streams(lambda: self.rendition("HIGH")) as (provider, _, track):
+            with self.assertRaisesRegex(TidalError, "no lossless"):
+                provider.prepare("123", require_lossless=True, quality="max")
+            track.get_stream.assert_called_once()
+        for selection in ("aac320", "aac96", "atmos"):
+            with self.subTest(selection=selection), self.provider_with_streams(
+                    lambda: bts()) as (provider, _, track):
+                with self.assertRaises(TidalError):
+                    provider.prepare("123", require_lossless=True, quality=selection)
+                track.get_stream.assert_not_called()
+        for selection in ("", "HIGH", "unknown", [], 96):
+            with self.subTest(selection=selection), self.provider_with_streams(
+                    lambda: bts()) as (provider, fake, track):
+                with self.assertRaises(TidalError):
+                    provider.prepare("123", quality=selection)
+                fake.track.assert_not_called()
+                track.get_stream.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

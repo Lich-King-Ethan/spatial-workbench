@@ -48,6 +48,22 @@ def ready_telemetry():
 
 
 class AudioPureTests(unittest.TestCase):
+    def test_bitrate_is_live_packet_evidence_and_never_cached_after_unload(self):
+        audio = AudioRuntime()
+        audio.process = SimpleNamespace(returncode=None)
+        audio._file_loaded = True
+        audio._properties["audio-bitrate"] = 319_876.5
+        self.assertEqual(audio.status()["bitrate"], 319_876.5)
+        audio._file_loaded = False
+        self.assertIsNone(audio.status()["bitrate"])
+        audio._file_loaded = True
+        for invalid in (None, True, "320000", -1, 0, float("nan"), float("inf")):
+            audio._properties["audio-bitrate"] = invalid
+            self.assertIsNone(audio.status()["bitrate"])
+        audio._properties["audio-bitrate"] = 96_000
+        audio.process.returncode = 0
+        self.assertIsNone(audio.status()["bitrate"])
+
     def test_remote_segment_allowance_is_explicit_and_commas_are_escaped(self):
         arguments = ("/usr/bin/mpv", "/tmp/private/r.yaml", "/tmp/private/m.sock", SINK, 1, 2)
         ordinary = playback_argv(*arguments)

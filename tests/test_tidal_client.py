@@ -384,10 +384,10 @@ class CatalogueNavigation(unittest.TestCase):
                     item.get_albums.assert_called_once_with(limit=10, offset=20)
                     self.assertEqual(result["albums"][0]["id"], "456")
 
-    def test_library_four_kinds_use_bounded_supported_favorites_calls(self):
+    def test_saved_tracks_albums_and_followed_artists_keep_pagination(self):
         self.fake.user = SimpleNamespace(favorites=SimpleNamespace())
         for kind, item in (("tracks", track()), ("albums", self.album),
-                           ("artists", self.artist), ("playlists", self.playlist)):
+                           ("artists", self.artist)):
             with self.subTest(kind=kind):
                 method = Mock(return_value=[item])
                 setattr(self.fake.user.favorites, kind, method)
@@ -395,6 +395,118 @@ class CatalogueNavigation(unittest.TestCase):
                 method.assert_called_once_with(limit=50, offset=50)
                 self.assertEqual(result["items"][0]["id"], str(item.id))
                 self.assertFalse(result["has_more"])
+
+    def folder_page(self, entries, total=None):
+        self.fake.user = SimpleNamespace(id=42)
+        self.fake.config.api_v2_location = "https://api.tidal.com/v2/"
+        self.fake.parse_playlist = Mock(return_value=self.playlist)
+        response = {"items": entries}
+        if total is not None:
+            response["totalNumberOfItems"] = total
+        self.fake.request = SimpleNamespace(request=Mock(return_value=SimpleNamespace(
+            json=Mock(return_value=response))))
+        return response
+
+    @staticmethod
+    def folder_entry(identifier=UUID, name="My folder"):
+        return {"type": "FOLDER", "name": name, "secret": "must-not-escape",
+                "data": {"id": identifier, "totalNumberOfItems": 123,
+                         "signed_url": "https://private.example/?token=must-not-escape"}}
+
+    def test_root_library_includes_owned_saved_and_folder_rows_in_one_page(self):
+        own = {"type": "PLAYLIST", "data": {"uuid": UUID, "type": "USER", "creator": {"id": 42}}}
+        saved = {"type": "PLAYLIST", "data": {"uuid": UUID, "type": "USER", "creator": {"id": 99}}}
+        artist = {"type": "PLAYLIST", "data": {"uuid": UUID, "type": "ARTIST", "creator": {"id": 42}}}
+        self.folder_page([own, saved, artist, self.folder_entry(name="Folder\nname")], total=4)
+        result = self.provider.library("playlists", limit=4)
+        self.fake.request.request.assert_called_once_with(
+            "GET", "my-collection/playlists/folders", base_url="https://api.tidal.com/v2/",
+            params={"folderId": "root", "limit": 4, "offset": 0,
+                    "includeOnly": "", "order": "NAME", "orderDirection": "ASC"})
+        self.assertEqual([item["kind"] for item in result["items"]], ["playlist", "playlist", "playlist", "folder"])
+        self.assertEqual([item["owned"] for item in result["items"][:3]], [True, False, False])
+        self.assertEqual(result["items"][3]["title"], "Foldername")
+        self.assertEqual(result["items"][3]["reference"], "")
+        self.assertEqual(result["items"][3]["item_count"], 123)
+        self.assertEqual(result["total"], 4)
+        self.assertEqual(result["next_offset"], 4)
+        self.assertFalse(result["has_more"])
+        self.assertNotIn("must-not-escape", json.dumps(result))
+        self.assertNotIn("creator", json.dumps(result))
+
+    def test_folder_beyond_first_fifty_and_nested_items_need_no_root_rescan(self):
+        entries = [self.folder_entry(identifier=f"{index:08x}-2222-3333-4444-555555555555")
+                   for index in range(400)]
+        response = self.folder_page([], total=400)
+        self.fake.folder = Mock(side_effect=AssertionError("must not scan first 50 root folders"))
+        found = []
+        for offset in range(0, 400, 50):
+            response["items"] = entries[offset:offset + 50]
+            page = self.provider.library("playlists", limit=50, offset=offset)
+            found.extend(item["id"] for item in page["items"])
+            self.assertEqual(page["has_more"], offset < 350)
+            self.assertEqual(page["next_offset"], offset + 50)
+        self.assertEqual(len(set(found)), 400)
+        response.update(items=[self.folder_entry()], totalNumberOfItems=51)
+        page = self.provider.library("playlists", limit=50, offset=50, folder_id=found[-1])
+        self.assertEqual(page["folder_id"], found[-1])
+        self.assertEqual(page["items"][0]["id"], UUID)
+        self.assertFalse(page["has_more"])
+        request = self.fake.request.request.call_args.kwargs["params"]
+        self.assertEqual((request["folderId"], request["offset"]), (found[-1], 50))
+        self.fake.folder.assert_not_called()
+
+    def test_empty_folder_and_unknown_types_preserve_server_pagination(self):
+        response = self.folder_page([], total=0)
+        result = self.provider.library("playlists", folder_id=UUID)
+        self.assertEqual(result["items"], [])
+        self.assertFalse(result["has_more"])
+        response.update(items=[{"type": "FUTURE_TYPE", "data": {"uuid": UUID,
+                                "secret": "must-not-escape"}}], totalNumberOfItems=2)
+        result = self.provider.library("playlists", limit=1)
+        self.assertEqual(result["items"], [])
+        self.assertTrue(result["has_more"])
+        self.assertEqual(result["next_offset"], 1)
+        self.fake.parse_playlist.assert_not_called()
+        response.update(items=[self.folder_entry()], totalNumberOfItems=2)
+        result = self.provider.library("playlists", limit=1, offset=1)
+        self.assertFalse(result["has_more"])
+        self.assertEqual(result["items"][0]["kind"], "folder")
+
+    def test_malformed_folder_entries_fail_without_exposing_private_response(self):
+        for entry in (None, {"type": "PLAYLIST", "data": {}},
+                      {"type": "FOLDER", "data": {"id": "../must-not-escape"}},
+                      {"type": "PLAYLIST", "data": {"uuid": "https://private/?must-not-escape"}}):
+            with self.subTest(entry=entry):
+                self.folder_page([entry], total=1)
+                with self.assertRaises(TidalError) as caught:
+                    self.provider.library("playlists")
+                self.assertNotIn("must-not-escape", str(caught.exception))
+                self.fake.parse_playlist.assert_not_called()
+
+    def test_folder_id_and_page_bounds_are_checked_before_session_or_network(self):
+        self.provider._ready = Mock()
+        for kwargs in ({"folder_id": "../private"}, {"folder_id": "https://private"},
+                       {"folder_id": UUID, "limit": 51}, {"folder_id": UUID, "offset": 10001},
+                       {"folder_id": None}, {"folder_id": True}):
+            with self.subTest(kwargs=kwargs), self.assertRaises(TidalError):
+                self.provider.library("playlists", **kwargs)
+        with self.assertRaises(TidalError):
+            self.provider.library("artists", folder_id=UUID)
+        self.provider._ready.assert_not_called()
+
+    def test_folder_results_cannot_survive_external_logout(self):
+        self.folder_page([self.folder_entry()], total=1)
+
+        def signed_out_response():
+            TidalProvider(self.path).logout()
+            return {"items": [self.folder_entry()], "totalNumberOfItems": 1}
+
+        self.fake.request.request.return_value.json.side_effect = signed_out_response
+        with self.assertRaises(TidalError):
+            self.provider.library("playlists")
+        self.assertFalse(self.path.exists())
+        self.assertFalse(self.provider._authenticated)
 
     def test_invalid_inputs_do_not_contact_provider(self):
         self.fake.search = Mock()

@@ -13,11 +13,14 @@ is unofficial and still requires your own account and service entitlement.
    expires. Keep the card open while it checks and confirms sign-in. Use **Cancel**
    to abandon a pending attempt, or start again if the code expires.
 3. Use **Search** for tracks, albums, artists and playlists, or **Library** for
-   your favorites and playlists. Artwork and a scrolling results area keep the
-   panel compact; open a collection, browse its pages, and use **Back** to return.
-4. The panel starts with **Lossless**. Choose **Dolby Atmos only** explicitly when
-   you require Atmos, then play a track or collection. The headphone output must
-   be ready. Quality applies to the next selection without changing saved settings.
+   saved tracks, albums, followed artists and your owned/saved playlists. Open
+   playlist folders to reach their contents. Artwork and a scrolling results area
+   keep the panel compact; browse pages and use **Back** to return.
+4. Start with **Max (best available)**, or choose a lower quality from the menu
+   below. Choose **Atmos only** when you require Atmos. Play a track or collection
+   after the headphone output is ready. Quality applies to the next selection and
+   remains with its queue; it does not interrupt the current song. Your selection
+   is saved for this widget and survives closing or recreating its popup.
 5. The built-in **Now playing** area shows the current title, artist, progress,
    opening state and playback errors. Pause, skip or stop there; **Stop** remains
    available while music opens or catalogue requests finish. System media controls
@@ -37,15 +40,31 @@ checks while visible. The attempt lives only in daemon memory, so a daemon resta
 requires starting sign-in again. The browser handles account authorization;
 passwords are never entered into the widget.
 
-## What Atmos means here
+## Choose playback quality
 
-| Choice | What the client asks for | What happens if unavailable |
+| Choice | Requested maximum | If that rendition is unavailable |
 |---|---|---|
-| Lossless | FLAC or ALAC lossless audio | Rejects AAC/MP3 substitution and reports the format error |
-| Atmos only | Original clear E-AC-3 media marked Dolby Atmos | Rejects stereo substitution, encrypted media and unsupported codecs |
+| Max (best available) | Hi-res lossless | Uses CD lossless, then AAC 320 or 96 kbps |
+| High (CD quality) | Lossless, up to 16-bit/44.1 kHz | Uses AAC 320 or 96 kbps |
+| Low (320 kbps) | AAC 320 kbps | Uses AAC 96 kbps |
+| Low (96 kbps) | AAC 96 kbps | Reports unavailable |
+| Atmos only | Original clear E-AC-3 marked Dolby Atmos | Reports unavailable; stereo is not substituted |
+
+These names follow [TIDAL's quality choices](https://support.tidal.com/hc/en-us/articles/17412130162961-HiRes-FLAC-audio).
+The panel shows the delivered service tier and the loaded decoder's format;
+sample rate and packet bitrate appear when the player reports them. A selected
+maximum is not a claim that every track was supplied in that format.
+
+Automatic requests step down only when the service reports a missing rendition.
+Authorization, network, encryption and malformed-manifest errors remain visible.
+The legacy `lossless` API selection still requires lossless audio explicitly.
+
+Lower streaming quality reduces network bandwidth. Bluetooth codec/bitrate and
+the earbuds' own audio processing remain separate device settings; choosing AAC
+here does not change LDAC's radio bitrate.
 
 If an Atmos selection fails, its error now stays visible inside the music panel.
-Choose **Lossless** and press Play yourself to request a different rendition;
+Choose **Max** or another stereo quality and press Play to request a different rendition;
 the client never silently retries Atmos as stereo. A successful catalogue search
 or login does not establish that playback is available for that track.
 
@@ -91,7 +110,7 @@ budslink-spatial tidal logout
 Replace `TRACK_ID` with a real numeric ID. `inspect` checks the source response
 without playing audio or printing a signed media URL. `--stereo` requests an
 ordinary stream explicitly; this older CLI option allows the best available
-non-Atmos format, whereas the widget's **Lossless** choice is strict. Direct `play` uses `tidal_require_atmos` in
+non-Atmos format, whereas the legacy `lossless` API choice is strict. Direct `play` uses `tidal_require_atmos` in
 `~/.config/spatiald/config.toml`; the widget's quality choice applies to that
 play request without rewriting configuration. `spatialctl` is the compatible alias.
 

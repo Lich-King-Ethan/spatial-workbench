@@ -418,7 +418,7 @@ class AudioRuntime:
                 raise AudioError("The player did not establish its control connection")
             self._tasks.append(asyncio.create_task(self._read_ipc()))
             for index, name in enumerate(("track-list", "pause", "time-pos", "duration",
-                    "volume", "audio-params", "audio-out-params"), 1):
+                    "volume", "audio-params", "audio-out-params", "audio-bitrate"), 1):
                 await self.command("observe_property", index, name)
             await self.command("loadfile", media, "replace")
             self._tasks.append(asyncio.create_task(self._heartbeat()))
@@ -746,6 +746,10 @@ class AudioRuntime:
         error = self._error or self.telemetry.error
         if running and self._file_loaded and decoder != "orender" and selected.get("codec") in ("truehd", "eac3", "ac3", "dts"):
             error = error or "Omniphony did not decode this track; ordinary playback is active"
+        bitrate = self._properties.get("audio-bitrate")
+        if (not running or not self._file_loaded or type(bitrate) not in (int, float)
+                or not math.isfinite(bitrate) or bitrate <= 0):
+            bitrate = None
         return {"running": running, "renderer_ready": bool(ready), "source_mode": mode,
                 "pcm_route_allowed": self.allow_pcm_route,
                 "content_format": content if mode != "none" else "none",
@@ -753,6 +757,7 @@ class AudioRuntime:
                 "codec": selected.get("codec") if running else None,
                 "process_id": getattr(self.process, "pid", None) if running else None,
                 "audio_parameters": self._properties.get("audio-params") if running else None,
+                "bitrate": bitrate,
                 "output": self._sink.name if self._sink else None,
                 "error": error, "state": self._reason,
                 "end_reason": self._end_reason, "loaded": self._file_loaded,

@@ -1,5 +1,28 @@
 # Validation evidence and environment history
 
+## TIDAL quality and library update — October 5, 2026
+
+The source and core package suites passed 509 tests. The Companion package's native
+UI passed 8 checks with no skips. Both revision 5 archives match the reviewed code;
+the new per-widget quality schema has the expected Max default.
+New regressions cover quality ceilings, real SDK unavailable-rendition fallback,
+strict legacy formats, queue isolation, observed bitrate freshness, mixed playlist
+folders, raw paging offsets and popup recreation with a retained widget preference.
+
+An authenticated silent probe used the checkout provider and installed mpv. All
+four library categories loaded. Max returned FLAC; CD returned lower-quality AAC,
+which decoded successfully, as did explicit AAC 320 and AAC 96. These are real
+service/player results, without headset output. No root folders were returned for
+this account; nested-folder checks use explicit fixtures, including 400 root
+folders and a nested page beyond the SDK constructor's first 50 items. An initial
+probe accidentally imported the older installed provider; its signature errors
+remain in private evidence, and the corrected probe explicitly used the checkout.
+Installation and installed AAC routing are the next checks. The normal Konsole
+installation prompt is open. Restricted standalone queue-test attempts stalled;
+the exact test passed in 0.01 seconds in both approved unrestricted contexts, with
+and without a private bus. Those interrupted logs are retained alongside the
+passing full/package suites; no assertion was changed to obtain a pass.
+
 ## Installed update and physical checks — October 5, 2026
 
 Core **0.2.3-4** and Companion **0.2.0.spatial0.2.3-4** were installed through normal

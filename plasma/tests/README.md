@@ -26,14 +26,24 @@ The disconnected check verifies real service-state refresh, loss/recovery,
 disabled actions when status is unavailable, and malformed-state handling.
 The TIDAL check clicks the actual sign-in/cancel, search, category, collection,
 favorites, pagination, quality, playback and sign-out controls. It checks the
-bounded results area and Lossless-first selection, delayed playback errors after
+bounded results area and Max-first selection, all five quality request values,
+quality changes applying to a new playback request, owned and saved playlist rows,
+nested playlist folders, empty folders, Back and category changes that return to
+the library root, raw server pagination positions, and delivered stream quality
+with observed decoder format kept separate from the selected limit. It checks delayed playback errors after
 accepted requests, native MPRIS pause/skip and Stop during a pending search, plus
 plain catalog text, browsing while disconnected, playback readiness, provider errors,
 late replies after cancellation or service loss, and recovery of a pending login
 after the actual popup window hides or its card is destroyed and recreated,
 including a delayed sign-in start. Recovery also handles authorization completing
 while closed without resurrecting a session removed by logout. Closing the popup
-preserves the bounded daemon attempt; explicit Cancel and sign-out end it. The
+preserves the bounded daemon attempt; explicit Cancel and sign-out end it. A
+separate check exercises the real FullRepresentation → DevicePage → TIDAL card
+quality binding and selection signals with a persistent fixture owner. Its
+preference survives destruction/recreation, external config updates retain the
+binding, and an unknown saved value displays Max without rewriting it. The
+patched main widget connects that chain to Plasma's per-widget KConfig entry,
+whose default is Max. The
 check requires no further account polling while hidden. No credentials, catalog service,
 web browser, or audio devices are involved. An optional
 `SPATIAL_QML_SCREENSHOT=/absolute/path.png` saves the fixture card for layout review.

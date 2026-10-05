@@ -8,6 +8,27 @@ The repaired packages are installed. October 5 physical testing confirmed clear
 channel direction changes and anchored left/right motion with prediction off.
 Pitch, roll, off-center recenter and prediction comparisons remain pending.
 
+## TIDAL quality and library access
+
+The built revision 5 update defaults to **Max (best available)** instead of requiring a
+lossless rendition. It accepts a lower available stereo format, with explicit
+CD, AAC 320 and AAC 96 ceilings. Atmos remains strict. Queue selections preserve
+their quality, and the panel remembers the user's choice in its own Plasma
+configuration entry. Actual stream tier and observed decoder format are displayed
+separately from the selected maximum.
+
+The library now includes playlist folders alongside owned and saved playlists;
+saved tracks/albums and followed artists retain their own pages. Raw service
+offsets preserve access to later rows when unknown collection types are filtered.
+
+The complete source and package suites passed **509 tests**, and the native UI
+package passed **8 checks with no skips**. Real-account silent probes loaded every library category
+and decoded Max/FLAC, CD-request/AAC, AAC 320 and AAC 96 using the installed player.
+The current account returned no root folders, so nested-folder acceptance uses
+bounded fixtures, including 400 folders and later pages. The normal installation
+prompt is open; a live AAC route check follows activation. These probes do not
+replace physical listening evidence.
+
 ## October 5 physical checks
 
 The connected WF-1000XM5 initially exposed LDAC audio but incomplete Bluetooth
