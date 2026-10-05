@@ -19,3 +19,9 @@ function playable(item) {
     return !!item && ["track", "album", "playlist"].includes(item.kind)
         && typeof item.reference === "string" && item.reference.startsWith("tidal:");
 }
+
+function artworkUrl(value) {
+    // Catalogue artwork has one public CDN origin and identifier-only path.
+    return typeof value === "string"
+        && /^https:\/\/resources\.tidal\.com\/images\/[0-9a-fA-F]{8}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{12}\/320x320\.jpg$/.test(value) ? value : "";
+}

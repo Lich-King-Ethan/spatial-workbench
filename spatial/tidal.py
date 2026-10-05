@@ -318,6 +318,12 @@ class PreparedTrack:
     metadata: dict
     _directory: tempfile.TemporaryDirectory | None = field(default=None, repr=False)
 
+    @property
+    def validated_dash(self) -> bool:
+        """Only our retained, validated DASH file needs remote segment access."""
+        return (self._directory is not None
+                and self.media == str(Path(self._directory.name) / "stream.mpd"))
+
     def cleanup(self):
         if self._directory is not None:
             self._directory.cleanup()

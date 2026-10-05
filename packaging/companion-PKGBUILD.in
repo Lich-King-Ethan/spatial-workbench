@@ -1,7 +1,7 @@
 # Patched source package. Upstream remains the owner of the Companion UI.
 pkgname=plasma-budslink-spatial-companion
 pkgver=0.2.0.spatial@VERSION@
-pkgrel=3
+pkgrel=4
 pkgdesc='BudsLink Spatial Companion native Plasma widget'
 provides=("plasma-budslink-companion-spatial=$pkgver")
 conflicts=('plasma-budslink-companion-spatial')
@@ -10,7 +10,7 @@ url='https://github.com/maniacx/BudsLink-Companion'
 license=('GPL-3.0-or-later')
 depends=('plasma-workspace' 'kirigami' 'bluez-qt' 'qt6-declarative' 'qt6-5compat')
 makedepends=('patch')
-checkdepends=('cmake' 'ninja' 'dbus' 'ki18n' 'ttf-dejavu')
+checkdepends=('cmake' 'extra-cmake-modules' 'ninja' 'dbus' 'ki18n' 'ttf-dejavu')
 optdepends=('flatpak: upstream BudsLink service'
             'budslink-spatial-companion: spatial audio, tracking and TIDAL service')
 _commit=31c6b3802071a6efc6fbd5a821e9c97f97240fd7

@@ -1,5 +1,68 @@
 # Validation evidence and environment history
 
+## Installed update and physical checks — October 5, 2026
+
+Core **0.2.3-4** and Companion **0.2.0.spatial0.2.3-4** were installed through normal
+package prompts. Their full builds passed **489 core tests** and **7 native Qt
+checks, zero skips**. The native UI harness now initializes Plasma's actual theme;
+control contrast, narrow layouts and asynchronous playback-error states are
+checked without changing the user's theme.
+
+The user accepted two completed 30-second physical WF-1000XM5 trials: clear
+channel direction changes, then a front reference that stayed anchored during
+left/right movement. Prediction was off. The measured route retained native 7.1
+through the renderer and EQ to the real headset. Pitch, roll, off-center recenter,
+prediction comparison and interruption/reconnect checks remain pending.
+
+Two incomplete yaw attempts remain in the private evidence: one lacked fresh
+tracking; another exposed a cached previous-player clock in the smoke runner.
+The runner now requires fresh ownership before using that clock. A later pitch
+attempt was blocked by a stale renderer error after normal owned-player shutdown.
+The production repair stops the source producer before capture cleanup and waits
+for that cleanup to finish. Actual renderer failure evidence remains blocking;
+the fix does not discard failures to make the next run pass.
+
+Actual TIDAL authorization and browsing succeeded. An Atmos-only selection
+returned `StreamNotAvailable` from the service, so Atmos acceptance is unproven.
+The separate Lossless request returned clear FLAC DASH, then failed in the player:
+mpv/FFmpeg treated the private local manifest as a local-only source and rejected
+its HTTPS segments. A scoped allowance for retained, validated TIDAL DASH files
+resolved that rejection; the actual returned media decoded for one second with
+null output. This establishes stream decoding, not acoustic/headset playback.
+
+The revised installed stack then passed **all 15 native audio gates**, with every
+check passing and process exit 0. The report is
+`build/local-validation/round2-20261005/installed-native-audio/report.json`.
+Owned PCM stopped cleanly before any fallback cleanup: its source and renderer
+nodes were gone, idle state had no stale error, and 1.11 seconds of supervision
+showed no respawn. The report records `hardware_validated: false`. All **122
+baseline configuration/widget files remain unchanged**, and seven reviewed
+installed source files match their intended versions.
+
+A read-only observation of the user's real TIDAL Lossless playback then passed
+**12 strict snapshots over 10.12 seconds**, with 9.99 seconds of media advance.
+Each fresh audit confirmed actual stereo FLAC source ownership, player routing,
+live renderer readiness, verified EQ and fresh XM5 tracking. The report is
+`build/local-validation/round2-20261005/tidal-readonly-l4yqe14c/report.json`.
+No playback, volume or configuration was changed; the user's music remained
+running. This is not a physical Stop acceptance check.
+
+The user then confirmed: “Yes—music sounds good.” Real account access, the
+lossless route and TIDAL listening are accepted for this playback. Atmos
+streaming, physical Stop and refreshed panel interaction remain pending.
+Physical motion acceptance remains limited to the completed yaw clip; channel
+direction changes were accepted in the separate local clip.
+
+The shell alone was subsequently reloaded to load the new UI. Panel and audio
+services were active, all 122 baseline files were still byte-identical, and
+no relevant QML journal errors appeared. A read-only follow-up ended neutrally
+when the previous player changed. The latest state was idle with a TIDAL
+`StreamNotAvailable` provider error, not a renderer error; the new request's
+cause is unknown. This neither establishes uninterrupted music nor attributes
+the provider error to the shell reload.
+[Current status](../STATUS.md) tracks the next results; raw device/account evidence
+stays in ignored local validation directories.
+
 ## Installed repair and preparation — October 3, 2026
 
 The user authorized the second physical smoke-test preparation. A reviewed
@@ -21,7 +84,7 @@ affected project virtual environment was restored separately; no global pip
 installation was used. Error traces from deliberately rejected D-Bus requests
 remain in the test log; the final suite result was 474 tests, OK, with exit 0.
 
-The installed set is core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony
+The installed set at that point was core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony
 `1.0.0-2`, renderer `0.5.2-3`, bridge `0.7.3-1` and mpv `0.5.2-1`. Five missing
 mpv library packages were restored. `spatiald.service` and WirePlumber are active;
 non-audible `spatial-verify` reports software features PASS and hardware/playback
@@ -79,10 +142,11 @@ earbud's sensor clock or acoustic output delay.
 ## Original cloud environment — September 2026
 
 The initial development runtime was Ubuntu 24.04 with Python 3.12. Development
-continued on the actual CachyOS desktop on September 28 and October 3. The supported
+continued on the actual CachyOS desktop on September 28, October 3 and October 5. The supported
 installation target is Arch/CachyOS with KDE Plasma, PipeWire, WirePlumber and BlueZ.
 This reference retains dated evidence from each environment; [current status](../STATUS.md)
-summarizes the latest branch. Physical checks await the user connecting the headphones.
+summarizes the latest branch. The limitations below describe the original cloud
+runtime, not the current CachyOS desktop.
 
 Pure Python tests, binary protocol fixtures, real child-process lifecycle checks,
 source-matched patch checks, archive checksums, and wheel construction ran
@@ -256,7 +320,7 @@ runtime. It returned exit code 1 and reported the absent user bus, PipeWire,
 player, sensor helper and renderer dependencies. This confirms its blocked-host
 reporting path; it is not a diagnosis of the user's computer.
 
-## Explicitly blocked here
+## Restrictions in the original cloud runtime
 
 `dbus-run-session -- python3 -c 'print("private-bus-started")'` fails before the
 application is started:

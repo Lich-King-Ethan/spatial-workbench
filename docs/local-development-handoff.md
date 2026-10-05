@@ -1,13 +1,93 @@
 # Local development handoff
 
-## Current handoff — October 3, 2026
+## Current handoff — October 5, 2026
 
-The user authorized installation and preparation for a second physical smoke test
-after the code review, **BudsLink Spatial Companion** rename and native TIDAL work.
+Continue on `fix/positioned-surround-audit` and [PR #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
+Preserve local work, saved settings, compatibility identifiers, fish/nano and
+normal package prompts. The user connected the WF-1000XM5 and approved quiet
+physical tests. Check fresh readiness before any new audible run, and coordinate
+movement/listening cues. Testing paused to repair playback failures. The installed
+private audio gate now passes, and the actual TIDAL lossless route and listening
+are accepted. Atmos streaming, physical Stop and refreshed panel interaction
+still need acceptance.
+
+### Installed and tested
+
+Core **0.2.3-4** and Companion **0.2.0.spatial0.2.3-4** are installed through normal
+package prompts. The core package build passed **489 tests**; Companion passed
+**7 native Qt checks with zero skips**. Sony **1.0.0-2**, renderer **0.5.2-3**,
+Harletty bridge **0.7.3-1** and mpv **0.5.2-1** remain the compatible audio group.
+All **15 installed audio gates passed** on private D-Bus/PipeWire with process
+exit 0. The report is `build/local-validation/round2-20261005/installed-native-audio/report.json`.
+Normal owned playback stopped cleanly before fallback cleanup: source and
+renderer nodes were gone, no stale error remained, and supervision did not
+respawn them. The report correctly leaves `hardware_validated` false. All **122
+baseline settings/widget files remain unchanged**; seven reviewed installed
+source files exactly match their intended versions.
+
+| Check | October 5 result |
+|---|---|
+| Quiet channel clip, 30 seconds | User heard clear direction changes; native 7.1 reached renderer, EQ and physical XM5 |
+| Left/right reference, 30 seconds | User reported anchored sound, including while moving; prediction off |
+| Pitch, roll, off-center recenter, prediction comparison | Pending |
+| TIDAL account | Sign-in and browsing work on the actual account |
+| TIDAL Atmos selection | Service returned `StreamNotAvailable`; no Atmos playback established |
+| TIDAL Lossless selection | Real stereo FLAC passed 12 fresh route audits through renderer/EQ to XM5 with fresh tracking; user confirmed the music sounds good |
+| Updated panel | Shell refreshed and active, with no relevant QML journal errors; interactive acceptance pending |
+| Revised installed audio path | All 15 private integration gates pass, including clean shutdown; synthetic endpoints do not establish headset listening |
+
+### Repairs and next steps
+
+Normal owned playback shutdown could leave a stale renderer “stream ended” error,
+which blocked the first pitch attempt. The repair stops the owned source before
+tearing down capture and waits for capture cleanup. Real retained renderer
+failures still block a new start; tests cover both normal shutdown and failure.
+
+Lossless failed for a separate reason: the private local DASH file inherited
+mpv/FFmpeg's local-file protocol allowlist, which rejected its HTTPS segments.
+The repair permits the required file/HTTPS/TLS/TCP protocols only for a retained
+TIDAL manifest that passed URL, codec and encryption checks. The actual returned
+FLAC DASH then decoded one second to null output. Ordinary files and URLs retain
+their previous policy. No Atmos fallback or encryption workaround was added.
+
+The installed music panel now combines Search/Library, artwork, bounded results,
+collection navigation and transport controls. Lossless is the initial choice;
+Atmos-only is explicit. Opening and decoder errors appear inside the panel,
+including errors reported after Play was accepted. Native tests use Plasma's
+actual palette and check contrast; interactive desktop acceptance remains separate.
+
+The read-only TIDAL observation passed 12 strict snapshots over 10.12 seconds,
+with media advancing 9.99 seconds. Every fresh audit confirmed player ownership,
+renderer readiness, EQ and fresh XM5 tracking. The report is
+`build/local-validation/round2-20261005/tidal-readonly-l4yqe14c/report.json`.
+The user then confirmed: “Yes—music sounds good.” This establishes real account,
+lossless route and listening acceptance for this playback. The observation changed
+no playback, volume or settings and left the user's music running; physical Stop
+acceptance remains pending.
+
+Only `plasma-plasmashell.service` was then reloaded to load the updated UI. The
+panel and audio service are active, all 122 baseline files remain byte-identical,
+and no relevant QML errors appeared in the journal. A read-only follow-up ended
+neutrally because the previous player had changed. The latest state is idle with
+a TIDAL `StreamNotAvailable` provider error, not a renderer error. The cause of
+that new request is unknown; do not attribute it to the shell reload or claim
+uninterrupted playback.
+
+Next, check refreshed panel interaction and coordinate any new playback and
+physical Stop test. Then resume pitch, roll, recenter and prediction checks one at a time. Preserve the failed
+attempts and the October 3 package/layout failures below. [Status](../STATUS.md),
+[validation history](validation-environment.md) and [TIDAL usage](tidal-runtime.md)
+carry the evidence boundaries; raw reports remain private under
+`build/local-validation/`.
+
+## Retained installation handoff — October 3, 2026
+
+At this earlier handoff, the user authorized installation and preparation for a
+second physical smoke test after the code review, **BudsLink Spatial Companion** rename and native TIDAL work.
 Stay on `fix/positioned-surround-audit` and preserve local work, settings, normal
-package prompts and runtime identifiers. The headphones are currently disconnected;
-the user will connect them later. Wait for readiness before audible playback or
-movement cues. Physical acceptance is still pending.
+package prompts and runtime identifiers. At that point the headphones were
+disconnected, and the user planned to connect them later. The second physical
+round remained pending.
 
 The reviewed ten-package repair was installed through normal Konsole/fish/nano
 prompts. Core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony `1.0.0-2`,
@@ -44,11 +124,11 @@ installed repair. The intermediate Atmos graph-stability failure in
 `native-pinned-review-20261003.ji60e8_s/` remains unexplained. These reports live
 under `build/local-validation/`; no tests were weakened.
 
-When the user connects the headphones, verify actual A2DP/HID readiness and low
-volume first. September 28's corrected yaw was close to anchored and settled when
-still, with perceived delay. Repeat that baseline, then finish pitch, roll,
+The next step was to verify actual A2DP/HID readiness and low volume after
+connection. September 28's corrected yaw was close to anchored and settled when
+still, with perceived delay. Its baseline needed repeating before pitch, roll,
 off-center recenter and prediction comparisons. Real TIDAL account/Atmos acceptance
-also remains open. Coordinate movement and listening cues with the user.
+was also open. October 5's current results above supersede that waiting state.
 
 Start with [current status](../STATUS.md), [architecture](architecture.md),
 [timing](head-tracking-timing.md), [TIDAL](tidal-runtime.md) and

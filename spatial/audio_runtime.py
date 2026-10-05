@@ -117,7 +117,7 @@ def config_text(bridge_path):
 
 
 def playback_argv(binary, config, ipc, sink, osc_port, monitor_port, library_path=None,
-                  *, allow_pcm_route=False):
+                  *, allow_pcm_route=False, validated_tidal_dash=False):
     if not isinstance(sink, Sink) or not sink.usable:
         raise AudioError("Waiting for the selected headphones' A2DP output")
     args = [binary, "--no-config", "--load-scripts=no", "--ytdl=no",
@@ -134,6 +134,12 @@ def playback_argv(binary, config, ipc, sink, osc_port, monitor_port, library_pat
             "--ad-orender-osc-monitor-target=127.0.0.1"]
     if library_path:
         args.append("--ad-orender-library=" + str(library_path))
+    if validated_tidal_dash is True:
+        # FFmpeg otherwise inherits file,crypto,data from our private local MPD
+        # and rejects its HTTPS segments. mpv's key/value parser needs a length
+        # escape so these commas belong to one value. This allowance is only
+        # supplied by a retained TIDAL manifest after its URLs/DRM were checked.
+        args.append("--demuxer-lavf-o=protocol_whitelist=%18%file,https,tls,tcp")
     return args
 
 
@@ -338,7 +344,7 @@ class AudioRuntime:
         return {"available": True, "binary": binary,
                 "reason": "Player features found; engine ABI and binaural output are checked during playback"}
 
-    async def start(self, media, sink, *, require_spatial=False):
+    async def start(self, media, sink, *, require_spatial=False, validated_tidal_dash=False):
         """Start a real player and load media over private IPC, keeping URLs out of argv."""
         media = media_source(media)
         if not isinstance(sink, Sink) or not sink.usable:
@@ -387,7 +393,8 @@ class AudioRuntime:
                 control_port = reservation.getsockname()[1]
             self.telemetry.target = ("127.0.0.1", control_port)
             args = playback_argv(probe["binary"], config, ipc, sink, control_port,
-                                 monitor_port, self.library_path, allow_pcm_route=self.allow_pcm_route)
+                                 monitor_port, self.library_path, allow_pcm_route=self.allow_pcm_route,
+                                 validated_tidal_dash=validated_tidal_dash)
             env = os.environ.copy()
             env["OMNIPHONY_OSC_BIND"] = "127.0.0.1"
             env["PIPEWIRE_PROPS"] = json.dumps({"node.dont-fallback": True,

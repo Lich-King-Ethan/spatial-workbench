@@ -12,12 +12,21 @@ is unofficial and still requires your own account and service entitlement.
    when the browser opens; your pending sign-in remains available until its code
    expires. Keep the card open while it checks and confirms sign-in. Use **Cancel**
    to abandon a pending attempt, or start again if the code expires.
-3. Once signed in, search tracks, albums, artists or playlists, or open your saved
-   favorites. Browse a collection and use its page/back controls as needed.
-4. Choose **Lossless** or **Atmos only**, then play a track or supported collection.
-   Playback requires the actual headphone route to be ready.
-5. Use the ordinary playback card or system media controls to pause, seek and
-   move through the queue. **Sign out** removes this application's saved session.
+3. Use **Search** for tracks, albums, artists and playlists, or **Library** for
+   your favorites and playlists. Artwork and a scrolling results area keep the
+   panel compact; open a collection, browse its pages, and use **Back** to return.
+4. The panel starts with **Lossless**. Choose **Dolby Atmos only** explicitly when
+   you require Atmos, then play a track or collection. The headphone output must
+   be ready. Quality applies to the next selection without changing saved settings.
+5. The built-in **Now playing** area shows the current title, artist, progress,
+   opening state and playback errors. Pause, skip or stop there; **Stop** remains
+   available while music opens or catalogue requests finish. System media controls
+   also work. **Sign out** removes this application's saved session.
+
+The client uses the same spatial playback engine as local files, so there is no
+second TIDAL application to manage. It offers search, favorites, collection
+browsing and playback; personalized home feeds, downloads and queue editing are
+not implemented. Account authorization still uses TIDAL's own browser page.
 
 Opening the card reads local account state. Checking a saved session or starting
 sign-in is explicit; the daemon never launches an authorization browser on its
@@ -35,15 +44,36 @@ passwords are never entered into the widget.
 | Lossless | FLAC or ALAC lossless audio | Rejects AAC/MP3 substitution and reports the format error |
 | Atmos only | Original clear E-AC-3 media marked Dolby Atmos | Rejects stereo substitution, encrypted media and unsupported codecs |
 
+If an Atmos selection fails, its error now stays visible inside the music panel.
+Choose **Lossless** and press Play yourself to request a different rendition;
+the client never silently retries Atmos as stereo. A successful catalogue search
+or login does not establish that playback is available for that track.
+
 A catalogue Atmos badge is only a hint. The returned manifest must satisfy the
 source checks, and the actual decoder must report spatial objects before the
 application confirms Atmos. Nothing turns a stereo TIDAL stream into object audio.
 
-As checked October 3, 2026, [TIDAL's official support page](https://support.tidal.com/hc/en-us/articles/360004255778-Dolby-Atmos)
+As checked October 5, 2026, [TIDAL's official support page](https://support.tidal.com/hc/en-us/articles/360004255778-Dolby-Atmos)
 (updated March 12) excludes desktop clients from its supported Atmos playback.
 This unofficial client's strict request path does **not** guarantee availability
-or bypass account, platform, region or encryption restrictions. Real account and
-Atmos playback acceptance remain pending; the software tests use fixtures.
+or bypass account, platform, region or encryption restrictions. Real account
+authorization and browsing were confirmed on October 5. The selected track's
+Atmos request was rejected by the service; Atmos streaming remains unaccepted.
+
+## Playback repair — October 5
+
+Lossless playback exposed a separate local failure: FFmpeg rejected HTTPS segments
+referenced by TIDAL's validated local DASH manifest. Core revision 4 supplies the
+required protocol list only for a retained manifest prepared by the TIDAL provider.
+Other local files and stream requests keep their existing behavior, and manifest,
+codec and encryption checks remain enforced. The same real FLAC rendition failed
+without this option and decoded successfully with it in a silent player probe.
+After installation, a ten-second read-only observation confirmed real TIDAL FLAC
+stereo through the binaural renderer, EQ and physical XM5 output with fresh head
+tracking. All 12 independent graph observations passed without changing playback
+or volume. The user confirmed that the music sounds good. Plasma's panel was
+reloaded afterward. Interactive panel acceptance, physical Stop and Atmos
+streaming remain pending; see [current status](../STATUS.md).
 
 ## CLI and settings
 

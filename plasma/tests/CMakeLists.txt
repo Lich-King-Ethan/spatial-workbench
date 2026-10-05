@@ -7,6 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_AUTOMOC ON)
 find_package(Qt6 6.6 REQUIRED COMPONENTS Quick Qml Test DBus)
 find_package(KF6I18n 6.8 REQUIRED)
+find_package(KF6KirigamiPlatform REQUIRED)
+find_package(KF6Config REQUIRED)
+find_package(Plasma 6.7 REQUIRED)
 
 set(SPATIAL_COMPANION_QML_DIR "" CACHE PATH "Patched Companion contents/ui directory")
 foreach(card SpatialControls PlaybackControls LiveAudioControls SpatialStatus FullRepresentation TidalControls)
@@ -17,6 +20,7 @@ endforeach()
 
 add_executable(spatial-qml-smoke qml-smoke.cpp)
 target_link_libraries(spatial-qml-smoke PRIVATE
-    Qt6::Quick Qt6::Qml Qt6::Test Qt6::DBus KF6::I18nQml)
+    Qt6::Quick Qt6::Qml Qt6::Test Qt6::DBus KF6::I18nQml
+    KF6::KirigamiPlatform Plasma::Plasma)
 target_compile_definitions(spatial-qml-smoke PRIVATE
     SPATIAL_COMPANION_QML_DIR="${SPATIAL_COMPANION_QML_DIR}")

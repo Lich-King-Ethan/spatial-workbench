@@ -423,6 +423,160 @@ class LiveAsyncTests(unittest.IsolatedAsyncioTestCase):
             await live.stop()
             self.assertIn(("wpctl", "set-mute", "10", "0"), events)
 
+    async def test_owned_source_stop_quiesces_real_watcher_before_source_then_route(self):
+        live = running()
+        observing, cancelled = asyncio.Event(), asyncio.Event()
+        events = []
+        async def capture():
+            if asyncio.current_task() is live._monitor:
+                observing.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            return graph()
+        async def stop_source():
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(live._route.applied)
+            self.assertIsNotNone(live.process)
+            events.append("source stopped")
+            await asyncio.sleep(0)
+        async def restore(objects):
+            self.assertEqual(events, ["source stopped"])
+            events.append("route restored")
+        async def terminate(process):
+            events.append("renderer stopped")
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", capture), \
+                patch("spatial.live_audio.stop_child", terminate):
+            monitor = live._monitor = asyncio.create_task(live._watch())
+            await observing.wait()
+            await live.stop_owned_source(stop_source)
+        self.assertTrue(monitor.cancelled())
+        self.assertEqual(events, ["source stopped", "route restored", "renderer stopped"])
+        self.assertEqual(live.status()["error"], "")
+        self.assertFalse(live.status()["running"])
+
+    async def test_owned_stop_cancels_real_blocked_start_before_waiting_for_live_lock(self):
+        live = LiveAudio()
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+        stopped = []
+        async def probe():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        async def stop_source():
+            self.assertTrue(cancelled.is_set())
+            stopped.append(True)
+        with patch.object(live, "probe", probe):
+            await live.start(SINK, "100", graph())
+            await entered.wait()
+            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+        self.assertEqual(stopped, [True])
+        self.assertEqual(live.status()["state"], "idle")
+        self.assertEqual(live.status()["error"], "")
+
+    async def test_owned_source_stop_survives_startup_cleanup_and_preserves_real_errors(self):
+        live = running()
+        live._state = "starting"
+        live._error = "existing real renderer failure"
+        entered = asyncio.Event()
+        events = []
+        async def launch():
+            async with live._lock:
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except BaseException:
+                    # The real startup's cancellation cleanup owns this lock.
+                    await live._stop("setup failed")
+                    raise
+        async def stop_source():
+            self.assertTrue(live._route.applied)
+            events.append("source stopped")
+        async def restore(objects):
+            self.assertEqual(events, ["source stopped"])
+            events.append("route restored")
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock):
+            live._launch_task = asyncio.create_task(launch())
+            await entered.wait()
+            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+        self.assertEqual(events, ["source stopped", "route restored"])
+        self.assertEqual(live.status()["error"], "existing real renderer failure")
+        self.assertIsNone(live._pending_source_stop)
+
+    async def test_owned_source_stop_failure_mutes_before_releasing_route(self):
+        live = running()
+        events = []
+        async def stop_source():
+            raise OSError("cannot stop source")
+        async def command(*args, **kwargs):
+            events.append(args)
+            return "Volume: 1.00 [MUTED]\n" if args[1] == "get-volume" else ""
+        async def restore(objects):
+            self.assertIn(("wpctl", "set-mute", "10", "1"), events)
+            events.append(("restore",))
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                patch("spatial.live_audio._command", command), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock):
+            with self.assertRaisesRegex(OSError, "cannot stop source"):
+                await live.stop_owned_source(stop_source)
+        self.assertIn(("restore",), events)
+        self.assertIn("Could not stop owned playback", live.status()["error"])
+
+    async def test_owned_source_failure_in_other_cleanup_is_not_swallowed_or_unmuted(self):
+        for startup in (True, False):
+            with self.subTest(startup=startup):
+                live = running()
+                entered, release = asyncio.Event(), asyncio.Event()
+                commands = []
+                async def stop_source():
+                    raise OSError("source remains alive")
+                async def command(*args, **kwargs):
+                    commands.append(args)
+                    return "Volume: 1.00 [MUTED]\n" if args[1] == "get-volume" else ""
+                async def launch():
+                    async with live._lock:
+                        entered.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except BaseException:
+                            await live._stop("setup failed")
+                            raise
+                async def monitor():
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        entered.set()
+                        await release.wait()
+                with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                        patch("spatial.live_audio._command", command), \
+                        patch("spatial.live_audio.stop_child", new_callable=AsyncMock), \
+                        patch.object(live._route, "restore", new_callable=AsyncMock):
+                    if startup:
+                        live._launch_task = asyncio.create_task(launch())
+                        await entered.wait()
+                        with self.assertRaisesRegex(OSError, "source remains alive"):
+                            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+                    else:
+                        live._monitor = asyncio.create_task(monitor())
+                        await asyncio.sleep(0)
+                        earlier = asyncio.create_task(live.stop("connection lost"))
+                        await entered.wait()
+                        owned = asyncio.create_task(live.stop_owned_source(stop_source))
+                        await asyncio.sleep(0)
+                        release.set()
+                        results = await asyncio.wait_for(asyncio.gather(earlier, owned, return_exceptions=True), .5)
+                        self.assertTrue(all(isinstance(result, OSError) for result in results))
+                self.assertIn(("wpctl", "set-mute", "10", "1"), commands)
+                self.assertNotIn(("wpctl", "set-mute", "10", "0"), commands)
+                self.assertIn("Could not stop owned playback", live.status()["error"])
+
     async def test_failed_mute_verification_retains_capture_and_route(self):
         live = running()
         self.assertEqual(live.audit(graph())["state"], "ready")

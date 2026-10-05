@@ -3,7 +3,11 @@
 The Companion package's `check()` compiles this Qt Test executable and runs it
 offscreen on a new private D-Bus session. It loads the **patched upstream** cards,
 including the original `WidgetCard.qml`, actual Plasma/Kirigami/DBus QML plugins,
-Qt's file-dialog type, and a real KI18n translation context. It does not substitute
+Qt's file-dialog type, and a real KI18n translation context. Each engine uses
+`Plasma::setupPlasmaStyle`, as the shell does, so native Kirigami colors match
+Plasma's SVG controls. The fixture window uses the native background color.
+Enabled music controls must use the Plasma theme plugin with readable foreground
+and background contrast; no application color scheme is hardcoded or changed. It does not substitute
 QML components or replace imports with test doubles.
 
 The explicitly named `ControlFixture` provides a `State` property,
@@ -21,8 +25,10 @@ exact application-stream identifiers, and the full disconnected representation.
 The disconnected check verifies real service-state refresh, loss/recovery,
 disabled actions when status is unavailable, and malformed-state handling.
 The TIDAL check clicks the actual sign-in/cancel, search, category, collection,
-favorites, pagination, quality, playback and sign-out controls. It checks plain
-catalog text, browsing while disconnected, playback readiness, provider errors,
+favorites, pagination, quality, playback and sign-out controls. It checks the
+bounded results area and Lossless-first selection, delayed playback errors after
+accepted requests, native MPRIS pause/skip and Stop during a pending search, plus
+plain catalog text, browsing while disconnected, playback readiness, provider errors,
 late replies after cancellation or service loss, and recovery of a pending login
 after the actual popup window hides or its card is destroyed and recreated,
 including a delayed sign-in start. Recovery also handles authorization completing
@@ -35,8 +41,9 @@ Component errors and **every warning
 reported by the QML engine** fail the test. General platform diagnostic messages
 remain visible; there is no warning suppression list.
 
-Arch dependencies come from the Companion recipe, plus `cmake`, `ninja`, `dbus`,
-`ki18n`, and `ttf-dejavu`. To run against an already patched checkout:
+Arch dependencies come from the Companion recipe, including Plasma 6.7 or later,
+Kirigami Platform, `cmake`, `extra-cmake-modules`, `ninja`, `dbus`, `ki18n`, and
+`ttf-dejavu`. To run against an already patched checkout:
 
 ```sh
 cmake -S plasma/tests -B /tmp/spatial-qml-build -G Ninja \

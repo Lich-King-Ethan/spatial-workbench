@@ -3,11 +3,10 @@
 Target: BudsLink Companion `Plasma-Widget` commit
 `31c6b3802071a6efc6fbd5a821e9c97f97240fd7` (metadata version 0.2.0).
 
-`companion.patch` adds `SpatialControls.qml`, `PlaybackControls.qml`, and the
-shared playback presentation helper, plus `LiveAudioControls.qml`, then inserts
-all three native cards into `DevicePage.qml`.
-It reuses upstream's `WidgetCard`, Qt checkbox/label layout, Kirigami spacing,
-Plasma controls, session D-Bus module, and service watcher. No icon assets.
+`companion.patch` adds native tracking, local playback, application-audio and
+TIDAL cards to the pinned upstream widget. It reuses `WidgetCard`, Plasma controls,
+Kirigami spacing/icons and the session D-Bus module. The music client displays
+public TIDAL artwork; it does not bundle another player or an embedded web app.
 The project packaging applies the patch to a pinned downstream Companion package;
 do not edit a package-owned plasmoid directory manually.
 
@@ -58,3 +57,24 @@ Selection is retained by the observed stream serial; stream disappearance clears
 it. Start and Stop call the live provider explicitly, show provider readiness and
 errors, and label captured content as binaural PCM audio. No Atmos label is
 inferred from an application's PCM output.
+
+## TIDAL music panel
+
+The native mini-client combines Search and Library navigation, collection pages,
+artwork, a bounded scrolling list and integrated playback controls. Lossless is
+the initial UI selection; Atmos-only remains an explicit strict request. The
+player reports asynchronous loading and stream/decoder errors within the same
+music panel, including failures that arrive after Play was accepted. Playback
+uses the existing MPRIS interface and control-service Stop, independent of pending
+catalogue requests. Album artwork uses only the provider's public CDN identifier
+paths. No remote artwork requests are made while the popup is hidden.
+
+Device authorization remains on TIDAL's own browser page. Closing the popup pauses
+polling; reopening or recreating the card resumes the bounded pending login.
+Search, favorites, albums, artists and playlists are supported. Personalized home
+feeds, offline downloads and queue editing are outside the current client.
+
+The private native Qt gate checks delayed playback errors, explicit quality with
+no fallback, bounded results, actual transport calls, readiness, and existing
+login cancellation/browser-handoff recovery. It does not prove authenticated
+stream access or interactive Plasma appearance. See the [client guide](../docs/tidal-runtime.md).

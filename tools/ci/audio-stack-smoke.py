@@ -120,14 +120,32 @@ def native_surround_format(node, *, ordered=True):
                  and set(formats[0].get("position", [])) == set(SURROUND_CHANNELS)))
 
 
-def owned_outputs(objects, pid):
+def owned_nodes(objects, pid):
     clients = {str(obj["id"]) for obj in objects
                if obj.get("type") == "PipeWire:Interface:Client"
                and str(props(obj).get("application.process.id")) == str(pid)}
     return [obj for obj in nodes(objects).values()
-            if props(obj).get("media.class") == "Stream/Output/Audio"
-            and (str(props(obj).get("application.process.id")) == str(pid)
-                 or str(props(obj).get("client.id")) in clients)]
+            if str(props(obj).get("application.process.id")) == str(pid)
+            or str(props(obj).get("client.id")) in clients]
+
+
+def owned_outputs(objects, pid):
+    return [obj for obj in owned_nodes(objects, pid)
+            if props(obj).get("media.class") == "Stream/Output/Audio"]
+
+
+def verify_owned_pcm_stop_state(state, automatic_capture):
+    """Reject stale capture/error state before any integration-test rescue stop."""
+    audio, live = state.get("audio", {}), state.get("live", {})
+    require(state.get("loading") is False and audio.get("running") is False
+            and audio.get("process_id") is None,
+            f"Owned PCM Stop returned with an active player: {state}")
+    require(live.get("state") == "idle" and live.get("running") is False
+            and live.get("renderer_ready") is False and live.get("process_id") is None
+            and automatic_capture is False,
+            f"Owned PCM Stop returned before automatic capture stopped: {state}")
+    require(not state.get("playback_error") and not audio.get("error") and not live.get("error"),
+            f"Owned PCM Stop retained an error: {state}")
 
 
 def write_owned_pcm_fixture(path):
@@ -972,6 +990,39 @@ class Gate:
             report["input_capture"] = str(input_path.relative_to(self.report_dir))
             report["post_eq_capture"] = str(output_path.relative_to(self.report_dir))
             report["runtime"] = runtime.state()
+            renderer_pid = self.live.status().get("process_id")
+            require(type(renderer_pid) is int and renderer_pid > 0,
+                    "Owned PCM renderer identity disappeared before Stop validation")
+            stopped = report["stop"] = {"status": "failed", "player_pid": player_pid,
+                                       "renderer_pid": renderer_pid, "observations": []}
+            await runtime.stop_playback()
+            runtime_healthy()
+            stopped["state_after_stop"] = runtime.state()
+            verify_owned_pcm_stop_state(stopped["state_after_stop"], runtime._live_automatic)
+
+            def stop_nodes_removed(objects):
+                runtime_healthy()
+                verify_owned_pcm_stop_state(runtime.state(), runtime._live_automatic)
+                return not (owned_nodes(objects, player_pid) or owned_nodes(objects, renderer_pid))
+
+            # PipeWire removal events may trail process exit. No extra stop is
+            # allowed while waiting for those events or proving continued idle.
+            await self.until("owned-pcm-stop-removed-nodes", stop_nodes_removed, timeout=3)
+            idle_started = time.monotonic()
+            while True:
+                objects = await self.snapshot()
+                current = runtime.state()
+                stopped["observations"].append({"elapsed_seconds": time.monotonic() - idle_started,
+                    "state": current, "automatic_capture": runtime._live_automatic,
+                    "player_node_ids": [obj["id"] for obj in owned_nodes(objects, player_pid)],
+                    "renderer_node_ids": [obj["id"] for obj in owned_nodes(objects, renderer_pid)]})
+                require(stop_nodes_removed(objects), "Owned PCM nodes reappeared after Stop")
+                if time.monotonic() - idle_started >= 1:
+                    break
+                await self.observe(.1)
+            stopped.update(status="passed", supervisors_alive=True,
+                           idle_observation_seconds=time.monotonic() - idle_started,
+                           validated_before_fallback_cleanup=True)
         except BaseException as exc:
             report["error"] = f"{type(exc).__name__}: {exc}"
             if hasattr(exc, "report"):

@@ -830,7 +830,7 @@
 +}
 --- /dev/null
 +++ b/contents/ui/TidalControls.qml
-@@ -0,0 +1,463 @@
+@@ -0,0 +1,674 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +pragma ComponentBehavior: Bound
 +
@@ -842,6 +842,7 @@
 +import org.kde.kirigami as Kirigami
 +import org.kde.plasma.workspace.dbus as DBus
 +import "TidalState.js" as TidalState
++import "PlaybackState.js" as PlaybackState
 +
 +Item {
 +    id: root
@@ -856,8 +857,19 @@
 +    property var location: ({mode: "search", query: ""})
 +    property var history: []
 +    property int categoryIndex: 0
-+    property string quality: "atmos"
++    property string quality: "lossless"
 +    property string errorText: ""
++    property string transportError: ""
++    property bool transportBusy: false
++    property int transportSerial: 0
++    property DBus.DBusPendingReply transportReply
++    property var transportFinished: null
++    readonly property var runtime: snapshot.runtime || ({})
++    readonly property var audio: runtime.audio || ({})
++    readonly property var track: runtime.track || ({})
++    readonly property string playbackFailure: audio.error || runtime.playback_error || ""
++    readonly property string failure: errorText || transportError || playbackFailure
++    readonly property string mediaService: "org.mpris.MediaPlayer2.spatiald"
 +    property bool busy: false
 +    property int requestSerial: 0
 +    property DBus.DBusPendingReply pendingReply
@@ -878,13 +890,18 @@
 +        busType: DBus.BusType.Session
 +        watchedService: root.service
 +        onRegisteredChanged: {
-+            root.invalidate();
++            root.invalidate(); root.releaseTransport();
 +            root.snapshot = ({}); root.account = ({}); root.login = ({});
 +            root.page = ({}); root.history = [];
 +            if (registered && root.clientActive) {
 +                props.updateAll(); root.refreshAccount(false, true);
 +            }
 +        }
++    }
++    DBus.DBusServiceWatcher {
++        id: mediaWatcher
++        busType: DBus.BusType.Session
++        watchedService: root.mediaService
 +    }
 +    DBus.Properties {
 +        id: props
@@ -952,7 +969,7 @@
 +        // Opening the browser hides Plasma's popup and can destroy this card.
 +        // The daemon retains the bounded attempt; only explicit Cancel/sign-out
 +        // abandon it. A recreated card recovers instructions by direct reply.
-+        root.invalidate(false); root.login = ({});
++        root.invalidate(false); root.releaseTransport(); root.login = ({});
 +    }
 +    function request(action, payload, callback) {
 +        if (!root.serviceAvailable || !root.clientActive || root.busy) return;
@@ -1033,7 +1050,7 @@
 +        else payload.kind = root.category;
 +        root.request(action, payload, result => {
 +            if (result.error) return;
-+            if (remember) root.history = root.history.concat([old]);
++            if (remember) root.history = root.history.concat([old]).slice(-20);
 +            root.location = destination; root.page = result;
 +            if (action === "collection") root.categoryIndex = 0;
 +        });
@@ -1052,10 +1069,80 @@
 +        root.page = previous.page; root.categoryIndex = previous.categoryIndex;
 +    }
 +    function play(item) {
-+        if (!root.canPlay || !TidalState.playable(item)) return;
++        if (!root.canPlay || root.runtime.loading || !TidalState.playable(item)) return;
 +        root.request("play", {reference: item.reference, quality: root.quality}, () => props.updateAll());
 +    }
 +    function paginate(offset) { root.navigate(Object.assign({}, root.location, {offset: offset}), false); }
++
++    function showSearch() {
++        if (root.busy) return;
++        if (searchInput.text.trim()) root.search();
++        else {
++            root.history = root.history.concat([{location: root.location, page: root.page,
++                categoryIndex: root.categoryIndex}]).slice(-20);
++            root.location = ({mode: "search", query: ""}); root.page = ({});
++        }
++    }
++    function releaseTransport() {
++        root.transportSerial += 1;
++        if (root.transportReply) {
++            if (root.transportFinished) root.transportReply.finished.disconnect(root.transportFinished);
++            root.transportReply.destroy();
++        }
++        root.transportReply = null; root.transportFinished = null; root.transportBusy = false;
++    }
++    function transport(member) {
++        if (!root.serviceAvailable || !root.clientActive || (root.transportBusy && member !== "Stop")) return;
++        if (member !== "Stop" && !mediaWatcher.registered) return;
++        root.releaseTransport(); root.transportBusy = true; root.transportError = "";
++        const serial = root.transportSerial;
++        const stop = member === "Stop";
++        const reply = DBus.SessionBus.asyncCall({service: stop ? root.service : root.mediaService,
++            path: stop ? root.objectPath : "/org/mpris/MediaPlayer2",
++            iface: stop ? root.service : "org.mpris.MediaPlayer2.Player", member: member, arguments: []});
++        root.transportReply = reply;
++        const finished = () => {
++            if (serial === root.transportSerial) {
++                root.transportReply = null; root.transportFinished = null; root.transportBusy = false;
++                if (reply.isError) root.transportError = reply.error.message || i18n("Playback could not be changed.");
++                props.updateAll();
++            }
++            reply.destroy();
++        };
++        root.transportFinished = finished;
++        if (reply.isFinished) finished(); else reply.finished.connect(finished);
++    }
++    function playbackText() {
++        if (root.playbackFailure) return i18n("Playback unavailable");
++        if (root.runtime.loading) return i18n("Opening music…");
++        if (root.audio.running && !root.audio.loaded) return i18n("Loading audio…");
++        if (root.audio.running) {
++            const state = root.audio.paused ? i18n("Paused") : i18n("Playing");
++            // Only actual decoded objects establish Atmos; catalog badges cannot.
++            return PlaybackState.sourceKind(root.audio) === "atmos" ? state + " · " + i18n("Dolby Atmos") : state;
++        }
++        return i18n("Choose music to play");
++    }
++
++    component Cover: Item {
++        property string artwork: ""
++        implicitWidth: 44
++        implicitHeight: 44
++        Kirigami.Icon {
++            anchors.fill: parent
++            source: "media-optical-audio"
++            visible: cover.status !== Image.Ready
++        }
++        Image {
++            id: cover
++            anchors.fill: parent
++            source: root.clientActive ? TidalState.artworkUrl(parent.artwork) : ""
++            asynchronous: true
++            fillMode: Image.PreserveAspectFit
++            sourceSize.width: 160
++            sourceSize.height: 160
++        }
++    }
 +
 +    WidgetCard {
 +        id: card
@@ -1129,11 +1216,37 @@
 +            ColumnLayout {
 +                visible: root.authenticated
 +                Layout.fillWidth: true
++                spacing: Kirigami.Units.smallSpacing * 2
 +                RowLayout {
++                    Layout.fillWidth: true
++                    PC.Button {
++                        objectName: "tidalSearchTab"
++                        text: i18n("Search")
++                        icon.name: "edit-find"
++                        checkable: true
++                        checked: root.location.mode === "search"
++                        enabled: !root.busy
++                        Layout.fillWidth: true
++                        onClicked: root.showSearch()
++                    }
++                    PC.Button {
++                        objectName: "tidalLibrary"
++                        text: i18n("Library")
++                        icon.name: "folder-favorites"
++                        checkable: true
++                        checked: root.location.mode === "library"
++                        enabled: !root.busy
++                        Layout.fillWidth: true
++                        onClicked: root.navigate({mode: "library"}, true)
++                    }
++                }
++                RowLayout {
++                    visible: root.location.mode === "search"
++                    Layout.fillWidth: true
 +                    PC.TextField {
 +                        id: searchInput
 +                        objectName: "tidalSearchInput"
-+                        placeholderText: i18n("Search TIDAL")
++                        placeholderText: i18n("Artists, albums, songs…")
 +                        Accessible.name: i18n("Search TIDAL")
 +                        Layout.fillWidth: true
 +                        selectByMouse: true
@@ -1147,37 +1260,148 @@
 +                        onClicked: root.search()
 +                    }
 +                }
++                PC.ComboBox {
++                    objectName: "tidalCategory"
++                    model: root.location.mode === "collection" ? [i18n("Tracks"), i18n("Albums")]
++                        : [i18n("Tracks"), i18n("Albums"), i18n("Artists"), i18n("Playlists")]
++                    Accessible.name: i18n("Browse category")
++                    Layout.fillWidth: true
++                    currentIndex: root.categoryIndex
++                    enabled: !root.busy && (root.location.mode !== "collection" || (!!root.page.item && root.page.item.kind === "artist"))
++                    onActivated: {
++                        root.categoryIndex = currentIndex;
++                        if (root.location.mode === "library") root.navigate({mode: "library"}, false);
++                    }
++                }
 +                RowLayout {
-+                    PC.ComboBox {
-+                        objectName: "tidalCategory"
-+                        model: root.location.mode === "collection" ? [i18n("Tracks"), i18n("Albums")]
-+                            : [i18n("Tracks"), i18n("Albums"), i18n("Artists"), i18n("Playlists")]
-+                        Accessible.name: i18n("Browse category")
++                    Layout.fillWidth: true
++                    PC.ToolButton {
++                        objectName: "tidalBack"
++                        icon.name: "go-previous"
++                        Accessible.name: i18n("Back")
++                        enabled: !root.busy && root.history.length > 0
++                        onClicked: root.back()
++                    }
++                    Cover {
++                        artwork: root.page.item ? root.page.item.artwork || "" : ""
++                        visible: !!root.page.item
++                        Layout.preferredWidth: 48
++                        Layout.preferredHeight: 48
++                    }
++                    PC.Label {
++                        text: root.page.item ? root.page.item.title : root.location.mode === "library" ? i18n("Your favorites") : root.location.query || i18n("Find your next listen")
++                        textFormat: Text.PlainText
++                        wrapMode: Text.WrapAnywhere
++                        maximumLineCount: 2
++                        elide: Text.ElideRight
++                        font.bold: true
 +                        Layout.fillWidth: true
-+                        currentIndex: root.categoryIndex
-+                        enabled: !root.busy && (root.location.mode !== "collection" || (!!root.page.item && root.page.item.kind === "artist"))
-+                        onActivated: {
-+                            root.categoryIndex = currentIndex;
-+                            if (root.location.mode === "library") root.navigate({mode: "library"}, false);
++                    }
++                    PC.ToolButton {
++                        objectName: "tidalPlayCollection"
++                        icon.name: "media-playback-start"
++                        visible: TidalState.playable(root.page.item)
++                        enabled: root.canPlay && !root.busy && !root.runtime.loading
++                        Accessible.name: i18n("Play collection")
++                        onClicked: root.play(root.page.item)
++                    }
++                }
++                QQC2.ScrollView {
++                    id: resultsView
++                    objectName: "tidalResults"
++                    Layout.fillWidth: true
++                    Layout.preferredHeight: 240
++                    clip: true
++                    contentWidth: availableWidth
++                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
++                    ColumnLayout {
++                        width: resultsView.availableWidth
++                        spacing: Kirigami.Units.smallSpacing * 2
++                        Repeater {
++                            model: root.rows
++                            delegate: RowLayout {
++                                id: resultRow
++                                required property var modelData
++                                required property int index
++                                Layout.fillWidth: true
++                                Cover {
++                                    objectName: "tidalArtwork" + resultRow.index
++                                    artwork: resultRow.modelData.artwork || ""
++                                    Layout.preferredWidth: 44
++                                    Layout.preferredHeight: 44
++                                }
++                                ColumnLayout {
++                                    Layout.fillWidth: true
++                                    spacing: 0
++                                    PC.Label {
++                                        text: resultRow.modelData.title || ""
++                                        textFormat: Text.PlainText
++                                        elide: Text.ElideRight
++                                        maximumLineCount: 2
++                                        wrapMode: Text.WrapAnywhere
++                                        Layout.fillWidth: true
++                                    }
++                                    PC.Label {
++                                        text: (resultRow.modelData.subtitle || "") + (resultRow.modelData.catalogue_atmos ? " · " + i18n("Atmos in catalog") : "")
++                                        textFormat: Text.PlainText
++                                        elide: Text.ElideRight
++                                        Layout.fillWidth: true
++                                        font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
++                                    }
++                                }
++                                PC.ToolButton {
++                                    objectName: "tidalBrowse" + resultRow.index
++                                    icon.name: "go-next"
++                                    visible: resultRow.modelData.kind !== "track"
++                                    enabled: !root.busy
++                                    Accessible.name: i18n("Browse %1", resultRow.modelData.title || "")
++                                    onClicked: root.browse(resultRow.modelData)
++                                }
++                                PC.ToolButton {
++                                    objectName: "tidalPlay" + resultRow.index
++                                    icon.name: "media-playback-start"
++                                    visible: TidalState.playable(resultRow.modelData)
++                                    enabled: root.canPlay && !root.busy && !root.runtime.loading
++                                    Accessible.name: i18n("Play %1", resultRow.modelData.title || "")
++                                    onClicked: root.play(resultRow.modelData)
++                                }
++                            }
++                        }
++                        PC.Label {
++                            text: root.page.offset !== undefined ? i18n("No results on this page.") : i18n("Search TIDAL or open your library.")
++                            visible: !root.busy && root.rows.length === 0
++                            textFormat: Text.PlainText
++                            wrapMode: Text.Wrap
++                            Layout.fillWidth: true
 +                        }
 +                    }
++                }
++                RowLayout {
++                    Layout.fillWidth: true
 +                    PC.Button {
-+                        objectName: "tidalLibrary"
-+                        text: i18n("Favorites")
-+                        enabled: !root.busy
-+                        onClicked: root.navigate({mode: "library"}, true)
++                        objectName: "tidalPreviousPage"
++                        text: i18n("Previous page")
++                        enabled: !root.busy && Number(root.page.offset || 0) > 0
++                        onClicked: root.paginate(Math.max(0, Number(root.page.offset) - Number(root.page.limit || 20)))
++                    }
++                    Item { Layout.fillWidth: true }
++                    PC.Button {
++                        objectName: "tidalNextPage"
++                        text: i18n("Next page")
++                        enabled: !root.busy && root.page.has_more === true
++                        onClicked: root.paginate(Number(root.page.offset || 0) + Number(root.page.limit || 20))
 +                    }
 +                }
 +                PC.ComboBox {
 +                    objectName: "tidalQuality"
-+                    model: [i18n("Dolby Atmos only"), i18n("Lossless")]
++                    model: [i18n("Lossless"), i18n("Dolby Atmos only")]
 +                    Accessible.name: i18n("TIDAL playback quality")
 +                    Layout.fillWidth: true
-+                    currentIndex: root.quality === "atmos" ? 0 : 1
-+                    onActivated: root.quality = currentIndex === 0 ? "atmos" : "lossless"
++                    currentIndex: root.quality === "lossless" ? 0 : 1
++                    onActivated: root.quality = currentIndex === 0 ? "lossless" : "atmos"
 +                }
 +                PC.Label {
-+                    text: root.quality === "atmos" ? i18n("Requires Dolby Atmos. Playback stops with an error if it is unavailable.") : i18n("Play the lossless stream using your audio settings.")
++                    text: root.quality === "atmos" ? i18n("Atmos must be available for this track and account. No stereo fallback.") : i18n("Lossless music. Choose Atmos only when you want to require spatial audio.")
 +                    textFormat: Text.PlainText
 +                    wrapMode: Text.Wrap
 +                    Layout.fillWidth: true
@@ -1190,90 +1414,77 @@
 +                    wrapMode: Text.Wrap
 +                    Layout.fillWidth: true
 +                }
-+                RowLayout {
++            }
++            Kirigami.Separator { Layout.fillWidth: true }
++            ColumnLayout {
++                objectName: "tidalNowPlaying"
++                Layout.fillWidth: true
++                PC.Label {
++                    text: root.track.title || i18n("Now playing")
++                    textFormat: Text.PlainText
++                    font.bold: true
++                    maximumLineCount: 2
++                    elide: Text.ElideRight
++                    wrapMode: Text.WrapAnywhere
 +                    Layout.fillWidth: true
-+                    PC.ToolButton {
-+                        objectName: "tidalBack"
-+                        icon.name: "go-previous"
-+                        Accessible.name: i18n("Back")
-+                        enabled: !root.busy && root.history.length > 0
-+                        onClicked: root.back()
-+                    }
-+                    PC.Label {
-+                        text: root.page.item ? root.page.item.title : root.location.mode === "library" ? i18n("Favorites") : root.location.query || i18n("Search tracks, albums, artists and playlists")
-+                        textFormat: Text.PlainText
-+                        wrapMode: Text.WrapAnywhere
-+                        Layout.fillWidth: true
-+                    }
-+                    PC.ToolButton {
-+                        objectName: "tidalPlayCollection"
-+                        icon.name: "media-playback-start"
-+                        visible: TidalState.playable(root.page.item)
-+                        enabled: root.canPlay && !root.busy
-+                        Accessible.name: i18n("Play collection")
-+                        onClicked: root.play(root.page.item)
-+                    }
-+                }
-+                Repeater {
-+                    model: root.rows
-+                    delegate: RowLayout {
-+                        id: resultRow
-+                        required property var modelData
-+                        required property int index
-+                        Layout.fillWidth: true
-+                        ColumnLayout {
-+                            Layout.fillWidth: true
-+                            PC.Label {
-+                                text: resultRow.modelData.title || ""
-+                                textFormat: Text.PlainText
-+                                wrapMode: Text.WrapAnywhere
-+                                Layout.fillWidth: true
-+                            }
-+                            PC.Label {
-+                                text: (resultRow.modelData.subtitle || "") + (resultRow.modelData.catalogue_atmos ? " · " + i18n("Atmos in catalog") : "")
-+                                textFormat: Text.PlainText
-+                                wrapMode: Text.WrapAnywhere
-+                                font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
-+                                Layout.fillWidth: true
-+                            }
-+                        }
-+                        PC.ToolButton {
-+                            objectName: "tidalBrowse" + resultRow.index
-+                            icon.name: "go-next"
-+                            visible: resultRow.modelData.kind !== "track"
-+                            enabled: !root.busy
-+                            Accessible.name: i18n("Browse %1", resultRow.modelData.title || "")
-+                            onClicked: root.browse(resultRow.modelData)
-+                        }
-+                        PC.ToolButton {
-+                            objectName: "tidalPlay" + resultRow.index
-+                            icon.name: "media-playback-start"
-+                            visible: TidalState.playable(resultRow.modelData)
-+                            enabled: root.canPlay && !root.busy
-+                            Accessible.name: i18n("Play %1", resultRow.modelData.title || "")
-+                            onClicked: root.play(resultRow.modelData)
-+                        }
-+                    }
 +                }
 +                PC.Label {
-+                    text: i18n("No results on this page.")
-+                    visible: !root.busy && root.page.offset !== undefined && root.rows.length === 0
++                    text: root.track.artist || ""
++                    visible: !!text
 +                    textFormat: Text.PlainText
++                    elide: Text.ElideRight
 +                    Layout.fillWidth: true
++                }
++                PC.Label {
++                    objectName: "tidalPlaybackState"
++                    text: root.playbackText()
++                    textFormat: Text.PlainText
++                    wrapMode: Text.Wrap
++                    Layout.fillWidth: true
++                }
++                PC.ProgressBar {
++                    from: 0; to: 1
++                    value: PlaybackState.progress(root.audio)
++                    visible: !!root.audio.running || !!root.runtime.loading
++                    indeterminate: !!root.runtime.loading || (!!root.audio.running && !root.audio.loaded)
++                    Accessible.name: i18n("Playback progress")
++                    Layout.fillWidth: true
++                }
++                PC.Label {
++                    text: PlaybackState.durationText(root.audio.position) + " / " + PlaybackState.durationText(root.audio.duration)
++                    visible: !!root.audio.loaded
++                    textFormat: Text.PlainText
++                    Layout.alignment: Qt.AlignHCenter
 +                }
 +                RowLayout {
 +                    Layout.alignment: Qt.AlignHCenter
-+                    PC.Button {
-+                        objectName: "tidalPreviousPage"
-+                        text: i18n("Previous page")
-+                        enabled: !root.busy && Number(root.page.offset || 0) > 0
-+                        onClicked: root.paginate(Math.max(0, Number(root.page.offset) - Number(root.page.limit || 20)))
++                    PC.ToolButton {
++                        objectName: "tidalPrevious"
++                        icon.name: "media-skip-backward"
++                        Accessible.name: i18n("Previous track")
++                        enabled: root.canPlay && !root.transportBusy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_index > 0
++                        onClicked: root.transport("Previous")
 +                    }
-+                    PC.Button {
-+                        objectName: "tidalNextPage"
-+                        text: i18n("Next page")
-+                        enabled: !root.busy && root.page.has_more === true
-+                        onClicked: root.paginate(Number(root.page.offset || 0) + Number(root.page.limit || 20))
++                    PC.ToolButton {
++                        objectName: "tidalPlayPause"
++                        icon.name: root.audio.running && !root.audio.paused ? "media-playback-pause" : "media-playback-start"
++                        Accessible.name: root.audio.running && !root.audio.paused ? i18n("Pause") : i18n("Play")
++                        enabled: root.canPlay && !root.transportBusy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_length > 0
++                        onClicked: root.transport("PlayPause")
++                    }
++                    PC.ToolButton {
++                        objectName: "tidalNext"
++                        icon.name: "media-skip-forward"
++                        Accessible.name: i18n("Next track")
++                        enabled: root.canPlay && !root.transportBusy && !root.runtime.loading && mediaWatcher.registered && root.runtime.queue_index + 1 < root.runtime.queue_length
++                        onClicked: root.transport("Next")
++                    }
++                    PC.ToolButton {
++                        objectName: "tidalStop"
++                        icon.name: "media-playback-stop"
++                        Accessible.name: i18n("Stop")
++                        enabled: root.serviceAvailable && (!!root.audio.running || !!root.runtime.loading)
++                        onClicked: root.transport("Stop")
 +                    }
 +                }
 +            }
@@ -1285,7 +1496,7 @@
 +            }
 +            PC.Label {
 +                objectName: "tidalError"
-+                text: root.errorText
++                text: root.failure
 +                visible: !!text
 +                textFormat: Text.PlainText
 +                wrapMode: Text.WrapAnywhere
@@ -1296,7 +1507,7 @@
 +}
 --- /dev/null
 +++ b/contents/ui/TidalState.js
-@@ -0,0 +1,21 @@
+@@ -0,0 +1,27 @@
 +.pragma library
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
@@ -1317,6 +1528,12 @@
 +function playable(item) {
 +    return !!item && ["track", "album", "playlist"].includes(item.kind)
 +        && typeof item.reference === "string" && item.reference.startsWith("tidal:");
++}
++
++function artworkUrl(value) {
++    // Catalogue artwork has one public CDN origin and identifier-only path.
++    return typeof value === "string"
++        && /^https:\/\/resources\.tidal\.com\/images\/[0-9a-fA-F]{8}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{4}\/[0-9a-fA-F]{12}\/320x320\.jpg$/.test(value) ? value : "";
 +}
 --- a/contents/ui/main.qml
 +++ b/contents/ui/main.qml

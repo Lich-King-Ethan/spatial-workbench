@@ -47,6 +47,38 @@ def channel_graph(channels=smoke.SURROUND_CHANNELS):
 
 
 class AudioGateEvidenceTests(unittest.TestCase):
+    def test_owned_stop_rejects_stale_capture_or_error_before_rescue_cleanup(self):
+        stopped = {"loading": False, "playback_error": None,
+                   "audio": {"running": False, "process_id": None, "error": ""},
+                   "live": {"state": "idle", "running": False, "renderer_ready": False,
+                            "process_id": None, "error": ""}}
+        smoke.verify_owned_pcm_stop_state(stopped, False)
+        for section, field, value in (("live", "running", True), ("live", "state", "playing"),
+                                      ("live", "process_id", 42), ("live", "renderer_ready", True),
+                                      ("live", "error", "Selected application is no longer available"),
+                                      ("audio", "running", True), ("audio", "process_id", 43),
+                                      ("audio", "error", "real player error")):
+            with self.subTest(section=section, field=field):
+                stale = json.loads(json.dumps(stopped))
+                stale[section][field] = value
+                with self.assertRaises(smoke.Failure):
+                    smoke.verify_owned_pcm_stop_state(stale, False)
+        with self.assertRaises(smoke.Failure):
+            smoke.verify_owned_pcm_stop_state(stopped, True)
+
+    def test_owned_node_cleanup_includes_capture_inputs_and_client_owned_outputs(self):
+        capture, output, foreign = node(10, 100), node(20, 200), node(30, 300)
+        capture["info"]["props"].update({"application.process.id": 42, "media.class": "Audio/Sink"})
+        output["info"]["props"].update({"client.id": 7, "media.class": "Stream/Output/Audio"})
+        foreign["info"]["props"].update({"application.process.id": 99,
+                                          "media.class": "Stream/Output/Audio"})
+        client = {"id": 7, "type": "PipeWire:Interface:Client",
+                  "info": {"props": {"application.process.id": 42}}}
+        objects = [capture, output, foreign, client]
+        self.assertEqual([obj["id"] for obj in smoke.owned_nodes(objects, 42)], [10, 20])
+        self.assertEqual([obj["id"] for obj in smoke.owned_outputs(objects, 42)], [20])
+        self.assertEqual(smoke.owned_nodes([foreign], 42), [])
+
     def test_surround_requires_all_eight_actual_same_channel_links(self):
         self.assertTrue(smoke.surround_input_preserved(channel_graph(), 10, 20))
         # This reproduces the hosted run: native PCM is 7.1 but the source's

@@ -31,7 +31,10 @@ Generate package sources with `.venv/bin/python tools/make-release.py`. On Arch,
 inside each generated `dist/arch/core` and `dist/arch/companion` directory using
 `makepkg --syncdeps --cleanbuild`. Run makepkg as an ordinary user. The separate
 `dist/arch/orender` recipe compiles the pinned renderer and runs its Rust tests
-and binary/library marker checks; this build takes longer.
+and binary/library marker checks; this build takes longer. The Companion's native
+UI gate needs Plasma 6.7 or later, Kirigami Platform and `extra-cmake-modules`,
+listed in its package recipe. It initializes the actual Plasma theme and checks
+control contrast; a plain offscreen Qt palette is not representative of Plasma.
 
 ## Report a reproducible problem
 
@@ -77,6 +80,23 @@ module, `spatialctl` alias, `spatiald.service`, D-Bus names and saved config pat
 compatible. Package ownership checks must use actual renamed package owners.
 The repository URL has not been renamed.
 
-Physical testing is paused as of October 3. Develop with private buses, synthetic
-protocol fixtures and isolated audio endpoints. Never label those results as a
-physical listening pass or weaken acoustic assertions to make a run green.
+## Current validation boundaries
+
+On October 5, the installed core/Companion package builds passed **489 core tests**
+and **7 native UI checks**. All **15 installed audio gates** also passed on private
+PipeWire, including clean owned playback shutdown before fallback cleanup. All
+122 baseline settings/widget files remained unchanged. The user accepted channel
+direction changes and yaw anchoring with prediction off. Pitch, roll, recenter
+and prediction comparisons remain pending. TIDAL account authorization and browsing work, and a read-only
+observation confirmed actual stereo FLAC through the renderer/EQ/headphone route
+with fresh XM5 tracking. The user confirmed that TIDAL music sounds good. Atmos
+streaming, refreshed panel interaction and physical Stop still need acceptance.
+The shell was refreshed successfully; the latest player state is idle.
+
+Use private buses, synthetic protocol fixtures and isolated audio endpoints for
+development. Keep failures in the evidence record: normal playback shutdown must
+stop its producer before capture cleanup, while actual renderer failures must
+remain visible. TIDAL format checks must not silently accept stereo for Atmos or
+lossy audio for Lossless. Never weaken acoustic assertions to make a run green.
+Coordinate audible playback and movement checks with the user; fixture results
+cannot establish their listening experience. See [current status](STATUS.md).

@@ -48,6 +48,17 @@ def ready_telemetry():
 
 
 class AudioPureTests(unittest.TestCase):
+    def test_remote_segment_allowance_is_explicit_and_commas_are_escaped(self):
+        arguments = ("/usr/bin/mpv", "/tmp/private/r.yaml", "/tmp/private/m.sock", SINK, 1, 2)
+        ordinary = playback_argv(*arguments)
+        self.assertFalse(any("protocol_whitelist" in item for item in ordinary))
+        prepared_dash = playback_argv(*arguments, validated_tidal_dash=True)
+        self.assertEqual([item for item in prepared_dash if "protocol_whitelist" in item],
+                         ["--demuxer-lavf-o=protocol_whitelist=%18%file,https,tls,tcp"])
+        # The explicit bool comes from PreparedTrack, never a suffix or metadata
+        # string. mpv needs all four protocols, with no HTTP or blanket wildcard.
+        self.assertEqual(playback_argv(*arguments, validated_tidal_dash="true"), ordinary)
+
     def test_native_sink_and_private_control_config(self):
         argv = playback_argv("/usr/bin/mpv", "/tmp/private/r.yaml", "/tmp/private/m.sock", SINK, 1, 2)
         self.assertIn("--audio-device=pipewire/" + SINK.name, argv)

@@ -50,6 +50,7 @@ class Runtime:
         self.playback_error = None
         self._lock = asyncio.Lock()
         self._play_lock = asyncio.Lock()
+        self._live_lock = asyncio.Lock()
         self._request = 0
         self._prepared = None
         self._had_playback = False
@@ -549,7 +550,7 @@ class Runtime:
                 if prepared is not None:
                     prepared.cleanup()
                 raise PlaybackError("headphone output disconnected while preparing playback")
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._prepared = prepared
             try:
@@ -557,7 +558,9 @@ class Runtime:
                 self._launch_target = target
                 self._launch_task = asyncio.create_task(self.audio.start(
                     media, self.engine.sink, require_spatial=bool(prepared is not None and
-                         metadata.get("atmos_manifest", self._queue_require_atmos))), name="player-launch")
+                         metadata.get("atmos_manifest", self._queue_require_atmos)),
+                    validated_tidal_dash=getattr(prepared, "validated_dash", False) is True),
+                    name="player-launch")
                 try:
                     await self._launch_task
                 except asyncio.CancelledError:
@@ -569,7 +572,7 @@ class Runtime:
                     self._launch_target = None
                 if (request != self._request or self.stop_event.is_set() or not self._ready()
                         or target != self._target()):
-                    await self.audio.stop("playback request was cancelled")
+                    await self._stop_audio("playback request was cancelled")
                     raise PlaybackError("playback request was cancelled")
             except BaseException:
                 self._cleanup_prepared()
@@ -582,6 +585,26 @@ class Runtime:
             self.provider_status("playback", "ready", "Playback started")
         self.notify()
 
+    async def _stop_audio(self, reason="stopped"):
+        # Callers hold the player lock. Serialize capture selection with this
+        # teardown, and identify ownership again after acquiring the live lock.
+        async with self._live_lock:
+            pid = self.audio.status().get("process_id")
+            if (self.live is not None and self._live_automatic and pid is not None
+                    and pid == self._live_media_pid):
+                try:
+                    await self.live.stop_owned_source(lambda: self.audio.stop(reason), reason)
+                except BaseException:
+                    # Failed teardown may have muted this still-live producer.
+                    # An automatic retry must not undo that safety recovery.
+                    self._auto_paused_pid = pid
+                    raise
+                finally:
+                    self._live_automatic = False
+                    self._live_media_pid = None
+            else:
+                await self.audio.stop(reason)
+
     async def stop_playback(self):
         self._ui_request += 1
         self._requested_tidal = False
@@ -590,7 +613,7 @@ class Runtime:
         self._cancel_launch()
         self.notify()
         async with self._lock:
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._had_playback = False
         self.notify()
@@ -602,7 +625,7 @@ class Runtime:
             self._ui_request += 1
             self._request += 1
             self._cancel_launch()
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._had_playback = False
             self.notify()
@@ -670,6 +693,10 @@ class Runtime:
             await self.equalizer.stop()
 
     async def start_live(self, stream_serial):
+        async with self._live_lock:
+            await self._start_live(stream_serial)
+
+    async def _start_live(self, stream_serial):
         if self.live is None or not self.settings.live_enabled:
             raise PlaybackError("Live application audio is disabled in configuration")
         if not self._ready() or self.desktop is None:
@@ -684,10 +711,11 @@ class Runtime:
         self.notify()
 
     async def stop_live(self):
-        self._live_automatic = False
-        self._auto_paused_pid = self.audio.status().get("process_id")
-        if self.live is not None:
-            await self.live.stop()
+        async with self._live_lock:
+            self._live_automatic = False
+            self._auto_paused_pid = self.audio.status().get("process_id")
+            if self.live is not None:
+                await self.live.stop()
         self.notify()
 
     @staticmethod
@@ -712,38 +740,39 @@ class Runtime:
         retry = Backoff()
         next_attempt = 0.0
         while not self.stop_event.is_set():
-            state, live = self.audio.status(), self.live.status()
-            pid = state.get("process_id")
-            suitable = bool(state.get("running") and state.get("loaded") and
-                            state.get("decoder") and state["decoder"] != "orender" and pid)
-            if self._live_automatic and (not suitable or pid != self._live_media_pid):
-                await self.live.stop("stopped")
-                self._live_automatic = False
-                self._live_media_pid = None
-                next_attempt = 0.0
-                retry.reset()
-                live = self.live.status()
-            busy = live.get("running") or live.get("state") == "starting"
-            if (suitable and not busy and self._ready() and self.desktop is not None
-                    and pid != self._auto_paused_pid and time.monotonic() >= next_attempt):
-                stream = self._player_stream(self.desktop.pipewire_objects, pid)
-                if stream:
-                    self._live_automatic = True
-                    self._live_media_pid = pid
-                    try:
-                        await self.live.start(self.engine.sink, stream, self.desktop.pipewire_objects)
-                    except Exception as exc:
-                        self.provider_status("stereo_audio", "unavailable", public_message(exc))
-                    next_attempt = time.monotonic() + retry.next_delay()
-            if self._live_automatic and live.get("renderer_ready"):
-                retry.reset()
-                self.provider_status("stereo_audio", "ready", "Binaural PCM rendering")
-            elif not self._live_automatic:
-                self.provider_status("stereo_audio", "waiting", "No automatic PCM capture is active")
-            elif live.get("error"):
-                self.provider_status("stereo_audio", "unavailable", live["error"])
-            elif busy:
-                self.provider_status("stereo_audio", "waiting", "Waiting for the binaural PCM path")
+            async with self._live_lock:
+                state, live = self.audio.status(), self.live.status()
+                pid = state.get("process_id")
+                suitable = bool(state.get("running") and state.get("loaded") and
+                                state.get("decoder") and state["decoder"] != "orender" and pid)
+                if self._live_automatic and (not suitable or pid != self._live_media_pid):
+                    await self.live.stop("stopped")
+                    self._live_automatic = False
+                    self._live_media_pid = None
+                    next_attempt = 0.0
+                    retry.reset()
+                    live = self.live.status()
+                busy = live.get("running") or live.get("state") == "starting"
+                if (suitable and not busy and self._ready() and self.desktop is not None
+                        and pid != self._auto_paused_pid and time.monotonic() >= next_attempt):
+                    stream = self._player_stream(self.desktop.pipewire_objects, pid)
+                    if stream:
+                        self._live_automatic = True
+                        self._live_media_pid = pid
+                        try:
+                            await self.live.start(self.engine.sink, stream, self.desktop.pipewire_objects)
+                        except Exception as exc:
+                            self.provider_status("stereo_audio", "unavailable", public_message(exc))
+                        next_attempt = time.monotonic() + retry.next_delay()
+                if self._live_automatic and live.get("renderer_ready"):
+                    retry.reset()
+                    self.provider_status("stereo_audio", "ready", "Binaural PCM rendering")
+                elif not self._live_automatic:
+                    self.provider_status("stereo_audio", "waiting", "No automatic PCM capture is active")
+                elif live.get("error"):
+                    self.provider_status("stereo_audio", "unavailable", live["error"])
+                elif busy:
+                    self.provider_status("stereo_audio", "waiting", "Waiting for the binaural PCM path")
             try:
                 await asyncio.wait_for(self.stop_event.wait(), 0.25)
             except TimeoutError:
@@ -802,7 +831,7 @@ class Runtime:
                     self.provider_status("playback", "unavailable", routing["reason"])
                     self._cancel_launch()
                     async with self._lock:
-                        await self.audio.stop(routing["reason"])
+                        await self._stop_audio(routing["reason"])
                     state = self.audio.status()
                 audited_objects = objects
                 audited_pid = state.get("process_id")

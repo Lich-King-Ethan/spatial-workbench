@@ -1,25 +1,78 @@
 # BudsLink Spatial Companion — status
 
-**October 3, 2026 · development branch `fix/positioned-surround-audit`**
+**October 5, 2026 · development branch `fix/positioned-surround-audit`**
 
 The project is now named **BudsLink Spatial Companion** (formerly Spatial Workbench).
 Original code now uses AGPL-3.0-only; compatibility names and user settings remain.
-The user authorized installation and preparation for a second physical smoke test.
-The repaired packages are installed; the headphones are disconnected and the user
-will connect them later. Physical listening and movement checks remain pending.
+The repaired packages are installed. October 5 physical testing confirmed clear
+channel direction changes and anchored left/right motion with prediction off.
+Pitch, roll, off-center recenter and prediction comparisons remain pending.
+
+## October 5 physical checks
+
+The connected WF-1000XM5 initially exposed LDAC audio but incomplete Bluetooth
+service discovery. One targeted reconnect, after confirming no active application
+audio, restored Companion controls and the real timestamped head tracker.
+
+The user heard **clear direction changes** in the quiet channel clip and reported
+that the yaw reference **stayed anchored, including while moving**. Both completed
+30-second trials verified native 7.1 through the renderer and EQ to the physical
+XM5s. Exact-request cleanup removed owned nodes and preserved default outputs and
+settings. Prediction was off. The snapshots contain approximately 25 reports per
+second with uninterrupted helper sequence numbers; they do not measure acoustic
+latency.
+
+Two yaw attempts stopped before a completed trial: one lacked a fresh tracker,
+and one exposed the test runner reading the prior clip's cached clock while the
+new player was loading. The runner now requires fresh playback ownership before
+using that clock. It also marks an uncaptured defaults baseline as unavailable.
+Both harness corrections passed offline regressions and independent review;
+readiness deadlines and physical checks remain enforced.
+
+The first pitch attempt refused playback because normal owned-player shutdown
+could leave a stale renderer “stream ended” error. The installed repair now stops
+the owned producer before releasing its capture route. All 15 installed native
+audio gates passed, including a check of the first Stop before fallback cleanup
+and a one-second watch for automatic restart. Failed attempts remain in private
+local evidence; they are not listening passes.
+
+## October 5 playback and Companion update
+
+Core `0.2.3-4` and Companion `0.2.0.spatial0.2.3-4` were built and installed
+through normal fish/Konsole package prompts. The package builds passed **489 core
+tests** and **7 native Qt checks**, with no skips. All 122 baseline configuration
+and widget files remained unchanged, and installed files match the reviewed source.
+
+The compact TIDAL panel now brings search, library, artwork, scrolling collections,
+transport and visible playback errors together. Lossless is its initial selection;
+Atmos remains explicit. Native tests use Plasma's real theme and check control
+contrast at narrow and normal widths. Plasma's panel service was reloaded after
+installation; it and the audio service are active, with all 122 baseline files
+still unchanged. Interactive acceptance of the refreshed panel remains pending.
+
+Real account authorization and browsing work. The selected Atmos request was
+rejected by the service. Lossless exposed a separate player defect: FFmpeg refused
+HTTPS segments referenced by the validated local DASH manifest. The repair permits
+those protocols only for that retained TIDAL manifest. A fresh real FLAC stream
+then decoded successfully with null output. After installation, a read-only
+ten-second observation of the user's TIDAL playback confirmed advancing FLAC stereo
+through the binaural renderer, EQ and physical XM5 output with fresh tracking.
+All 12 independent graph observations passed. Playback and volume were untouched.
+The user confirmed **“Yes—music sounds good.”** A physical Stop check and Atmos
+streaming remain pending.
 
 ## Validation matrix
 
 | Area | Evidence | Remaining work |
 |---|---|---|
 | Surround channel integrity | Actual installed stack passes all 15 gates on private PipeWire: eight lanes, owned 7.1, 18 PCM windows/74 checks, Atmos objects and cleanup | Physical regression; earlier unexplained Atmos startup failure retained |
-| Actual WF-1000XM5 output | September 28 installed A2DP → renderer → EQ → headphones route; user heard clear channel direction changes | New build's physical regression pass |
-| Physical yaw | September 28 corrected orientation compensates at unit gain; user reported near-centered anchoring that settles when still | Evaluate remaining motion lag |
+| Actual WF-1000XM5 output | October 5 native 7.1 → renderer → EQ → XM5 route; user confirmed clear channel direction changes | Selected-application and interruption/reconnect acceptance |
+| Physical yaw | October 5 user reported anchored sound during left/right movement with prediction off | Prediction comparison and repeatability |
 | Pitch, roll and off-center recenter | Software fixtures cover rotations and recenter order | Physical listening acceptance pending |
-| Timestamp capture | Packaged SPT1 helper passed native C/UDP checks; canonical pose, packet rejection and selected-report history checks pass in the full suite | Physical timing capture awaits the connected headphones |
+| Timestamp capture | October 5 channel/yaw captures contain fresh real HID reports at approximately 25 Hz, with no helper sequence gaps | These host timestamps do not establish acoustic latency |
 | Prediction | Bounded predictor, latency evidence and all accepted selected-packet history pass software regression; disabled by default | Physical lag/overshoot acceptance |
-| TIDAL mini-client | Provider, D-Bus, credential ordering and catalogue/playback tests pass; Qt/JavaScript checks cover controls and sign-in recovery after browser handoff | Account authorization, real service playback and entitled Atmos acceptance |
-| Rename and licensing | Old-name packages replaced through normal prompts; core 0.2.3-3 fixes a real staging defect; 122/122 baseline configuration/widget files unchanged | Loaded desktop widget and physical regression acceptance |
+| TIDAL mini-client | Real authorization/browsing, installed FLAC → renderer → EQ → XM5 route and user listening acceptance confirmed; compact native UI tests pass | Physical Stop, refreshed panel interaction and entitled Atmos acceptance |
+| Rename and licensing | Old-name packages replaced through normal prompts; revision 4 installed; 122/122 baseline configuration/widget files unchanged | Remaining physical regression acceptance |
 | Optional SlimeVR receiver | Protocol, identity, freshness and policy tests | Physical receiver acceptance |
 
 Synthetic endpoints and protocol fixtures prove software behavior; they do not
@@ -30,7 +83,7 @@ clock or a measured acoustic output timestamp.
 ## October 3 installation and software checks
 
 The reviewed ten-package audio repair was installed through normal Konsole,
-fish and nano package prompts. The current set includes core
+fish and nano package prompts. That installation included core
 `budslink-spatial-companion 0.2.3-3`, widget
 `plasma-budslink-spatial-companion 0.2.0.spatial0.2.3-3`,
 `sony-tracker-spatial 1.0.0-2`, `orender-spatial 0.5.2-3`,

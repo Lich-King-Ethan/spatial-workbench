@@ -269,6 +269,7 @@ class LiveAudio:
         self._pending_filter_inputs = pending_filter_inputs
         self._before_muted = None
         self._failure_mute = None
+        self._pending_source_stop = None
 
     async def probe(self):
         binary = shutil.which(self.binary)
@@ -666,6 +667,19 @@ class LiveAudio:
         if monitor is not None and monitor is not current:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
+        pending, self._pending_source_stop = self._pending_source_stop, None
+        if pending is not None:
+            stop_source, reason = pending["stop"], pending["reason"]
+            # Keep capture and its route in place until the owned producer is
+            # gone. Its deliberate disappearance must not race the graph watcher
+            # or briefly restore audible playback to its previous destination.
+            try:
+                await stop_source()
+            except BaseException as exc:
+                pending["error"] = exc
+                self._error = self._error or "Could not stop owned playback"
+                await self._stop("source stop failed")
+                raise
         deliberate = reason in ("stopped", "replaced")
         if self._route is not None and self._route.applied and not deliberate:
             try:
@@ -731,12 +745,28 @@ class LiveAudio:
         self._audit = {"state": "idle", "reason": reason}
 
     async def stop(self, reason="stopped"):
+        pending = self._pending_source_stop
         launch, self._launch_task = self._launch_task, None
         if launch is not None and launch is not asyncio.current_task():
             launch.cancel()
             await asyncio.gather(launch, return_exceptions=True)
         async with self._lock:
+            if pending is not None and pending["error"] is not None:
+                # Startup cancellation or an earlier cleanup may have consumed
+                # this transaction while we waited. Never unmute a producer
+                # whose stop failed in that other task.
+                raise pending["error"]
             await self._stop(reason)
+
+    async def stop_owned_source(self, stop_source, reason="stopped"):
+        """Quiesce observation, stop an owned producer, then release its route."""
+        # A cancelled startup also calls _stop while holding the live lock.
+        # Give that cleanup the same source-first transaction, consumed once.
+        self._pending_source_stop = {"stop": stop_source, "reason": reason, "error": None}
+        try:
+            await self.stop(reason)
+        finally:
+            self._pending_source_stop = None
 
     def cancel_start(self):
         """Immediate cancellation hook for synchronous desktop sink callbacks."""

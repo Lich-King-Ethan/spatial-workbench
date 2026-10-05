@@ -66,6 +66,16 @@ def restored_provider(path):
 
 
 class ManifestChecks(unittest.TestCase):
+    def test_only_retained_validated_dash_has_remote_segment_allowance(self):
+        with prepare_stream(stream(MPD)) as prepared:
+            self.assertTrue(prepared.validated_dash)
+        self.assertFalse(prepared.validated_dash)
+        with prepare_stream(bts(), {"validated_dash": True}) as direct:
+            self.assertFalse(direct.validated_dash)
+        with self.assertRaises(TidalError):
+            prepare_stream(stream(MPD.replace('media="$Number$.m4s?token=secret"',
+                                              'media="http://cdn.example/fragment"')))
+
     def test_original_clear_eac3_url_is_preserved_without_secret_in_metadata(self):
         with prepare_stream(bts(), {"title": "Track"}) as prepared:
             self.assertEqual(prepared.media, "https://cdn.example/audio?token=secret")

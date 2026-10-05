@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Native UI smoke test. This private D-Bus fixture is not a hardware simulator.
 #include <KLocalizedQmlContext>
+#include <Kirigami/Platform/PlatformTheme>
+#include <Plasma/Plasma>
+#include <Plasma/Theme>
 #include <QCoreApplication>
 #include <QDBusAbstractAdaptor>
 #include <QDBusConnection>
@@ -20,6 +23,7 @@
 #include <QTest>
 #include <QTimer>
 #include <memory>
+#include <cmath>
 
 static const QString service = QStringLiteral("org.spatiald.Control1");
 static const QString objectPath = QStringLiteral("/org/spatiald/Control1");
@@ -73,6 +77,8 @@ public:
     QDBusMessage delayedSearch;
     QDBusMessage delayedLogin;
     QJsonArray requests;
+    QStringList transportRequests;
+    bool manyTracks = false;
     QJsonObject track = {{"kind", "track"}, {"id", "42"}, {"title", "<Track & fixture>"},
         {"subtitle", "Fixture artist"}, {"reference", "tidal:track:42"}, {"catalogue_atmos", true}};
     static QString json(const QJsonObject &value) {
@@ -90,6 +96,7 @@ public:
         return controlBus().send(signal);
     }
 public slots:
+    void Stop() { transportRequests.append(QStringLiteral("Stop")); }
     QString TidalRequest(const QString &action, const QString &payload, const QDBusMessage &message)
     {
         auto args = QJsonDocument::fromJson(payload.toUtf8()).object();
@@ -139,7 +146,12 @@ public slots:
         QJsonObject playlist{{"kind", "playlist"}, {"id", "list-1"}, {"title", "Fixture playlist"},
                              {"reference", "tidal:playlist:list-1"}};
         QJsonObject result{{"offset", args["offset"].toInt()}, {"limit", 20}, {"has_more", args["offset"].toInt() == 0}};
-        result["tracks"] = QJsonArray{track}; result["albums"] = QJsonArray{album};
+        QJsonArray tracks{track};
+        if (manyTracks) for (int i = 1; i < 20; ++i) {
+            auto row = track; row["title"] = QStringLiteral("Track with a long fixture title %1").arg(i);
+            tracks.append(row);
+        }
+        result["tracks"] = tracks; result["albums"] = QJsonArray{album};
         result["artists"] = QJsonArray{artist}; result["playlists"] = QJsonArray{playlist};
         if (args["offset"].toInt() > 0)
             for (const auto &key : {"tracks", "albums", "artists", "playlists"}) result[key] = QJsonArray{};
@@ -149,11 +161,26 @@ public slots:
     }
 };
 
+class MediaFixture : public QDBusAbstractAdaptor
+{
+    Q_OBJECT
+    Q_CLASSINFO("D-Bus Interface", "org.mpris.MediaPlayer2.Player")
+public:
+    explicit MediaFixture(QObject *parent) : QDBusAbstractAdaptor(parent) {}
+    QStringList calls;
+public slots:
+    void PlayPause() { calls.append(QStringLiteral("PlayPause")); }
+    void Previous() { calls.append(QStringLiteral("Previous")); }
+    void Next() { calls.append(QStringLiteral("Next")); }
+};
+
 class NativeQmlSmoke : public QObject
 {
     Q_OBJECT
     QObject fixtureObject;
     ControlFixture fixture{&fixtureObject};
+    QObject mediaObject;
+    MediaFixture mediaFixture{&mediaObject};
 
 private slots:
     void initTestCase()
@@ -165,6 +192,9 @@ private slots:
         QVERIFY(controlBus().registerObject(
             objectPath, &fixtureObject, QDBusConnection::ExportAdaptors));
         QVERIFY(controlBus().registerService(service));
+        QVERIFY(controlBus().registerObject(QStringLiteral("/org/mpris/MediaPlayer2"), &mediaObject,
+            QDBusConnection::ExportAdaptors));
+        QVERIFY(controlBus().registerService(QStringLiteral("org.mpris.MediaPlayer2.spatiald")));
     }
 
     void cards_data()
@@ -196,6 +226,9 @@ private slots:
 
         QStringList warnings;
         QQmlEngine engine;
+        // Match the actual Plasma engine. Without this, Kirigami BasicTheme
+        // text colors can disagree with the current Plasma SVG controls.
+        Plasma::setupPlasmaStyle(&engine);
         connect(&engine, &QQmlEngine::warnings, &engine, [&warnings](const QList<QQmlError> &errors) {
             for (const auto &error : errors)
                 warnings.append(error.toString());
@@ -206,6 +239,7 @@ private slots:
         QQmlEngine::setContextForObject(translations, engine.rootContext());
 
         QQuickWindow window;
+        Plasma::Theme plasmaTheme; window.setColor(plasmaTheme.color(Plasma::Theme::BackgroundColor));
         window.resize(520, 1000);
         window.show();
         QQmlComponent component(&engine,
@@ -273,6 +307,9 @@ private slots:
         QVERIFY(fixture.publish());
         QStringList warnings;
         QQmlEngine engine;
+        // Match the actual Plasma engine. Without this, Kirigami BasicTheme
+        // text colors can disagree with the current Plasma SVG controls.
+        Plasma::setupPlasmaStyle(&engine);
         connect(&engine, &QQmlEngine::warnings, &engine, [&warnings](const QList<QQmlError> &errors) {
             for (const auto &error : errors)
                 warnings.append(error.toString());
@@ -282,6 +319,7 @@ private slots:
         engine.rootContext()->setContextObject(translations);
         QQmlEngine::setContextForObject(translations, engine.rootContext());
         QQuickWindow window;
+        Plasma::Theme plasmaTheme; window.setColor(plasmaTheme.color(Plasma::Theme::BackgroundColor));
         window.resize(500, 500);
         window.show();
         QQmlComponent component(&engine, QUrl::fromLocalFile(
@@ -345,12 +383,16 @@ private slots:
     void tidalClient()
     {
         fixture.signedIn = fixture.savedSession = false; fixture.requests = {};
+        fixture.transportRequests.clear(); mediaFixture.calls.clear(); fixture.manyTracks = true;
         fixture.delaySearch = fixture.failSearch = fixture.delayLogin = false;
         fixture.completeLogin = true; fixture.completeOnLoginStatus = false; fixture.loginAttempt = {};
         fixture.snapshot = QJsonObject{{"schema", 1}, {"connected", false}, {"audio_ready", false}};
         QVERIFY(fixture.publish());
         QStringList warnings;
         QQmlEngine engine;
+        // Match the actual Plasma engine. Without this, Kirigami BasicTheme
+        // text colors can disagree with the current Plasma SVG controls.
+        Plasma::setupPlasmaStyle(&engine);
         connect(&engine, &QQmlEngine::warnings, &engine, [&warnings](const QList<QQmlError> &errors) {
             for (const auto &error : errors) warnings.append(error.toString());
         });
@@ -358,7 +400,8 @@ private slots:
         translations->setTranslationDomain(QStringLiteral("spatial-companion-smoke"));
         engine.rootContext()->setContextObject(translations);
         QQmlEngine::setContextForObject(translations, engine.rootContext());
-        QQuickWindow window; window.resize(380, 1000); window.show();
+        QQuickWindow window;
+        Plasma::Theme plasmaTheme; window.setColor(plasmaTheme.color(Plasma::Theme::BackgroundColor)); window.resize(380, 1000); window.show();
         QQmlComponent component(&engine, QUrl::fromLocalFile(
             QStringLiteral(SPATIAL_COMPANION_QML_DIR) + QStringLiteral("/TidalControls.qml")));
         QTRY_VERIFY_WITH_TIMEOUT(component.status() != QQmlComponent::Loading, 5000);
@@ -408,16 +451,91 @@ private slots:
         QVERIFY(QMetaObject::invokeMethod(play, "clicked"));
         QTRY_VERIFY(!item->property("busy").toBool());
         QCOMPARE(fixture.requests.last().toObject()["action"].toString(), QStringLiteral("play"));
-        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("atmos"));
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("lossless"));
         QVERIFY(control("tidalQuality")->setProperty("currentIndex", 1));
         QVERIFY(QMetaObject::invokeMethod(control("tidalQuality"), "activated", Q_ARG(int, 1)));
         QVERIFY(QMetaObject::invokeMethod(play, "clicked"));
         QTRY_VERIFY(!item->property("busy").toBool());
-        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("lossless"));
+        QCOMPARE(fixture.requests.last().toObject()["payload"].toObject()["quality"].toString(), QStringLiteral("atmos"));
+        // Require the native Plasma palette on real controls, not BasicTheme
+        // black text accidentally paired with dark Plasma SVG backgrounds.
+        auto luminance = [](const QColor &color) {
+            auto linear = [](double value) { return value <= 0.04045 ? value / 12.92 : std::pow((value + 0.055) / 1.055, 2.4); };
+            return 0.2126 * linear(color.redF()) + 0.7152 * linear(color.greenF()) + 0.0722 * linear(color.blueF());
+        };
+        for (const char *name : {"tidalSignOut", "tidalSearchTab", "tidalLibrary", "tidalQuality", "tidalSearchInput"}) {
+            auto *theme = qobject_cast<Kirigami::Platform::PlatformTheme *>(
+                qmlAttachedPropertiesObject<Kirigami::Platform::PlatformTheme>(control(name)));
+            QVERIFY(theme);
+            QCOMPARE(QString::fromLatin1(theme->metaObject()->className()), QStringLiteral("PlasmaTheme"));
+            const double foreground = luminance(theme->textColor()), background = luminance(theme->backgroundColor());
+            QVERIFY2((std::max(foreground, background) + 0.05) / (std::min(foreground, background) + 0.05) >= 4.5, name);
+        }
+        // An accepted request can fail later; the music panel must show the
+        // actual asynchronous runtime error instead of appearing to do nothing.
+        fixture.snapshot["runtime"] = QJsonObject{{"loading", true}, {"queue_length", 1}};
+        QVERIFY(fixture.publish());
+        QTRY_COMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Opening music…"));
+        QTRY_VERIFY(control("tidalStop")->isEnabled());
+        QVERIFY(!play->isEnabled());
+        fixture.snapshot["runtime"] = QJsonObject{{"playback_error", "Fixture Atmos stream unavailable"}};
+        QVERIFY(fixture.publish());
+        QTRY_COMPARE(control("tidalError")->property("text").toString(), QStringLiteral("Fixture Atmos stream unavailable"));
+        QCOMPARE(item->property("quality").toString(), QStringLiteral("atmos")); // No automatic fallback.
+        const int failedRequests = fixture.requests.size(); QTest::qWait(50);
+        QCOMPARE(fixture.requests.size(), failedRequests);
+        QJsonObject playback{{"running", true}, {"loaded", true}, {"paused", false},
+            {"position", 12}, {"duration", 180}, {"renderer_ready", true}, {"source_mode", "pcm"}};
+        QJsonObject playing{{"audio", playback}, {"queue_length", 3}, {"queue_index", 1},
+            {"track", QJsonObject{{"title", "Playing fixture"}, {"artist", "Fixture artist"}}}};
+        fixture.snapshot["runtime"] = playing; QVERIFY(fixture.publish());
+        QTRY_COMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Playing"));
+        QTRY_VERIFY(control("tidalPlayPause")->isEnabled());
+        QVERIFY(click("tidalPlayPause")); QTRY_VERIFY(!mediaFixture.calls.isEmpty()); QCOMPARE(mediaFixture.calls.last(), QStringLiteral("PlayPause"));
+        QTRY_VERIFY(!item->property("transportBusy").toBool());
+        QVERIFY(click("tidalNext")); QTRY_COMPARE(mediaFixture.calls.last(), QStringLiteral("Next"));
+        QTRY_VERIFY(!item->property("transportBusy").toBool());
+        QVERIFY(click("tidalPrevious")); QTRY_COMPARE(mediaFixture.calls.last(), QStringLiteral("Previous"));
+        QTRY_VERIFY(!item->property("transportBusy").toBool());
+        playback["paused"] = true; playing["audio"] = playback;
+        fixture.snapshot["runtime"] = playing; QVERIFY(fixture.publish());
+        QTRY_COMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Paused"));
+        playback["error"] = "Fixture decoder refused the media";
+        playback["state"] = "finished"; playback["end_reason"] = "error";
+        playback["loaded"] = false; playing["audio"] = playback;
+        fixture.snapshot["runtime"] = playing; QVERIFY(fixture.publish());
+        QTRY_COMPARE(control("tidalError")->property("text").toString(), QStringLiteral("Fixture decoder refused the media"));
+        QCOMPARE(control("tidalPlaybackState")->property("text").toString(), QStringLiteral("Playback unavailable"));
+        playback["loaded"] = true; playback.remove("state"); playback.remove("end_reason");
+        playback.remove("error"); playing["audio"] = playback;
+        fixture.snapshot["runtime"] = playing; fixture.snapshot["audio_ready"] = false;
+        QVERIFY(fixture.publish()); QTRY_VERIFY(!control("tidalPlayPause")->isEnabled());
+        QVERIFY(control("tidalStop")->isEnabled());
+        fixture.snapshot["audio_ready"] = true; QVERIFY(fixture.publish());
+        QTRY_VERIFY(control("tidalPlayPause")->isEnabled());
+        // Stop is independent from a pending catalog lookup.
+        fixture.delaySearch = true; QVERIFY(click("tidalSearch"));
+        QTRY_VERIFY(item->property("busy").toBool());
+        QVERIFY(click("tidalStop")); QTRY_VERIFY(!fixture.transportRequests.isEmpty()); QCOMPARE(fixture.transportRequests.last(), QStringLiteral("Stop"));
+        QVERIFY(controlBus().send(fixture.delayedSearch.createReply(QVariantList{
+            ControlFixture::json({{"tracks", QJsonArray{fixture.track}}, {"offset", 0}})})));
+        QTRY_VERIFY(!item->property("busy").toBool()); fixture.delaySearch = false;
+        // A bounded list retains space for transport even with twenty results.
+        QVERIFY(click("tidalSearch")); QTRY_VERIFY(!item->property("busy").toBool());
+        QTRY_COMPARE(control("tidalResults")->height(), 240.0);
+        QTRY_VERIFY(control("tidalResults")->property("contentHeight").toDouble() > 240);
+        QVERIFY(control("tidalArtwork0"));
         if (!qEnvironmentVariable("SPATIAL_QML_SCREENSHOT").isEmpty()) {
             QTest::qWait(100);
             QVERIFY(window.grabWindow().save(qEnvironmentVariable("SPATIAL_QML_SCREENSHOT")));
         }
+        item->setProperty("cardWidth", 280); window.resize(300, 1000);
+        QTest::qWait(100);
+        QVERIFY(control("tidalResults")->width() <= 280);
+        QVERIFY(control("tidalNowPlaying")->width() <= 280);
+        if (!qEnvironmentVariable("SPATIAL_QML_SCREENSHOT").isEmpty())
+            QVERIFY(window.grabWindow().save(qEnvironmentVariable("SPATIAL_QML_SCREENSHOT") + ".narrow.png"));
+        item->setProperty("cardWidth", 360); window.resize(380, 1000);
         // Native category and browse controls request collections, then restore
         // the previous category and cached page through Back.
         QVERIFY(control("tidalCategory")->setProperty("currentIndex", 1));
@@ -536,7 +654,7 @@ private slots:
         for (int i = beforeExternalLogout; i < fixture.requests.size(); ++i)
             QVERIFY(!fixture.requests[i].toObject()["payload"].toObject()["refresh"].toBool());
         object.reset(); QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
-        fixture.delayLogin = false;
+        fixture.delayLogin = false; fixture.manyTracks = false;
         QVERIFY2(warnings.isEmpty(), qPrintable(warnings.join('\n')));
     }
 };

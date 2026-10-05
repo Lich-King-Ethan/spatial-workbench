@@ -4,12 +4,13 @@ Spatial audio, head tracking and a native TIDAL mini-client for **Arch/CachyOS +
 Play local files, select an application's audio, or browse TIDAL from the Companion widget.
 Your headphones remain the final output; BudsLink retains the Sony device controls.
 
-> Development build. Physical WF-1000XM5 channel localization and corrected yaw
-> were tested on September 28. Motion still had audible lag. The October 3
-> repaired installation passes all 15 native audio gates on private PipeWire.
-> The second physical test awaits the user connecting the headphones;
-> [status and remaining checks](STATUS.md) separate software evidence from
-> physical and account acceptance.
+> Development build · October 5, 2026. The user confirmed clear channel
+> direction changes and anchored left/right motion on WF-1000XM5 with prediction
+> off. Updated packages pass 489 core tests, 7 native UI checks and all 15 installed
+> audio gates on private PipeWire. Real TIDAL lossless FLAC now reaches the verified
+> renderer/EQ/headphone route, and the user confirmed it sounds good. Atmos,
+> refreshed panel interaction, physical Stop, pitch, roll, recenter and prediction
+> checks remain open. See [current evidence and limits](STATUS.md).
 
 ## Install
 
@@ -39,11 +40,11 @@ The pinned `mpv-omniphony` package replaces stock mpv through pacman.
 After installing updated widget files, sign out and back in when convenient so
 Plasma loads them. The existing widget identity and panel placement are retained.
 
-The TIDAL card provides sign-in, catalogue search, saved favorites, collection
-browsing and playback. Authorization happens on TIDAL's own page in your browser;
+The TIDAL card combines Search and Library navigation, artwork, collection
+browsing, playback controls and visible playback errors. Authorization happens on TIDAL's own page in your browser;
 reopen the Companion after authorizing to finish sign-in. No separate music
-application is required. Choose **Lossless** for ordinary
-playback or **Atmos only** for a strict spatial request. This is an unofficial
+application is required. The panel starts with **Lossless**; choose **Dolby Atmos
+only** for a strict spatial request. It never silently substitutes stereo. This is an unofficial
 client: desktop Atmos availability is not guaranteed, and a catalogue badge does
 not prove that TIDAL returned an Atmos stream. See [TIDAL usage and limits](docs/tidal-runtime.md).
 

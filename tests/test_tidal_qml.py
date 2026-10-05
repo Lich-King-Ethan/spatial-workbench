@@ -28,6 +28,13 @@ class TidalPresentation(unittest.TestCase):
         for value in rejected:
             self.assertEqual(self.evaluate("loginUrl(" + json.dumps(value) + ")"), "")
 
+    def test_artwork_accepts_only_public_identifier_paths(self):
+        url = "https://resources.tidal.com/images/12345678/1234/1234/1234/123456789abc/320x320.jpg"
+        self.assertEqual(self.evaluate("artworkUrl(" + json.dumps(url) + ")"), url)
+        for value in (url + "?token=secret", url.replace("resources.tidal.com", "evil.example"),
+                      "file:///home/user/private.png", "https://resources.tidal.com/private.jpg", None):
+            self.assertEqual(self.evaluate("artworkUrl(" + json.dumps(value) + ")"), "")
+
     def test_catalog_badge_does_not_make_an_artist_playable(self):
         self.assertFalse(self.evaluate("playable({kind:'artist',reference:'',catalogue_atmos:true})"))
         self.assertTrue(self.evaluate("playable({kind:'album',reference:'tidal:album:12'})"))
