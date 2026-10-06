@@ -25,9 +25,15 @@ The complete source and package suites passed **509 tests**, and the native UI
 package passed **8 checks with no skips**. Real-account silent probes loaded every library category
 and decoded Max/FLAC, CD-request/AAC, AAC 320 and AAC 96 using the installed player.
 The current account returned no root folders, so nested-folder acceptance uses
-bounded fixtures, including 400 folders and later pages. The normal installation
-prompt is open; a live AAC route check follows activation. These probes do not
-replace physical listening evidence.
+bounded fixtures, including 400 folders and later pages. The first installation
+prompt timed out waiting for sudo; a fresh normal prompt is open. Revision 4
+remains installed until that transaction succeeds. A live AAC route check follows
+activation. These probes do not replace physical listening evidence.
+
+For implementation commit `609ee88`, [CI](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391395844)
+passed all three Python lanes and the Arch package job. The
+[renderer build](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391398319)
+is still running; no result is assumed.
 
 ## October 5 physical checks
 

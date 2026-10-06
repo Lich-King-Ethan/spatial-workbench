@@ -3,13 +3,16 @@
 ## Current handoff — October 5, 2026
 
 The quality/library update is built as package revision 5; its normal installation
-prompt is open and waiting for the user. Max now accepts
+prompt is open and waiting for the user after the first sudo prompt timed out.
+Revision 4 remains installed. Max now accepts
 the best available stereo rendition; CD/AAC 320/AAC 96 caps and strict Atmos are
 selectable. The widget persists its quality choice through Plasma's configuration.
 Library playlist pages include owned/saved playlists and folders. Source tests
 and package suites passed 509 checks, native UI passed 8 with no skips, and real-account silent probes
 decoded all four stereo quality choices. The CD request legitimately returned AAC
 and was accepted. Installation and installed AAC playback still need confirmation.
+Hosted CI passed all Python lanes and the Arch package job for `609ee88`;
+the renderer run is still pending. See the exact links in [STATUS.md](../STATUS.md).
 
 
 Continue on `fix/positioned-surround-audit` and [PR #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).

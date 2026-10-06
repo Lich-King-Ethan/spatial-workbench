@@ -17,8 +17,12 @@ this account; nested-folder checks use explicit fixtures, including 400 root
 folders and a nested page beyond the SDK constructor's first 50 items. An initial
 probe accidentally imported the older installed provider; its signature errors
 remain in private evidence, and the corrected probe explicitly used the checkout.
-Installation and installed AAC routing are the next checks. The normal Konsole
-installation prompt is open. Restricted standalone queue-test attempts stalled;
+Installation and installed AAC routing are the next checks. The first sudo prompt
+timed out without a package transaction; its log is retained. A new normal Konsole
+prompt is open, with revision 4 still installed. Hosted CI for `609ee88` passed
+the Python 3.11–3.13 lanes and Arch package job in
+[run 37391395844](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391395844).
+The matching renderer run remains in progress. Restricted standalone queue-test attempts stalled;
 the exact test passed in 0.01 seconds in both approved unrestricted contexts, with
 and without a private bus. Those interrupted logs are retained alongside the
 passing full/package suites; no assertion was changed to obtain a pass.

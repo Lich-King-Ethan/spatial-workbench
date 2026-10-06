@@ -82,8 +82,10 @@ The repository URL has not been renamed.
 
 ## Current validation boundaries
 
-On October 5, the installed core/Companion package builds passed **489 core tests**
-and **7 native UI checks**. All **15 installed audio gates** also passed on private
+On October 5, the revision 5 source and core package suites passed **509 tests**;
+the Companion package passed **8 native UI checks with no skips**. Revision 5
+installation and its installed AAC route check await normal package prompts.
+Previously installed revision 4 passed **all 15 audio gates** on private
 PipeWire, including clean owned playback shutdown before fallback cleanup. All
 122 baseline settings/widget files remained unchanged. The user accepted channel
 direction changes and yaw anchoring with prediction off. Pitch, roll, recenter
@@ -96,7 +98,9 @@ The shell was refreshed successfully; the latest player state is idle.
 Use private buses, synthetic protocol fixtures and isolated audio endpoints for
 development. Keep failures in the evidence record: normal playback shutdown must
 stop its producer before capture cleanup, while actual renderer failures must
-remain visible. TIDAL format checks must not silently accept stereo for Atmos or
-lossy audio for Lossless. Never weaken acoustic assertions to make a run green.
+remain visible. TIDAL's Max/CD/AAC choices accept available renditions within
+their documented ceilings. Strict Atmos and the legacy strict Lossless API must
+reject stereo and lossy substitutions respectively. Never weaken acoustic
+assertions to make a run green.
 Coordinate audible playback and movement checks with the user; fixture results
 cannot establish their listening experience. See [current status](STATUS.md).
