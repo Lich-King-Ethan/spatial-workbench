@@ -38,9 +38,15 @@ directory and its component fragment under `wireplumber.conf.d`. The component's
 It advertises readiness on the initial `metadata-added` event. Restarting the
 user's WirePlumber service once after installation activates it; live routing
 fails closed until its capability marker appears.
+Both readiness and target selection resolve default metadata through the source
+that delivered the event. Initial metadata events can arrive before the standard
+event source is discoverable through `Plugin.find`; relying on that global lookup
+would prevent the readiness announcement. The policy does not cache metadata
+proxies, and it never announces readiness without the actual default metadata.
 
 The shipped Lua was executed through a real Lua 5.4 runtime against event
-fixtures. Tests cover disappeared/incompatible targets, normal exact-target
+fixtures. Tests cover initial metadata events before global plugin discovery,
+missing and replaced metadata, disappeared/incompatible targets, normal exact-target
 selection, explicit newer user choices, stale object identities and unaffected
 ordinary streams. A target-PC test must still kill the actual renderer process
 and inspect its application's links. This guard is specifically a protection

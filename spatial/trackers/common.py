@@ -36,7 +36,7 @@ class EngineSource:
         if self.on_change is not None:
             self.on_change()
 
-    def sample(self, key, reported_name, kind, pose):
+    def sample(self, key, reported_name, kind, pose, *, timing=None):
         self.engine.advance(time.monotonic())
         if kind == "earbud" and (not self.engine.connected or self.engine.device != key):
             return False
@@ -48,9 +48,9 @@ class EngineSource:
             generation = self.engine.announce(key, reported_name, kind)
             self.owned[key] = generation
         self.sequence += 1
-        accepted = self.engine.sample(key, generation, self.sequence, pose.values())
+        accepted = self.engine.sample(key, generation, self.sequence, pose.values(), timing=timing)
         self.engine.select()
-        if new and accepted:
+        if accepted:
             self.changed()
         return accepted
 

@@ -19,7 +19,7 @@ from types import SimpleNamespace
 import uuid
 
 from . import pipewire
-from .audio_runtime import AudioError, RendererTelemetry, config_text, renderer_pose
+from .audio_runtime import AudioError, PCM_CHANNELS, RendererTelemetry, config_text, renderer_pose
 from .core import Sink
 from .pose import IDENTITY, Quaternion
 from .processes import stop_child
@@ -88,6 +88,31 @@ async def _command(*args, timeout=5):
 
 
 GUARD_KEY = "spatiald.live-target"
+LIVE_CHANNELS = PCM_CHANNELS
+
+
+def _raw_positions(objects, node):
+    """Read the negotiated client format, never infer it from adapted ports.
+
+    PipeWire exposes an application's native PCM as Format and its possibly
+    downmixed graph layout separately as PortConfig. Node audio.position is
+    only a property; it cannot prove that the actual format is positioned.
+    """
+    for obj in objects:
+        if (isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Node"
+                and str(obj.get("id")) == str(node)):
+            formats = (obj.get("info") or {}).get("params", {}).get("Format", [])
+            raw = [value for value in formats if isinstance(value, dict)
+                   and value.get("mediaType") == "audio" and value.get("mediaSubtype") == "raw"]
+            if len(raw) != 1:
+                return None
+            positions, channels = raw[0].get("position"), raw[0].get("channels")
+            if (not isinstance(positions, list) or not positions
+                    or len(positions) != channels or not all(isinstance(p, str) for p in positions)
+                    or len(set(positions)) != len(positions)):
+                return ()
+            return tuple(positions)
+    return None
 
 
 def _guard_available(objects):
@@ -192,6 +217,10 @@ class LiveTelemetry(RendererTelemetry):
         self.input_node = input_node
         self.input = {}
 
+    def invalidate(self):
+        super().invalidate()
+        self.input = {}
+
     def accept(self, address, args):
         if address == "/omniphony/state/input" and len(args) == 1:
             value = json.loads(args[0])
@@ -205,6 +234,7 @@ class LiveTelemetry(RendererTelemetry):
         applied = self.input.get("applied") or {}
         binaural = self.renderer.get("binaural") or {}
         return (self.capabilities.get("producer") == "renderer"
+                and not self.error
                 and self.capabilities.get("variant") == "standalone"
                 and self.capabilities.get("host") == "cli"
                 and isinstance(binaural, dict) and binaural.get("outputMode") == "binaural"
@@ -239,6 +269,7 @@ class LiveAudio:
         self._pending_filter_inputs = pending_filter_inputs
         self._before_muted = None
         self._failure_mute = None
+        self._pending_source_stop = None
 
     async def probe(self):
         binary = shutil.which(self.binary)
@@ -397,6 +428,8 @@ class LiveAudio:
             return result("idle", "Not enabled")
         if self.process.returncode is not None:
             return result("violation", "The live renderer stopped")
+        if self._state == "error":
+            return result("violation", self._error or self._reason)
         nodes = _nodes(objects)
         physical = {node for node, props in nodes.items()
                     if props.get("node.name") == self._sink.name
@@ -412,6 +445,10 @@ class LiveAudio:
             return result("violation", "Ambiguous live capture input")
         if self._input_serial and any(str(nodes[node].get("object.serial")) != self._input_serial for node in inputs):
             return result("violation", "The live capture input was replaced")
+        for node in inputs:
+            positions = _raw_positions(objects, node)
+            if positions is not None and positions != LIVE_CHANNELS:
+                return result("violation", "The renderer input does not expose the fixed positioned 7.1 PCM format")
         try:
             selected, _ = _stream(objects, self._stream_serial)
         except AudioError:
@@ -434,14 +471,31 @@ class LiveAudio:
                     or str(props.get("node.dont-fallback")).lower() != "true"
                     or str(props.get("node.dont-move")).lower() != "true"):
                 return result("violation", "Renderer output routing protections are missing")
-        output_ports = {}
+        output_ports, ports, input_ports = {}, {}, {}
         for obj in objects:
             if isinstance(obj, dict) and obj.get("type") == "PipeWire:Interface:Port":
                 props = _props(obj)
+                if str(props.get("port.control", "false")).lower() == "true":
+                    continue
+                ports[str(obj.get("id"))] = props
                 if props.get("port.direction") == "out" and str(props.get("port.control", "false")).lower() != "true":
                     output_ports.setdefault(str(props.get("node.id")), set()).add(str(obj.get("id")))
+                if props.get("port.direction") == "in" and str(props.get("node.id")) in inputs:
+                    input_ports[str(obj.get("id"))] = props
+        capture_channels = [props.get("audio.channel") for props in input_ports.values()]
+        capture_positioned = (len(capture_channels) == len(LIVE_CHANNELS)
+                              and set(capture_channels) == set(LIVE_CHANNELS)
+                              and all(_raw_positions(objects, node) == LIVE_CHANNELS for node in inputs))
+        if input_ports and (any(channel not in LIVE_CHANNELS for channel in capture_channels)
+                            or len(set(capture_channels)) != len(capture_channels)):
+            return result("violation", "The renderer capture ports have unknown or duplicate channel positions")
         incoming, outgoing, selected_targets = False, set(), set()
-        linked_ports = set()
+        linked_ports, linked_inputs = set(), set()
+        renderer_links = {node: set() for node in outputs}
+        renderer_targets = {node: set() for node in outputs}
+        renderer_inputs = set()
+        pending_output = False
+        pending_source = False
         for obj in objects:
             if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
                 continue
@@ -456,21 +510,89 @@ class LiveAudio:
                 if source != selected:
                     return result("violation", "An unselected stream is entering the live capture input")
                 incoming = incoming or established
+                pending_source |= not established
                 if established:
-                    linked_ports.add(str(info.get("output-port-id")))
+                    source_port = str(info.get("output-port-id"))
+                    target_port = str(info.get("input-port-id"))
+                    source_props, target_props = ports.get(source_port), input_ports.get(target_port)
+                    if (source_props is None or target_props is None
+                            or str(source_props.get("node.id")) != selected
+                            or source_props.get("port.direction") != "out"
+                            or source_props.get("audio.channel") not in LIVE_CHANNELS
+                            or source_props.get("audio.channel") != target_props.get("audio.channel")):
+                        return result("violation", "An application channel is not linked to its matching renderer input")
+                    if source_port in linked_ports or target_port in linked_inputs:
+                        return result("violation", "Application channels are duplicated in the renderer input")
+                    linked_ports.add(source_port)
+                    linked_inputs.add(target_port)
             if source in outputs:
                 if target not in allowed | pending:
                     return result("violation", "Renderer output is linked outside the selected headphones")
-                if established and target in allowed:
-                    outgoing.add(source)
-                    linked_ports.add(str(info.get("output-port-id")))
+                if target in pending and target not in allowed:
+                    # A smart filter may still be replacing direct links. Its
+                    # own bounded audit must finish before accepting this path.
+                    pending_output = True
+                    continue
+                if not established:
+                    pending_output = True
+                if established:
+                    source_port = str(info.get("output-port-id"))
+                    target_port = str(info.get("input-port-id"))
+                    source_props, target_props = ports.get(source_port), ports.get(target_port)
+                    if source_props is None or target_props is None:
+                        pending_output = True
+                        continue  # Ports may follow links in a settling graph.
+                    if (str(source_props.get("node.id")) != source
+                            or str(target_props.get("node.id")) != target
+                            or source_props.get("port.direction") != "out"
+                            or target_props.get("port.direction") != "in"):
+                        return result("violation", "The renderer's stereo channels are not linked to matching input channels")
+                    if self._state == "starting" and source_props.get("audio.channel") in (None, "UNK"):
+                        # Omniphony initially exposes its multichannel speaker
+                        # stream, then replaces it with positioned binaural
+                        # ports. Do not accept that temporary route as ready;
+                        # the existing startup deadline bounds negotiation.
+                        continue
+                    if (source_props.get("audio.channel") not in ("FL", "FR")
+                            or source_props.get("audio.channel") != target_props.get("audio.channel")):
+                        return result("violation", "The renderer's stereo channels are not linked to matching input channels")
+                    if source_port in renderer_links[source] or target_port in renderer_inputs:
+                        return result("violation", "The renderer's stereo channels have duplicate links")
+                    renderer_links[source].add(source_port)
+                    renderer_inputs.add(target_port)
+                    renderer_targets[source].add(target)
+                    if len(renderer_targets[source]) > 1:
+                        return result("violation", "The renderer's stereo channels are split between inputs")
+                    if target in allowed:
+                        outgoing.add(source)
+                        linked_ports.add(source_port)
             if (self._state == "playing" and self._route and self._route.applied
                     and source == selected and target not in inputs):
                 return result("violation", "Application routing changed while spatial audio was active")
         complete = (bool(output_ports.get(selected)) and all(output_ports.get(node) for node in outputs)
                     and all(output_ports.get(node, set()) <= linked_ports for node in outputs | {selected}))
+        for node in outputs:
+            channels = [ports[port].get("audio.channel") for port in output_ports.get(node, ())]
+            complete = complete and len(channels) == 2 and set(channels) == {"FL", "FR"}
+        source_positioned = False
+        if incoming and selected_targets <= inputs:
+            native = _raw_positions(objects, selected)
+            exposed = [ports[port].get("audio.channel") for port in output_ports.get(selected, ())]
+            # Mono can legitimately be placed in FC or duplicated to FL/FR by
+            # the source adapter. Named multichannel PCM must preserve every
+            # native speaker instead of silently collapsing it to stereo.
+            if native is not None and (not native or (native != ("MONO",)
+                                                     and not set(native) <= set(LIVE_CHANNELS))):
+                return result("violation", "The application's native PCM channel positions are unsupported or unknown")
+            source_positioned = (native is not None and bool(exposed)
+                                 and len(set(exposed)) == len(exposed)
+                                 and set(exposed) <= set(LIVE_CHANNELS)
+                                 and (native == ("MONO",) or set(native) <= set(exposed)))
+            if not source_positioned and self._state == "playing":
+                return result("violation", "The application's native PCM channels were lost before the renderer")
         if (incoming and selected_targets <= inputs and outputs and complete
-                and outgoing == outputs and self.telemetry.ready):
+                and capture_positioned and source_positioned
+                and outgoing == outputs and not pending_output and not pending_source and self.telemetry.ready):
             return result("ready", "Selected application → binaural renderer → physical headphones")
         return result("waiting", "Waiting for the selected application's complete audio path")
 
@@ -495,6 +617,11 @@ class LiveAudio:
     def verified_input_ids(self, objects):
         pending = self.pending_input_ids(objects)
         return pending if self._audit.get("state") == "ready" else set()
+
+    def verified_pcm_routes(self, objects):
+        """Source-session-bound authorization after the full PCM/output audit."""
+        inputs = self.verified_input_ids(objects)
+        return {self._stream_serial: inputs} if inputs else {}
 
     async def _watch(self):
         missing_since = None
@@ -521,7 +648,7 @@ class LiveAudio:
     def set_pose(self, pose):
         self._pose = Quaternion.parse(pose.values()) if pose is not None else IDENTITY
         if self.telemetry.ready:
-            self.telemetry.send("/omniphony/control/head/quat", *map(float, renderer_pose(self._pose)))
+            return self.telemetry.send("/omniphony/control/head/quat", *map(float, renderer_pose(self._pose)))
 
     async def update_sink(self, sink):
         if (self.process is not None or self._state == "starting") and (sink is None or not sink.usable or self._sink is None
@@ -530,11 +657,29 @@ class LiveAudio:
             await self.stop("headphones disconnected")
 
     async def _stop(self, reason):
+        def retain_capture(message):
+            self._state, self._reason = "error", "Capture retained for safe recovery"
+            self._error = message
+            self._audit = {"state": "violation", "reason": message}
+
         current = asyncio.current_task()
         monitor, self._monitor = self._monitor, None
         if monitor is not None and monitor is not current:
             monitor.cancel()
             await asyncio.gather(monitor, return_exceptions=True)
+        pending, self._pending_source_stop = self._pending_source_stop, None
+        if pending is not None:
+            stop_source, reason = pending["stop"], pending["reason"]
+            # Keep capture and its route in place until the owned producer is
+            # gone. Its deliberate disappearance must not race the graph watcher
+            # or briefly restore audible playback to its previous destination.
+            try:
+                await stop_source()
+            except BaseException as exc:
+                pending["error"] = exc
+                self._error = self._error or "Could not stop owned playback"
+                await self._stop("source stop failed")
+                raise
         deliberate = reason in ("stopped", "replaced")
         if self._route is not None and self._route.applied and not deliberate:
             try:
@@ -557,16 +702,20 @@ class LiveAudio:
                 # A destroyed source needs no restoration. A still-present
                 # source which cannot be muted must not be moved to speakers.
                 try:
-                    _stream(await pipewire.capture(), self._stream_serial)
-                except (AudioError, OSError):
-                    pass
-                else:
-                    self._state, self._reason = "error", "Capture retained for safe recovery"
-                    self._error = str(exc) + "; select the application's output or mute it in KDE Sound"
+                    recovery_graph = await pipewire.capture()
+                except Exception:
+                    # Losing graph access does not prove the stream ended.
+                    retain_capture("Could not verify application mute; capture was retained instead of restoring another output")
+                    return
+                # Absence is the only safe exception. An ambiguous snapshot
+                # with more than one match still contains a potentially live
+                # source and cannot justify restoring it without a mute.
+                if any(str(props.get("object.serial")) == self._stream_serial
+                       for props in _nodes(recovery_graph).values()):
+                    retain_capture(str(exc) + "; select the application's output or mute it in KDE Sound")
                     return
             except Exception:
-                self._state, self._reason = "error", "Capture retained for safe recovery"
-                self._error = "Could not verify application mute; capture was retained instead of restoring another output"
+                retain_capture("Could not verify application mute; capture was retained instead of restoring another output")
                 return
         if self._route is not None:
             try:
@@ -596,12 +745,28 @@ class LiveAudio:
         self._audit = {"state": "idle", "reason": reason}
 
     async def stop(self, reason="stopped"):
+        pending = self._pending_source_stop
         launch, self._launch_task = self._launch_task, None
         if launch is not None and launch is not asyncio.current_task():
             launch.cancel()
             await asyncio.gather(launch, return_exceptions=True)
         async with self._lock:
+            if pending is not None and pending["error"] is not None:
+                # Startup cancellation or an earlier cleanup may have consumed
+                # this transaction while we waited. Never unmute a producer
+                # whose stop failed in that other task.
+                raise pending["error"]
             await self._stop(reason)
+
+    async def stop_owned_source(self, stop_source, reason="stopped"):
+        """Quiesce observation, stop an owned producer, then release its route."""
+        # A cancelled startup also calls _stop while holding the live lock.
+        # Give that cleanup the same source-first transaction, consumed once.
+        self._pending_source_stop = {"stop": stop_source, "reason": reason, "error": None}
+        try:
+            await self.stop(reason)
+        finally:
+            self._pending_source_stop = None
 
     def cancel_start(self):
         """Immediate cancellation hook for synchronous desktop sink callbacks."""
@@ -611,7 +776,8 @@ class LiveAudio:
     def status(self):
         running = self.process is not None and self.process.returncode is None
         return {"state": self._state, "running": running,
-                "renderer_ready": bool(running and self.telemetry.ready and self._audit.get("state") == "ready"),
+                "renderer_ready": bool(running and self._state == "playing"
+                                       and self.telemetry.ready and self._audit.get("state") == "ready"),
                 "source_mode": "pcm", "stream_serial": self._stream_serial,
                 "stream_name": self._stream_name, "input_node": self._input_node if running else "",
                 "process_id": self.process.pid if running else None,
@@ -626,7 +792,7 @@ def audit_snapshot(objects, status, sink, *, allowed_filter_inputs=(), pending_f
     Telemetry readiness comes from the running daemon. Every identity, link and
     routing protection is independently checked against this fresh graph.
     """
-    empty = {"pending_inputs": set(), "verified_inputs": set()}
+    empty = {"pending_inputs": set(), "verified_inputs": set(), "verified_pcm_routes": {}}
     if not isinstance(status, dict) or not status.get("running"):
         return {"state": "idle", "reason": "Not enabled", **empty}
     try:
@@ -656,4 +822,5 @@ def audit_snapshot(objects, status, sink, *, allowed_filter_inputs=(), pending_f
     result = live.audit(objects)
     result["pending_inputs"] = live.pending_input_ids(objects)
     result["verified_inputs"] = live.verified_input_ids(objects)
+    result["verified_pcm_routes"] = live.verified_pcm_routes(objects)
     return result

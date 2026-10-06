@@ -1,148 +1,132 @@
-# TIDAL source
+# TIDAL in the Companion widget
 
-The optional `spatial.tidal` module handles account authorization and compressed
-stream discovery. It does not depend on SONE, Torrential, WebKit, or an embedded
-login window. The renderer receives the original E-AC-3 media or DASH manifest;
-the provider does not turn a stereo application stream into Atmos.
+BudsLink Spatial Companion includes a native TIDAL mini-client. The full installer
+includes `python-tidalapi`; you do not need another music application. The client
+is unofficial and still requires your own account and service entitlement.
 
-The implementation uses the maintained `tidalapi` Python package, constrained to
-`>=0.8.11,<0.9`. This is an unofficial service client. TIDAL can change its internal
-API or deny playback for a particular client, subscription, region, or track.
-The integration has no mechanism to bypass those restrictions.
+## Sign in and choose music
 
-## On your computer
+1. Open the **TIDAL** card and choose **Sign in**. Follow its authorization link
+   in your browser and enter the displayed code on TIDAL's own page.
+2. After authorizing, reopen **BudsLink Spatial Companion**. The popup may close
+   when the browser opens; your pending sign-in remains available until its code
+   expires. Keep the card open while it checks and confirms sign-in. Use **Cancel**
+   to abandon a pending attempt, or start again if the code expires.
+3. Use **Search** for tracks, albums, artists and playlists, or **Library** for
+   saved tracks, albums, followed artists and your owned/saved playlists. Open
+   playlist folders to reach their contents. Artwork and a scrolling results area
+   keep the panel compact; browse pages and use **Back** to return.
+4. Start with **Max (best available)**, or choose a lower quality from the menu
+   below. Choose **Atmos only** when you require Atmos. Play a track or collection
+   after the headphone output is ready. Quality applies to the next selection and
+   remains with its queue; it does not interrupt the current song. Your selection
+   is saved for this widget and survives closing or recreating its popup.
+5. The built-in **Now playing** area shows the current title, artist, progress,
+   opening state and playback errors. Pause, skip or stop there; **Stop** remains
+   available while music opens or catalogue requests finish. System media controls
+   also work. **Sign out** removes this application's saved session.
 
-Install the optional TIDAL dependency through the project's package/installer.
-For development in an isolated virtual environment, `pip install '.[tidal]'`
-installs it. Do not use `sudo pip` in the system Python environment.
+The client uses the same spatial playback engine as local files, so there is no
+second TIDAL application to manage. It offers search, favorites, collection
+browsing and playback; personalized home feeds, downloads and queue editing are
+not implemented. Account authorization still uses TIDAL's own browser page.
+
+Opening the card reads local account state. Checking a saved session or starting
+sign-in is explicit; the daemon never launches an authorization browser on its
+own. Pending login polling is bounded, and its code/link are kept out of normal
+broadcast status, diagnostics and persistent storage. Closing the popup pauses
+polling; reopening restores the pending attempt through a local read and resumes
+checks while visible. The attempt lives only in daemon memory, so a daemon restart
+requires starting sign-in again. The browser handles account authorization;
+passwords are never entered into the widget.
+
+## Choose playback quality
+
+| Choice | Requested maximum | If that rendition is unavailable |
+|---|---|---|
+| Max (best available) | Hi-res lossless | Uses CD lossless, then AAC 320 or 96 kbps |
+| High (CD quality) | Lossless, up to 16-bit/44.1 kHz | Uses AAC 320 or 96 kbps |
+| Low (320 kbps) | AAC 320 kbps | Uses AAC 96 kbps |
+| Low (96 kbps) | AAC 96 kbps | Reports unavailable |
+| Atmos only | Original clear E-AC-3 marked Dolby Atmos | Reports unavailable; stereo is not substituted |
+
+These names follow [TIDAL's quality choices](https://support.tidal.com/hc/en-us/articles/17412130162961-HiRes-FLAC-audio).
+The panel shows the delivered service tier and the loaded decoder's format;
+sample rate and packet bitrate appear when the player reports them. A selected
+maximum is not a claim that every track was supplied in that format.
+
+Automatic requests step down only when the service reports a missing rendition.
+Authorization, network, encryption and malformed-manifest errors remain visible.
+The legacy `lossless` API selection still requires lossless audio explicitly.
+
+Lower streaming quality reduces network bandwidth. Bluetooth codec/bitrate and
+the earbuds' own audio processing remain separate device settings; choosing AAC
+here does not change LDAC's radio bitrate.
+
+If an Atmos selection fails, its error now stays visible inside the music panel.
+Choose **Max** or another stereo quality and press Play to request a different rendition;
+the client never silently retries Atmos as stereo. A successful catalogue search
+or login does not establish that playback is available for that track.
+
+A catalogue Atmos badge is only a hint. The returned manifest must satisfy the
+source checks, and the actual decoder must report spatial objects before the
+application confirms Atmos. Nothing turns a stereo TIDAL stream into object audio.
+
+As checked October 5, 2026, [TIDAL's official support page](https://support.tidal.com/hc/en-us/articles/360004255778-Dolby-Atmos)
+(updated March 12) excludes desktop clients from its supported Atmos playback.
+This unofficial client's strict request path does **not** guarantee availability
+or bypass account, platform, region or encryption restrictions. Real account
+authorization and browsing were confirmed on October 5. The selected track's
+Atmos request was rejected by the service; Atmos streaming remains unaccepted.
+
+## Playback repair — October 5
+
+Lossless playback exposed a separate local failure: FFmpeg rejected HTTPS segments
+referenced by TIDAL's validated local DASH manifest. Core revision 4 supplies the
+required protocol list only for a retained manifest prepared by the TIDAL provider.
+Other local files and stream requests keep their existing behavior, and manifest,
+codec and encryption checks remain enforced. The same real FLAC rendition failed
+without this option and decoded successfully with it in a silent player probe.
+After installation, a ten-second read-only observation confirmed real TIDAL FLAC
+stereo through the binaural renderer, EQ and physical XM5 output with fresh head
+tracking. All 12 independent graph observations passed without changing playback
+or volume. The user confirmed that the music sounds good. Plasma's panel was
+reloaded afterward. Interactive panel acceptance, physical Stop and Atmos
+streaming remain pending; see [current status](../STATUS.md).
+
+## CLI and settings
+
+The existing CLI remains useful alongside the card:
 
 ```sh
-spatialctl tidal login
-spatialctl tidal status
-spatialctl tidal search 'artist song'
-spatialctl tidal inspect https://tidal.com/browse/track/TRACK_ID
-spatialctl play https://tidal.com/browse/track/TRACK_ID
+budslink-spatial tidal login
+budslink-spatial tidal status
+budslink-spatial tidal search 'artist song'
+budslink-spatial tidal inspect https://tidal.com/browse/track/TRACK_ID
+budslink-spatial play https://tidal.com/browse/track/TRACK_ID
+budslink-spatial tidal logout
 ```
 
-Replace `TRACK_ID` with a real numeric catalogue track ID. The login command opens
-the official TIDAL device authorization page in your external browser and waits
-for you to authorize. `spatialctl tidal login --no-browser` prints the same link
-for manual use. The daemon never opens a sign-in window and never asks for a
-password. Cancel the login command with Ctrl-C if necessary.
+Replace `TRACK_ID` with a real numeric ID. `inspect` checks the source response
+without playing audio or printing a signed media URL. `--stereo` requests an
+ordinary stream explicitly; this older CLI option allows the best available
+non-Atmos format, whereas the legacy `lossless` API choice is strict. Direct `play` uses `tidal_require_atmos` in
+`~/.config/spatiald/config.toml`; the widget's quality choice applies to that
+play request without rewriting configuration. `spatialctl` is the compatible alias.
 
-`inspect` contacts TIDAL, checks the actual playback response, and prints only
-safe metadata. It does not play audio or print a signed media URL. A successful
-`inspect` result proves that the service returned a usable clear E-AC-3 manifest
-marked `DOLBY_ATMOS`; the decoder must still confirm that object metadata was
-actually decoded. `renderer_confirmed_atmos` therefore remains false in the
-provider's result.
+A manual core-only installation may omit the optional SDK. Install the official
+`python-tidalapi` package, or use the `tidal` extra inside a development virtual
+environment. Missing dependencies produce an unavailable state while local
+playback, tracking and Sony controls continue independently.
 
-To check ordinary stereo explicitly, use `spatialctl tidal inspect TRACK_ID
---stereo`. An Atmos request never silently retries as stereo.
+## Local account storage
 
-Other commands:
+Tokens live in `~/.local/state/spatiald/tidal/session.json` (or the matching XDG
+state directory), protected by a private directory and mode `0600` file. This is
+filesystem protection, not encryption. Logout removes this client's local copy;
+it does not cancel your subscription or sign out other applications. Concurrent
+login/logout checks prevent an older request from resurrecting a deleted session.
 
-```sh
-spatialctl tidal tracks https://tidal.com/browse/album/ALBUM_ID
-spatialctl tidal tracks https://tidal.com/browse/playlist/PLAYLIST_UUID
-spatialctl tidal logout
-```
-
-`tracks` enumerates collection track IDs; it does not start playback or claim
-that every track has an Atmos rendition. Search's `catalogue_atmos` field is a
-catalogue hint, not a playback capability result. Album/playlist queue behavior
-belongs to the player, not to this source module.
-
-The module is also directly callable as `python -m spatial.tidal` with the same
-arguments, which is useful while developing before installation.
-
-## Capability checks
-
-| Response | Behavior |
-|---|---|
-| `DOLBY_ATMOS`, clear E-AC-3 BTS manifest | Original HTTPS media URL passed through |
-| `DOLBY_ATMOS`, clear E-AC-3 DASH manifest | Original manifest passed through in a temporary private file |
-| Stereo returned for an Atmos request | Request fails with an explicit message |
-| Catalogue says Atmos but stream says stereo | Request fails with an explicit message |
-| AC-4 or another unsupported Atmos codec | Request fails with an explicit message |
-| DASH `ContentProtection` or BTS encryption | Request fails; no key handling or decryption |
-| Missing login | Audio daemon reports sign-in needed; other modules continue |
-| Expired/revoked login, network failure, or service rejection | Source reports the error without exposing credentials |
-
-The Atmos request uses `audioquality=DOLBY_ATMOS`, as implemented by Torrential's
-current source. `tidalapi` supports string quality values and its normal
-`Track.get_stream()` sends that field. This request choice is based on inspected
-upstream code, not an authenticated playback observation on the user's account.
-Service acceptance is checked at runtime; the code never assumes the request
-field makes a returned stream Atmos.
-
-## Isolation and credential storage
-
-Account state lives in
-`$XDG_STATE_HOME/spatiald/tidal/session.json`, defaulting to
-`~/.local/state/spatiald/tidal/session.json`. The containing directory is private
-(`0700`); the session file is private (`0600`) and replaced atomically. Tokens are
-never placed in UI state, source metadata, or normal diagnostic output. These
-tokens are stored locally, protected by filesystem permissions rather than
-encrypted at rest. `logout` deletes this application's local copy; it does not
-revoke other TIDAL clients or cancel a subscription.
-
-A running daemon checks the saved session before each source request. A new
-login is loaded on the next request; logout invalidates cached authorization
-without restarting the daemon. Credential reads, atomic replacements, and
-logout share a private, persistent `session.json.lock` file. A request may save
-refreshed credentials only if the session file still has the identity it read.
-If another process logs out or replaces the login during a service request, the
-old result is rejected and any prepared DASH file is removed. An HTTP request
-already in progress can finish, but cannot restore the deleted login or overwrite
-the new one. The filesystem lock is released during all network/browser work.
-
-Every service HTTP request has connect/read timeouts. Account restoration and
-stream resolution should run in the source worker rather than the desktop
-event loop. An unavailable TIDAL service does not own or stop tracker discovery,
-BudsLink controls, PipeWire device discovery, or other media sources.
-
-Signed media URLs are short lived. A player must request a fresh `PreparedTrack`
-before playback/retry and must not persist a resolved URL as a bookmark. Player
-diagnostics must redact source URLs. The `PreparedTrack` object owns temporary
-DASH files and must be cleaned up when playback ends.
-
-```python
-from spatial.tidal import TidalProvider
-
-provider = TidalProvider()
-try:
-    with provider.prepare("tidal:track:123456789") as source:
-        # Give source.media to the player and keep this context alive until stop.
-        # Only source.metadata is suitable for normal status reporting.
-        run_player(source.media)
-finally:
-    provider.close()
-```
-
-## Verification
-
-Automated tests cover real manifest parsing and the provider's library boundary:
-clear E-AC-3 handoff, preserved DASH text, explicit stereo rejection, mixed codec
-rejection, encrypted/protected stream rejection, URL validation, session
-permissions, source failure isolation, login separation, and collection
-pagination. Concurrent-session tests cover daemon logout, new-login reload,
-credential changes during restore/service requests, atomic save/logout ordering,
-overlapping source workers, and stale DASH cleanup. Fixtures describe protocol
-responses; they are not recorded proof
-that an account received Atmos.
-
-The `tidalapi 0.8.11` wheel was installed and its public auth/session interfaces
-were checked without importing or copying a user's credentials. A live
-unauthenticated request to TIDAL's device authorization endpoint also succeeded:
-the service returned a device authorization with a 300-second lifetime. No browser
-was opened, no account was authorized, and the unused code was discarded. Full
-TIDAL authorization and track playback require the user's own account and local
-audio stack; they have not been validated in this workspace.
-
-Inspected upstream sources:
-
-- [python-tidal 9c41fbe — session/authentication](https://github.com/EbbLabs/python-tidal/blob/9c41fbe6b2f2cd9fa00dca11e83574fd929ec020/tidalapi/session.py)
-- [python-tidal 9c41fbe — stream and manifest model](https://github.com/EbbLabs/python-tidal/blob/9c41fbe6b2f2cd9fa00dca11e83574fd929ec020/tidalapi/media.py)
-- [Torrential f028ec5 — playback request](https://github.com/oliveiraethales/torrential/blob/f028ec587f698ee9448a2abc5cbf657e3dd7549b/lib/core/tidal_api.dart)
-- [tidalapi login documentation](https://tidalapi.netlify.app/login)
+[Implementation and stream contracts](tidal-reference.md) cover manifests,
+credential races and source provenance. [Current validation](../STATUS.md)
+separates synthetic tests from authenticated service and listening acceptance.

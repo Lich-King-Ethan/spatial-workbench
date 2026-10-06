@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections import deque
+import copy
 import logging
 from pathlib import Path
 import signal
@@ -12,6 +14,7 @@ from .core import Engine
 from .errors import PublicError, public_message
 from .preferences import Preferences
 from .settings import Settings, config_directory
+from .timing import Predictor, reported_sink_latency
 
 LOG = logging.getLogger(__name__)
 
@@ -47,10 +50,20 @@ class Runtime:
         self.playback_error = None
         self._lock = asyncio.Lock()
         self._play_lock = asyncio.Lock()
+        self._live_lock = asyncio.Lock()
         self._request = 0
         self._prepared = None
         self._had_playback = False
         self._tidal = None
+        self._queue_require_atmos = settings.tidal_require_atmos
+        self._queue_require_lossless = False
+        self._queue_quality = None
+        self._tidal_public_status = {"state": "unchecked", "authenticated": False}
+        self._tidal_account_request = 0
+        self._tidal_account_published = 0
+        self._tidal_account_barrier = 0
+        self._tidal_account_pending = {}
+        self._requested_tidal = False
         self._launch_task = None
         self._launch_target = None
         self._background = set()
@@ -60,8 +73,122 @@ class Runtime:
         self._live_automatic = False
         self._live_media_pid = None
         self._auto_paused_pid = None
+        self._predictor = Predictor()
+        self._timing_samples = deque(maxlen=512)
+        self._timing_applications = deque(maxlen=512)
+        self._timing_sample_key = None
+        self._timing_reference = None
+        self._timing_reference_serial = 0
+        self._latency_objects = None
+        self._latency_target = None
+        self._latency_observed_ns = None
+        self._latency_ns = None
+        self._latency_evidence = {"state": "unknown", "reason": "no_graph", "latency_ns": None}
+        self._prediction_status = {"enabled": settings.head_prediction_enabled,
+                                   "applied": False, "reason": "no_sample"}
+
+    def _reported_latency(self, now_ns):
+        """Use only a recent graph observation for this physical sink session."""
+        objects = getattr(self.desktop, "pipewire_objects", None)
+        observed_ns = getattr(self.desktop, "pipewire_observed_ns", None)
+        sink = self.engine.sink if self._ready() else None
+        target = (self.engine.epoch, sink.device, sink.name, sink.serial) if sink else None
+        if (objects is not self._latency_objects or target != self._latency_target
+                or observed_ns != self._latency_observed_ns):
+            self._latency_objects, self._latency_target = objects, target
+            self._latency_observed_ns = observed_ns
+            self._latency_ns, self._latency_evidence = reported_sink_latency(objects, sink)
+        evidence = dict(self._latency_evidence)
+        evidence["graph_observed_ns"] = observed_ns
+        if type(observed_ns) is not int or not 0 <= now_ns - observed_ns <= 2_000_000_000:
+            evidence.update(state="unknown", reason="missing_or_stale_graph", latency_ns=None)
+            return None, evidence
+        return self._latency_ns, evidence
+
+    def _observe_tracker_pose(self):
+        """Keep each accepted selected sample, independently of renderer ticks."""
+        self.engine.select()
+        tracker = self.engine.trackers.get(self.engine.active)
+        if tracker is None:
+            self._predictor.reset()
+            self._timing_reference = self._timing_sample_key = None
+        else:
+            reference = (self.engine.epoch, tracker.key, tracker.generation,
+                         self.engine.reference_generation, self.engine.alignment.values(),
+                         tracker.recenter.values(), self._target())
+            if reference != self._timing_reference:
+                self._timing_reference = reference
+                self._timing_reference_serial += 1
+            self._predictor.observe(self.engine.pose, tracker.timing, reference)
+            sample_key = (reference, tracker.sequence)
+            if sample_key != self._timing_sample_key:
+                self._timing_sample_key = sample_key
+                self._timing_samples.append({
+                    "reference": self._timing_reference_serial, "kind": tracker.kind,
+                    "generation": tracker.generation, "epoch": self.engine.epoch,
+                    "engine_sequence": tracker.sequence,
+                    "observed_pose": list(self.engine.pose.values()),
+                    "sensor_pose": list(tracker.orientation.values()),
+                    "timing": copy.deepcopy(tracker.timing)})
+        return tracker
+
+    def _render_pose(self, consumer, kind):
+        """Apply one bounded pose and retain timing only in private memory."""
+        now_ns = time.monotonic_ns()
+        self.engine.advance(time.monotonic())
+        tracker = self._observe_tracker_pose()
+        latency_ns, latency = self._reported_latency(now_ns)
+        if tracker is None:
+            pose = None
+            details = {"enabled": self.settings.head_prediction_enabled,
+                       "applied": False, "reason": "no_active_tracker"}
+        else:
+            pose, details = self._predictor.predict(
+                now_ns, latency_ns, enabled=self.settings.head_prediction_enabled,
+                max_prediction_ms=self.settings.head_prediction_max_ms)
+            # Unsupported timing disables prediction, never ordinary tracking.
+            pose = pose if pose is not None else self.engine.pose
+        self._prediction_status = details
+        sent_ns = consumer.set_pose(pose)
+        # A return timestamp means an actual OSC datagram was submitted. Cached
+        # poses, fake test consumers and unavailable renderers create no send fact.
+        if type(sent_ns) is int:
+            from .audio_runtime import renderer_pose
+            from .pose import IDENTITY
+            applied = pose if pose is not None else IDENTITY
+            self._timing_applications.append({
+                "sent_ns": sent_ns, "consumer": kind,
+                "reference": self._timing_reference_serial,
+                "source_sequence": tracker.sequence if tracker else None,
+                "pose": list(applied.values()), "renderer_pose": list(renderer_pose(applied)),
+                "prediction": dict(details), "latency_evidence": latency})
+        return pose
+
+    def timing_snapshot(self):
+        """Explicit diagnostic read; it never changes pose or broadcasts a frame."""
+        now_ns = time.monotonic_ns()
+        _, latency = self._reported_latency(now_ns)
+        observed = []
+        for name, consumer in (("media", self.audio), ("live", self.live)):
+            telemetry = getattr(consumer, "telemetry", None)
+            for event in getattr(telemetry, "observed_poses", ()):
+                observed.append({**event, "consumer": name})
+        observed.sort(key=lambda row: row["received_ns"])
+        return copy.deepcopy({
+            "schema": 1, "clock": "host-monotonic", "captured_ns": now_ns,
+            "clock_scope": "HID receipt, daemon receipt, OSC submission and renderer telemetry receipt on this host; no device sampling or acoustic clock",
+            "samples": list(self._timing_samples),
+            "applications": list(self._timing_applications),
+            "renderer_observations": observed[-512:],
+            "latency_evidence": latency, "prediction_status": dict(self._prediction_status),
+            "limits": {"history_records": 512, "configured_prediction_max_ms": self.settings.head_prediction_max_ms,
+                       "quaternion_fallback_max_ms": 40.0, "correction_max_degrees": 12.0}})
 
     def notify(self):
+        # Provider callbacks are serialized on this event loop. Observe before
+        # another packet can replace the latest sample; this never sends OSC or
+        # publishes sensor-rate D-Bus state. Other notifications are idempotent.
+        self._observe_tracker_pose()
         self.changed.set()
         # A tick may already be waiting on the player lock. Device callbacks must
         # cancel the launch immediately, without needing that same lock.
@@ -91,6 +218,9 @@ class Runtime:
                 "live": live,
                 "diagnostics": self.diagnostics.status() if self.diagnostics is not None else {"state": "disabled"},
                 "playback_error": self.playback_error, "track": dict(self.metadata),
+                "tidal": {**self._tidal_public_status,
+                          "ui_default_quality": "max",
+                          "default_quality": "atmos" if self.settings.tidal_require_atmos else "lossless"},
                 "queue_length": len(self.queue), "queue_index": self.queue_index,
                 "loading": self.loading}
 
@@ -98,12 +228,13 @@ class Runtime:
         if self._launch_task is not None and not self._launch_task.done():
             self._launch_task.cancel()
 
-    async def request_play(self, reference):
+    async def request_play(self, reference, *, require_atmos=None, require_lossless=False, quality=None):
         """Acknowledge a UI request promptly; readiness/decoder errors appear in State."""
         if not isinstance(reference, str) or not reference.strip():
             raise ValueError("select a media path or TIDAL URL")
         self._ui_request += 1
         ui_request = self._ui_request
+        self._requested_tidal = self.is_tidal(reference)
         self.loading = True
         self.playback_error = None
         self.notify()
@@ -115,7 +246,8 @@ class Runtime:
                 self.playback_error = None
             self.notify()
             try:
-                await self.play(reference, _ui_token=ui_request)
+                await self.play(reference, _ui_token=ui_request, require_atmos=require_atmos,
+                                require_lossless=require_lossless, quality=quality)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
@@ -178,11 +310,154 @@ class Runtime:
             self._tidal = TidalProvider()
         return self._tidal
 
-    async def _worker(self, callback, *args, cleanup=None, **kwargs):
+    async def tidal_request(self, action, arguments):
+        """Bounded, explicit Companion requests; blocking SDK work stays off-loop."""
+        allowed = {
+            "status": {"refresh"}, "login_status": set(), "login_start": set(), "login_poll": {"login_id"},
+            "login_cancel": {"login_id"}, "logout": set(),
+            "search": {"query", "limit", "offset"},
+            "collection": {"kind", "id", "limit", "offset"},
+            "library": {"kind", "limit", "offset", "folder_id"}, "play": {"reference", "quality"}}
+        if action not in allowed or not isinstance(arguments, dict) or set(arguments) - allowed[action]:
+            raise PlaybackError("Unsupported TIDAL client request")
+        provider = self._tidal_provider()
+        if action == "login_status":
+            # This short local read recovers a browser handoff after the popup
+            # closes. Its code/link belong only to this direct reply, never the
+            # shared account-state journal or normal State snapshots.
+            return provider.login_status()
+        if action == "play":
+            reference, quality = arguments.get("reference"), arguments.get("quality")
+            from .tidal import parse_reference
+            if not isinstance(reference, str) or quality not in ("auto", "max", "cd", "aac320", "aac96", "atmos", "lossless"):
+                raise PlaybackError("Choose a TIDAL selection and a supported playback quality")
+            quality = "max" if quality == "auto" else quality
+            kind, identifier = parse_reference(reference)
+            request = await self.request_play(f"tidal:{kind}:{identifier}", require_atmos=quality == "atmos",
+                                              require_lossless=quality == "lossless",
+                                              quality=quality if quality not in ("atmos", "lossless") else None)
+            return {"state": "loading", "request": request, "quality": quality}
+        account_mutation = action in ("login_start", "login_cancel", "logout")
+        account_request = None
+
+        def claim_account():
+            nonlocal account_request
+            if action == "login_start" and "logout" in self._tidal_account_pending.values():
+                raise PlaybackError("TIDAL sign-out is still finishing; try signing in again shortly")
+            self._tidal_account_request += 1
+            account_request = self._tidal_account_request
+            if account_mutation:
+                self._tidal_account_barrier = account_request
+                self._tidal_account_pending[account_request] = action
+
+        def publish_account(result):
+            pending_mutation = any(token >= self._tidal_account_barrier
+                                   for token in self._tidal_account_pending)
+            if (account_request is not None
+                    and account_request >= self._tidal_account_barrier
+                    and account_request >= self._tidal_account_published
+                    and (account_mutation or not pending_mutation)):
+                # Authorization links/codes belong exclusively to the direct
+                # reply, including when an abandoned worker completes later.
+                state = result.get("state", "unknown")
+                self._tidal_public_status = {"state": state,
+                    "authenticated": result.get("authenticated") is True or state == "signed_in"}
+                self._tidal_account_published = account_request
+                self.notify()
+
+        def account_finished(task):
+            self._tidal_account_pending.pop(account_request, None)
+            if task.cancelled():
+                return
+            try:
+                result = task.result()
+            except Exception:
+                return
+            if action == "logout":
+                result = {"state": "signed_out", "authenticated": False, "session_saved": False}
+            publish_account(result)
+
+        async def account_worker(callback, *args, **kwargs):
+            # Cancellation of the D-Bus caller cannot cancel an SDK thread.
+            # Keep its mutation barrier until that actual worker finishes.
+            return await self._worker(callback, *args, on_started=claim_account,
+                                      on_finished=account_finished, **kwargs)
+
+        if action == "status":
+            refresh = arguments.get("refresh", False)
+            if type(refresh) is not bool:
+                raise PlaybackError("TIDAL session refresh must be true or false")
+            result = await account_worker(provider.session_status, refresh=refresh)
+        elif action == "login_start":
+            result = await account_worker(provider.login_start)
+        elif action in ("login_poll", "login_cancel"):
+            login_id = arguments.get("login_id", "")
+            if not isinstance(login_id, str) or len(login_id) > 128:
+                raise PlaybackError("Invalid TIDAL sign-in request")
+            # Cancellation only marks the attempt under a short lock. Do this
+            # immediately, even while its network worker is still running.
+            if action == "login_cancel":
+                result = provider.login_cancel(login_id)
+                # Closing an old sign-in page can cancel its code, but cannot
+                # replace an already accepted account sign-out operation.
+                if "logout" not in self._tidal_account_pending.values():
+                    claim_account()
+                    self._tidal_account_pending.pop(account_request, None)
+            else:
+                result = await account_worker(provider.login_poll, login_id)
+        elif action == "logout":
+            provider.login_cancel()
+            if (self._requested_tidal or self.metadata.get("source") == "TIDAL"
+                    or any(self.is_tidal(item) for item in self.queue)):
+                await self.stop_playback()
+                self.queue, self.queue_index, self.metadata = [], 0, {}
+            await account_worker(provider.logout, control=True)
+            result = {"state": "signed_out", "authenticated": False, "session_saved": False}
+        else:
+            limit, offset = arguments.get("limit", 20 if action == "search" else 50), arguments.get("offset", 0)
+            if (type(limit) is not int or not 1 <= limit <= 50
+                    or type(offset) is not int or not 0 <= offset <= 10000):
+                raise PlaybackError("TIDAL pages need a limit from 1 to 50 and an offset from 0 to 10000")
+            if action == "search":
+                query = arguments.get("query")
+                if not isinstance(query, str) or not query.strip() or len(query) > 512:
+                    raise PlaybackError("Enter a search query of at most 512 characters")
+                result = await self._worker(provider.search_catalogue, query, limit=limit, offset=offset)
+            else:
+                kind = arguments.get("kind")
+                if not isinstance(kind, str):
+                    raise PlaybackError("Choose a TIDAL collection type")
+                if action == "library":
+                    folder_id = arguments.get("folder_id", "root")
+                    if (not isinstance(folder_id, str) or len(folder_id) > 128
+                            or ("folder_id" in arguments and kind != "playlists")):
+                        raise PlaybackError("Choose a valid playlist folder")
+                    result = await self._worker(provider.library, kind, limit=limit, offset=offset,
+                                                **({"folder_id": folder_id} if "folder_id" in arguments else {}))
+                else:
+                    identifier = arguments.get("id")
+                    if not isinstance(identifier, str) or len(identifier) > 128:
+                        raise PlaybackError("Choose a valid TIDAL collection")
+                    result = await self._worker(provider.collection, kind, identifier, limit=limit, offset=offset)
+        if action == "login_cancel":
+            publish_account(result)
+        return result
+
+    async def _worker(self, callback, *args, cleanup=None, control=False, on_started=None,
+                      on_finished=None, **kwargs):
         """Keep ownership of bounded network work even if its caller is cancelled."""
+        # These are SDK workers, including detached work whose caller cancelled.
+        # Reserve one extra slot for sign-out, so catalogue requests cannot fill
+        # the shared executor with threads waiting on the provider's session lock.
+        if len(self._workers) >= (5 if control else 4):
+            raise PlaybackError("TIDAL is busy; wait for the current requests to finish")
+        if on_started is not None:
+            on_started()
         task = asyncio.create_task(asyncio.to_thread(callback, *args, **kwargs))
         self._workers.add(task)
         task.add_done_callback(self._workers.discard)
+        if on_finished is not None:
+            task.add_done_callback(on_finished)
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -205,7 +480,7 @@ class Runtime:
                 parsed.scheme in ("http", "https") and
                 (parsed.hostname or "").lower() in ("tidal.com", "www.tidal.com", "listen.tidal.com"))
 
-    async def play(self, reference, *, _ui_token=None):
+    async def play(self, reference, *, _ui_token=None, require_atmos=None, require_lossless=False, quality=None):
         if _ui_token is None:
             self._ui_request += 1
             self.loading = False
@@ -213,7 +488,18 @@ class Runtime:
             raise PlaybackError("playback request was cancelled")
         if not isinstance(reference, str) or not reference.strip():
             return await self.resume()
+        if require_atmos is not None and type(require_atmos) is not bool:
+            raise PlaybackError("Atmos playback selection must be true or false")
+        if type(require_lossless) is not bool or (require_lossless and require_atmos is not False):
+            raise PlaybackError("Lossless playback needs an explicit ordinary-audio selection")
+        if quality is not None:
+            if quality not in ("auto", "max", "cd", "aac320", "aac96", "atmos") or not self.is_tidal(reference):
+                raise PlaybackError("Choose a supported TIDAL playback quality")
+            quality = "max" if quality == "auto" else quality
+            if require_lossless or (require_atmos is True and quality != "atmos"):
+                raise PlaybackError("Choose one TIDAL playback quality")
         self._request += 1
+        self._requested_tidal = self.is_tidal(reference)
         self._cancel_launch()
         request = self._request
         self.provider_status("playback", "starting", "Preparing the selected source")
@@ -231,6 +517,10 @@ class Runtime:
                 raise PlaybackError("playback request was superseded")
             self.queue = queue
             self.queue_index = 0
+            self._queue_require_atmos = (quality == "atmos" if quality is not None else
+                                        self.settings.tidal_require_atmos if require_atmos is None else require_atmos)
+            self._queue_require_lossless = require_lossless
+            self._queue_quality = quality
             await self._start_current(request)
 
     async def _prepare_current(self):
@@ -239,8 +529,10 @@ class Runtime:
         if self.is_tidal(reference):
             provider = self._tidal_provider()
             track_id = reference.rsplit(":", 1)[-1]
-            prepared = await self._worker(provider.prepare, track_id, require_atmos=self.settings.tidal_require_atmos,
-                                          cleanup=lambda item: item.cleanup())
+            prepared = await self._worker(provider.prepare, track_id, require_atmos=self._queue_require_atmos,
+                                          cleanup=lambda item: item.cleanup(),
+                                          **({"require_lossless": True} if self._queue_require_lossless else {}),
+                                          **({"quality": self._queue_quality} if self._queue_quality is not None else {}))
             return prepared.media, dict(prepared.metadata), prepared
         if parsed.scheme == "file":
             if parsed.netloc not in ("", "localhost"):
@@ -275,7 +567,7 @@ class Runtime:
                 if prepared is not None:
                     prepared.cleanup()
                 raise PlaybackError("headphone output disconnected while preparing playback")
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._prepared = prepared
             try:
@@ -283,7 +575,9 @@ class Runtime:
                 self._launch_target = target
                 self._launch_task = asyncio.create_task(self.audio.start(
                     media, self.engine.sink, require_spatial=bool(prepared is not None and
-                         metadata.get("atmos_manifest", self.settings.tidal_require_atmos))), name="player-launch")
+                         metadata.get("atmos_manifest", self._queue_require_atmos)),
+                    validated_tidal_dash=getattr(prepared, "validated_dash", False) is True),
+                    name="player-launch")
                 try:
                     await self._launch_task
                 except asyncio.CancelledError:
@@ -295,7 +589,7 @@ class Runtime:
                     self._launch_target = None
                 if (request != self._request or self.stop_event.is_set() or not self._ready()
                         or target != self._target()):
-                    await self.audio.stop("playback request was cancelled")
+                    await self._stop_audio("playback request was cancelled")
                     raise PlaybackError("playback request was cancelled")
             except BaseException:
                 self._cleanup_prepared()
@@ -308,14 +602,35 @@ class Runtime:
             self.provider_status("playback", "ready", "Playback started")
         self.notify()
 
+    async def _stop_audio(self, reason="stopped"):
+        # Callers hold the player lock. Serialize capture selection with this
+        # teardown, and identify ownership again after acquiring the live lock.
+        async with self._live_lock:
+            pid = self.audio.status().get("process_id")
+            if (self.live is not None and self._live_automatic and pid is not None
+                    and pid == self._live_media_pid):
+                try:
+                    await self.live.stop_owned_source(lambda: self.audio.stop(reason), reason)
+                except BaseException:
+                    # Failed teardown may have muted this still-live producer.
+                    # An automatic retry must not undo that safety recovery.
+                    self._auto_paused_pid = pid
+                    raise
+                finally:
+                    self._live_automatic = False
+                    self._live_media_pid = None
+            else:
+                await self.audio.stop(reason)
+
     async def stop_playback(self):
         self._ui_request += 1
+        self._requested_tidal = False
         self.loading = False
         self._request += 1
         self._cancel_launch()
         self.notify()
         async with self._lock:
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._had_playback = False
         self.notify()
@@ -327,7 +642,7 @@ class Runtime:
             self._ui_request += 1
             self._request += 1
             self._cancel_launch()
-            await self.audio.stop()
+            await self._stop_audio()
             self._cleanup_prepared()
             self._had_playback = False
             self.notify()
@@ -395,6 +710,10 @@ class Runtime:
             await self.equalizer.stop()
 
     async def start_live(self, stream_serial):
+        async with self._live_lock:
+            await self._start_live(stream_serial)
+
+    async def _start_live(self, stream_serial):
         if self.live is None or not self.settings.live_enabled:
             raise PlaybackError("Live application audio is disabled in configuration")
         if not self._ready() or self.desktop is None:
@@ -409,10 +728,11 @@ class Runtime:
         self.notify()
 
     async def stop_live(self):
-        self._live_automatic = False
-        self._auto_paused_pid = self.audio.status().get("process_id")
-        if self.live is not None:
-            await self.live.stop()
+        async with self._live_lock:
+            self._live_automatic = False
+            self._auto_paused_pid = self.audio.status().get("process_id")
+            if self.live is not None:
+                await self.live.stop()
         self.notify()
 
     @staticmethod
@@ -437,38 +757,39 @@ class Runtime:
         retry = Backoff()
         next_attempt = 0.0
         while not self.stop_event.is_set():
-            state, live = self.audio.status(), self.live.status()
-            pid = state.get("process_id")
-            suitable = bool(state.get("running") and state.get("loaded") and
-                            state.get("decoder") and state["decoder"] != "orender" and pid)
-            if self._live_automatic and (not suitable or pid != self._live_media_pid):
-                await self.live.stop("stopped")
-                self._live_automatic = False
-                self._live_media_pid = None
-                next_attempt = 0.0
-                retry.reset()
-                live = self.live.status()
-            busy = live.get("running") or live.get("state") == "starting"
-            if (suitable and not busy and self._ready() and self.desktop is not None
-                    and pid != self._auto_paused_pid and time.monotonic() >= next_attempt):
-                stream = self._player_stream(self.desktop.pipewire_objects, pid)
-                if stream:
-                    self._live_automatic = True
-                    self._live_media_pid = pid
-                    try:
-                        await self.live.start(self.engine.sink, stream, self.desktop.pipewire_objects)
-                    except Exception as exc:
-                        self.provider_status("stereo_audio", "unavailable", public_message(exc))
-                    next_attempt = time.monotonic() + retry.next_delay()
-            if self._live_automatic and live.get("renderer_ready"):
-                retry.reset()
-                self.provider_status("stereo_audio", "ready", "Binaural PCM rendering")
-            elif not self._live_automatic:
-                self.provider_status("stereo_audio", "waiting", "No automatic PCM capture is active")
-            elif live.get("error"):
-                self.provider_status("stereo_audio", "unavailable", live["error"])
-            elif busy:
-                self.provider_status("stereo_audio", "waiting", "Waiting for the binaural PCM path")
+            async with self._live_lock:
+                state, live = self.audio.status(), self.live.status()
+                pid = state.get("process_id")
+                suitable = bool(state.get("running") and state.get("loaded") and
+                                state.get("decoder") and state["decoder"] != "orender" and pid)
+                if self._live_automatic and (not suitable or pid != self._live_media_pid):
+                    await self.live.stop("stopped")
+                    self._live_automatic = False
+                    self._live_media_pid = None
+                    next_attempt = 0.0
+                    retry.reset()
+                    live = self.live.status()
+                busy = live.get("running") or live.get("state") == "starting"
+                if (suitable and not busy and self._ready() and self.desktop is not None
+                        and pid != self._auto_paused_pid and time.monotonic() >= next_attempt):
+                    stream = self._player_stream(self.desktop.pipewire_objects, pid)
+                    if stream:
+                        self._live_automatic = True
+                        self._live_media_pid = pid
+                        try:
+                            await self.live.start(self.engine.sink, stream, self.desktop.pipewire_objects)
+                        except Exception as exc:
+                            self.provider_status("stereo_audio", "unavailable", public_message(exc))
+                        next_attempt = time.monotonic() + retry.next_delay()
+                if self._live_automatic and live.get("renderer_ready"):
+                    retry.reset()
+                    self.provider_status("stereo_audio", "ready", "Binaural PCM rendering")
+                elif not self._live_automatic:
+                    self.provider_status("stereo_audio", "waiting", "No automatic PCM capture is active")
+                elif live.get("error"):
+                    self.provider_status("stereo_audio", "unavailable", live["error"])
+                elif busy:
+                    self.provider_status("stereo_audio", "waiting", "Waiting for the binaural PCM path")
             try:
                 await asyncio.wait_for(self.stop_event.wait(), 0.25)
             except TimeoutError:
@@ -478,7 +799,7 @@ class Runtime:
         try:
             while not self.stop_event.is_set():
                 await self.live.update_sink(self.engine.sink if self._ready() else None)
-                self.live.set_pose(self.engine.pose if self.engine.active else None)
+                self._render_pose(self.live, "live")
                 state = self.live.status()
                 self.provider_status("live_audio", "unavailable" if state.get("error") else
                                      "ready" if state.get("renderer_ready") else "waiting",
@@ -512,18 +833,22 @@ class Runtime:
                 objects = self.desktop.pipewire_objects
                 inputs = self.equalizer.verified_input_ids(objects) if self.equalizer is not None else set()
                 pending = self.equalizer.pending_input_ids(objects) if self.equalizer is not None else set()
+                pcm_routes = {}
                 if self.live is not None:
-                    inputs |= self.live.verified_input_ids(objects)
+                    pcm_routes = self.live.verified_pcm_routes(objects)
                     pending |= self.live.pending_input_ids(objects)
                 pending -= inputs
+                for capture_ids in pcm_routes.values():
+                    pending -= capture_ids
                 routing = self.audio.verify_output(objects, allowed_filter_inputs=inputs,
-                                                   pending_filter_inputs=pending)
+                                                   pending_filter_inputs=pending,
+                                                   verified_pcm_routes=pcm_routes)
                 if routing["state"] == "violation":
                     self.playback_error = routing["reason"]
                     self.provider_status("playback", "unavailable", routing["reason"])
                     self._cancel_launch()
                     async with self._lock:
-                        await self.audio.stop(routing["reason"])
+                        await self._stop_audio(routing["reason"])
                     state = self.audio.status()
                 audited_objects = objects
                 audited_pid = state.get("process_id")
@@ -532,7 +857,7 @@ class Runtime:
                 state.get("renderer_ready") or live_state.get("renderer_ready")))
             self.engine.source_mode = (state.get("source_mode", "none") if state.get("renderer_ready")
                                       else "pcm" if live_state.get("renderer_ready") else state.get("source_mode", "none"))
-            self.audio.set_pose(self.engine.pose if self.engine.active else None)
+            self._render_pose(self.audio, "media")
             if self._had_playback and (not state.get("running") or state.get("end_reason") == "eof"):
                 self._had_playback = False
                 self._cleanup_prepared()
@@ -597,13 +922,16 @@ class Runtime:
                                       on_live_start=self.start_live, on_live_stop=self.stop_live,
                                       on_play_if_idle=self.play_if_idle, on_stop_if_process=self.stop_if_process,
                                       on_begin_test_playback=self.begin_test_playback,
-                                      on_stop_if_request=self.stop_if_request)
+                                      on_stop_if_request=self.stop_if_request,
+                                      on_timing_snapshot=self.timing_snapshot,
+                                      on_tidal_request=self.tidal_request)
         tasks = [
             asyncio.create_task(self.desktop.run(self.stop_event), name="desktop"),
             asyncio.create_task(self._tick(), name="audio-policy"),
             asyncio.create_task(self._optional("trackers", lambda: run_trackers(
                 self.engine, self.stop_event, on_change=self.notify, status=self.provider_status,
                 sony_executable=self.settings.sony_binary, sony_enabled=self.settings.sony_enabled,
+                selected_bluetooth=lambda: self.desktop.bluetooth,
                 optional_enabled=self.settings.slime_enabled)), name="trackers"),
             asyncio.create_task(self._optional("media_controls", lambda: serve(self, self.stop_event)), name="mpris"),
             asyncio.create_task(self._optional("equalizer", self._equalizer_loop), name="equalizer"),

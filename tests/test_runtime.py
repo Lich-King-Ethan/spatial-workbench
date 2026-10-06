@@ -4,6 +4,7 @@ The injected player records requested operations. It does not simulate a decoder
 PipeWire, D-Bus, or a physical device, and these tests do not validate those layers.
 """
 import asyncio
+import base64
 from pathlib import Path
 import tempfile
 import threading
@@ -86,6 +87,10 @@ class FakeLive:
     async def stop(self, reason="stopped"):
         self.stops.append(reason)
         self.data.update(state="idle", running=False, renderer_ready=False)
+
+    async def stop_owned_source(self, stop_source, reason="stopped"):
+        await stop_source()
+        await self.stop(reason)
 
     def cancel_start(self):
         pass
@@ -488,6 +493,120 @@ class Orchestration(unittest.IsolatedAsyncioTestCase):
         objects[0]["info"]["props"]["application.process.id"] = 43
         await asyncio.wait_for(self.runtime.live.started.wait(), .6)
         self.assertEqual([stream for _, stream in self.runtime.live.starts], ["108"])
+
+    async def test_owned_stop_and_replacement_await_automatic_capture_teardown(self):
+        for operation in ("stop", "conditional", "replace"):
+            with self.subTest(operation=operation):
+                self.native_setup()
+                self.runtime._live_automatic = True
+                self.runtime._live_media_pid = 42
+                events = []
+                original_stop = self.audio.stop
+                async def audio_stop(reason="stopped"):
+                    events.append("source stopped")
+                    await original_stop(reason)
+                async def coordinated(stop_source, reason="stopped"):
+                    events.append("watcher quiesced; route retained")
+                    await stop_source()
+                    self.assertFalse(self.audio.status()["running"])
+                    events.append("capture released")
+                with patch.object(self.audio, "stop", audio_stop), \
+                        patch.object(self.runtime.live, "stop_owned_source", coordinated):
+                    if operation == "stop":
+                        await self.runtime.stop_playback()
+                    elif operation == "conditional":
+                        self.assertTrue(await self.runtime.stop_if_process(42))
+                    else:
+                        await self.runtime.play(str(self.media))
+                self.assertEqual(events, ["watcher quiesced; route retained", "source stopped", "capture released"])
+                self.assertFalse(self.runtime._live_automatic)
+                self.assertIsNone(self.runtime._live_media_pid)
+
+    async def test_owned_stop_preserves_manual_and_other_player_capture(self):
+        for automatic, captured_pid in ((False, 42), (True, 99)):
+            with self.subTest(automatic=automatic, captured_pid=captured_pid):
+                self.native_setup()
+                self.runtime._live_automatic = automatic
+                self.runtime._live_media_pid = captured_pid
+                self.runtime.live.data.update(state="playing", running=True, error="real existing graph error")
+                await self.runtime.stop_playback()
+                self.assertFalse(self.audio.status()["running"])
+                self.assertEqual(self.runtime.live.stops, [])
+                self.assertTrue(self.runtime.live.status()["running"])
+                self.assertEqual(self.runtime.live.status()["error"], "real existing graph error")
+
+    async def test_manual_selection_and_native_loop_wait_for_owned_stop(self):
+        self.native_setup()
+        self.runtime._live_automatic = True
+        self.runtime._live_media_pid = 42
+        self.runtime.live.data.update(state="playing", running=True)
+        entered, release = asyncio.Event(), asyncio.Event()
+        original_stop = self.runtime.live.stop_owned_source
+        async def blocking_stop(stop_source, reason="stopped"):
+            entered.set()
+            await release.wait()
+            await original_stop(stop_source, reason)
+        with patch.object(self.runtime.live, "stop_owned_source", blocking_stop):
+            stopping = self.task(self.runtime.stop_playback())
+            await entered.wait()
+            self.task(self.runtime._native_audio_loop())
+            manual = self.task(self.runtime.start_live("109"))
+            await self.turns()
+            self.assertEqual(self.runtime.live.starts, [])
+            self.assertFalse(manual.done())
+            release.set()
+            await asyncio.wait_for(stopping, .5)
+            await asyncio.wait_for(manual, .5)
+            await self.turns()
+        self.assertEqual([stream for _, stream in self.runtime.live.starts], ["109"])
+        self.assertEqual(self.runtime.live.stops, ["stopped"])
+        self.assertFalse(self.runtime._live_automatic)
+
+    async def test_failed_owned_stop_does_not_auto_restart_the_still_live_source(self):
+        self.native_setup()
+        self.runtime._live_automatic = True
+        self.runtime._live_media_pid = 42
+        async def failed_stop(stop_source, reason="stopped"):
+            self.runtime.live.data.update(state="idle", running=False, error="source could not be stopped; muted")
+            raise OSError("source could not be stopped")
+        with patch.object(self.runtime.live, "stop_owned_source", failed_stop):
+            with self.assertRaisesRegex(OSError, "source could not be stopped"):
+                await self.runtime.stop_playback()
+        self.assertTrue(self.audio.status()["running"])
+        self.assertEqual(self.runtime._auto_paused_pid, 42)
+        self.task(self.runtime._native_audio_loop())
+        await self.turns()
+        self.assertEqual(self.runtime.live.starts, [])
+        self.assertEqual(self.runtime.live.status()["error"], "source could not be stopped; muted")
+
+    async def test_only_prepared_tidal_dash_enables_https_segments_in_player(self):
+        from spatial.tidal import prepare_stream
+        self.connect()
+        mpd = '<MPD><Period><AdaptationSet codecs="flac"><Representation><BaseURL>https://cdn.example/audio/</BaseURL><SegmentTemplate media="$Number$.m4s"/></Representation></AdaptationSet></Period></MPD>'
+        stream = SimpleNamespace(manifest=base64.b64encode(mpd.encode()).decode(),
+                                 manifest_mime_type="application/dash+xml", audio_mode="STEREO")
+        prepared = prepare_stream(stream, require_atmos=False, require_lossless=True)
+        try:
+            async def prepare():
+                return prepared.media, dict(prepared.metadata), prepared
+            # Start an already-expanded queue with a real validated manifest;
+            # no account, catalogue, network, or actual player is involved.
+            self.runtime.queue = ["tidal:track:123"]
+            with patch.object(self.runtime, "_prepare_current", prepare):
+                await self.runtime._start_current(self.runtime._request)
+        except Exception:
+            prepared.cleanup()
+            raise
+        self.assertTrue(self.audio.starts[-1][2]["validated_tidal_dash"])
+        self.assertTrue(Path(prepared.media).is_file())
+        await self.runtime.stop_playback()
+        self.assertFalse(Path(prepared.media).exists())
+        local = Path(self.temp.name) / "arbitrary.mpd"
+        local.write_text(mpd)
+        await self.runtime.play(str(local))
+        self.assertFalse(self.audio.starts[-1][2]["validated_tidal_dash"])
+        await self.runtime.play("https://cdn.example/audio.mpd?token=fixture")
+        self.assertFalse(self.audio.starts[-1][2]["validated_tidal_dash"])
 
     async def test_cancelled_tidal_prepare_disposes_late_worker_result(self):
         self.runtime.queue = ["tidal:track:123"]

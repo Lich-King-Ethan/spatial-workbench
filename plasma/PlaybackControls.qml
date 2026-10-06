@@ -139,6 +139,7 @@ Item {
                 spacing: Kirigami.Units.smallSpacing * 2
                 PlasmaComponents3.Label {
                     text: i18n("Playback")
+                    textFormat: Text.PlainText
                     font.pixelSize: Math.round(Kirigami.Theme.smallFont.pixelSize)
                     horizontalAlignment: Text.AlignHCenter
                     Layout.fillWidth: true
@@ -148,8 +149,8 @@ Item {
                     PlasmaComponents3.TextField {
                         id: mediaInput
                         Layout.fillWidth: true
-                        placeholderText: i18n("File path or TIDAL URL")
-                        Accessible.name: i18n("File path or TIDAL URL")
+                        placeholderText: i18n("Local media path or URL")
+                        Accessible.name: i18n("Local media path or URL")
                         selectByMouse: true
                         onAccepted: root.openMedia()
                     }
@@ -164,7 +165,7 @@ Item {
                 PlasmaComponents3.Button {
                     text: i18n("Open")
                     icon.name: "media-playback-start"
-                    enabled: !root.busy && !root.runtime.loading && mediaInput.text.trim().length > 0
+                    enabled: root.snapshot.audio_ready === true && !root.busy && !root.runtime.loading && mediaInput.text.trim().length > 0
                     Layout.alignment: Qt.AlignHCenter
                     onClicked: root.openMedia()
                 }
@@ -197,6 +198,7 @@ Item {
                           + (PlaybackState.seconds(root.audio.duration) > 0
                              ? " / " + PlaybackState.durationText(root.audio.duration) : "")
                     visible: !!root.audio.loaded
+                    textFormat: Text.PlainText
                     Accessible.name: i18n("Playback time")
                     horizontalAlignment: Text.AlignHCenter
                     Layout.fillWidth: true

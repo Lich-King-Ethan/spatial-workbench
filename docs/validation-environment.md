@@ -1,19 +1,207 @@
-# Validation environment and remaining hardware checks
+# Validation evidence and environment history
 
-## What this environment can establish
+## TIDAL quality and library update — October 5, 2026
 
-The development runtime is Ubuntu 24.04, with Python 3.12. The project's supported
-installation target is Arch/CachyOS with a user session running KDE Plasma,
-PipeWire, WirePlumber, and BlueZ. Those are different environments.
+The source and core package suites passed 509 tests. The Companion package's native
+UI passed 8 checks with no skips. Both revision 5 archives match the reviewed code;
+the new per-widget quality schema has the expected Max default.
+New regressions cover quality ceilings, real SDK unavailable-rendition fallback,
+strict legacy formats, queue isolation, observed bitrate freshness, mixed playlist
+folders, raw paging offsets and popup recreation with a retained widget preference.
+
+An authenticated silent probe used the checkout provider and installed mpv. All
+four library categories loaded. Max returned FLAC; CD returned lower-quality AAC,
+which decoded successfully, as did explicit AAC 320 and AAC 96. These are real
+service/player results, without headset output. No root folders were returned for
+this account; nested-folder checks use explicit fixtures, including 400 root
+folders and a nested page beyond the SDK constructor's first 50 items. An initial
+probe accidentally imported the older installed provider; its signature errors
+remain in private evidence, and the corrected probe explicitly used the checkout.
+Revision 5 is now installed through normal prompts. The first sudo prompt timed
+out without a transaction; the retry completed with exit 0. Six installed artifacts
+match source and package bytes, and all 122 baseline files remained unchanged
+through installation and panel reload. Both user services are active. The actual
+installed stack passed all 15 strict private audio gates, retaining
+`hardware_validated: false` in its report under
+`build/local-validation/tidal-library-quality-20261005/installed-native-audio/`.
+
+The physical AAC 96 trial decoded AAC and observed 95,999 bps, but the owned player
+source was muted. KDE's saved stream properties confirm a BudsLink application
+mute; its origin is not established. The trial failed before route/listening
+acceptance, conditionally stopped its own request, removed its nodes and preserved
+defaults and all baseline files. It did not unmute the saved setting. Confirmation
+of the user's intent is pending before retry. The failed report is retained in
+`tidal-aac96-2wqgm8b2/` alongside the installed native report.
+
+Hosted CI for `609ee88` passed
+the Python 3.11–3.13 lanes and Arch package job in
+[run 37391395844](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391395844).
+The matching renderer was cancelled during compilation after the documentation
+push; no compiler/test failure was reported. The follow-up CI also passed; its
+renderer remains pending. The private AAC runner now saves candidate snapshots
+before readiness assertions so a future failed sample retains its exact evidence.
+Its offline checks pass; no playback condition was relaxed.
+Restricted standalone queue-test attempts stalled;
+the exact test passed in 0.01 seconds in both approved unrestricted contexts, with
+and without a private bus. Those interrupted logs are retained alongside the
+passing full/package suites; no assertion was changed to obtain a pass.
+
+## Installed update and physical checks — October 5, 2026
+
+Core **0.2.3-4** and Companion **0.2.0.spatial0.2.3-4** were installed through normal
+package prompts. Their full builds passed **489 core tests** and **7 native Qt
+checks, zero skips**. The native UI harness now initializes Plasma's actual theme;
+control contrast, narrow layouts and asynchronous playback-error states are
+checked without changing the user's theme.
+
+The user accepted two completed 30-second physical WF-1000XM5 trials: clear
+channel direction changes, then a front reference that stayed anchored during
+left/right movement. Prediction was off. The measured route retained native 7.1
+through the renderer and EQ to the real headset. Pitch, roll, off-center recenter,
+prediction comparison and interruption/reconnect checks remain pending.
+
+Two incomplete yaw attempts remain in the private evidence: one lacked fresh
+tracking; another exposed a cached previous-player clock in the smoke runner.
+The runner now requires fresh ownership before using that clock. A later pitch
+attempt was blocked by a stale renderer error after normal owned-player shutdown.
+The production repair stops the source producer before capture cleanup and waits
+for that cleanup to finish. Actual renderer failure evidence remains blocking;
+the fix does not discard failures to make the next run pass.
+
+Actual TIDAL authorization and browsing succeeded. An Atmos-only selection
+returned `StreamNotAvailable` from the service, so Atmos acceptance is unproven.
+The separate Lossless request returned clear FLAC DASH, then failed in the player:
+mpv/FFmpeg treated the private local manifest as a local-only source and rejected
+its HTTPS segments. A scoped allowance for retained, validated TIDAL DASH files
+resolved that rejection; the actual returned media decoded for one second with
+null output. This establishes stream decoding, not acoustic/headset playback.
+
+The revised installed stack then passed **all 15 native audio gates**, with every
+check passing and process exit 0. The report is
+`build/local-validation/round2-20261005/installed-native-audio/report.json`.
+Owned PCM stopped cleanly before any fallback cleanup: its source and renderer
+nodes were gone, idle state had no stale error, and 1.11 seconds of supervision
+showed no respawn. The report records `hardware_validated: false`. All **122
+baseline configuration/widget files remain unchanged**, and seven reviewed
+installed source files match their intended versions.
+
+A read-only observation of the user's real TIDAL Lossless playback then passed
+**12 strict snapshots over 10.12 seconds**, with 9.99 seconds of media advance.
+Each fresh audit confirmed actual stereo FLAC source ownership, player routing,
+live renderer readiness, verified EQ and fresh XM5 tracking. The report is
+`build/local-validation/round2-20261005/tidal-readonly-l4yqe14c/report.json`.
+No playback, volume or configuration was changed; the user's music remained
+running. This is not a physical Stop acceptance check.
+
+The user then confirmed: “Yes—music sounds good.” Real account access, the
+lossless route and TIDAL listening are accepted for this playback. Atmos
+streaming, physical Stop and refreshed panel interaction remain pending.
+Physical motion acceptance remains limited to the completed yaw clip; channel
+direction changes were accepted in the separate local clip.
+
+The shell alone was subsequently reloaded to load the new UI. Panel and audio
+services were active, all 122 baseline files were still byte-identical, and
+no relevant QML journal errors appeared. A read-only follow-up ended neutrally
+when the previous player changed. The latest state was idle with a TIDAL
+`StreamNotAvailable` provider error, not a renderer error; the new request's
+cause is unknown. This neither establishes uninterrupted music nor attributes
+the provider error to the shell reload.
+[Current status](../STATUS.md) tracks the next results; raw device/account evidence
+stays in ignored local validation directories.
+
+## Installed repair and preparation — October 3, 2026
+
+The user authorized the second physical smoke-test preparation. A reviewed
+10-package transaction repaired the audio group and installed the renamed core,
+Companion and timestamped Sony helper through normal Konsole/fish/nano prompts.
+All 122 baseline configuration/widget files remained unchanged.
+
+The first core revision 2 installation exposed a packaging defect despite passing
+source tests: Python's installer ran from a virtual environment and staged the
+wheel under the builder's environment prefix. Replacing the old package then
+left `/usr/bin/spatialctl` missing. Activation stopped before service restart.
+Revision 3 explicitly uses `/usr/bin/python` for build/check/package, installs
+with `--prefix=/usr`, and checks the staged system module and executable CLI
+shebangs. Regression fixtures reject virtual-environment paths and malformed
+launchers. The official `python-build` and `python-installer` packages were
+installed, the repaired package build passed all **474 tests**, and its archive
+contained only `/usr` files with correct CLI shebangs before installation. The
+affected project virtual environment was restored separately; no global pip
+installation was used. Error traces from deliberately rejected D-Bus requests
+remain in the test log; the final suite result was 474 tests, OK, with exit 0.
+
+The installed set at that point was core `0.2.3-3`, Companion `0.2.0.spatial0.2.3-3`, Sony
+`1.0.0-2`, renderer `0.5.2-3`, bridge `0.7.3-1` and mpv `0.5.2-1`. Five missing
+mpv library packages were restored. `spatiald.service` and WirePlumber are active;
+non-audible `spatial-verify` reports software features PASS and hardware/playback
+WAIT. The headphones are disconnected, and the user will connect them later.
+
+The actual installed stack then passed all **15 native gates**, with every check
+reporting `passed` and process exit 0. Its `/usr` modules, binaries and libraries
+ran on private D-Bus/PipeWire without bind-over replacements. The report at
+`build/local-validation/round2-20261003/installed-native-audio/report.json` records
+eight input lanes, owned 7.1, 18 PCM windows/74 checks, actual Atmos decoding with
+15 objects, and verified route cleanup/defaults. `hardware_validated` is false.
+Physical listening, motion and real TIDAL account acceptance remain open.
+
+The Companion passes 7 native Qt checks, including actual window hiding, card
+recreation and recovered sign-in completion. These reject hidden polling and
+stale-session restoration after logout. Sony 1.0.0-2 package checks verify legacy,
+absolute and timestamped modes. Builds use up to 8 jobs on the 32-thread, 31 GiB PC.
+
+## Earlier isolated software validation — October 3, 2026
+
+The initial staged-wheel audio rerun failed before audio: the installed renderer
+lacked the required patch marker, the renderer/bridge versions no longer matched
+the supported group, and mpv had unresolved shared libraries. That failure remains
+in `build/local-validation/native-review-20261003.1hatAl/`; the later transaction
+repaired those dependencies.
+
+The isolated compatible stack uncovered a real WirePlumber 0.5.18 guard startup
+race (`native-pinned-review-20261003.9ziqmjq3/`). The production fix obtains the
+metadata manager from the event source; a Lua regression preserves the fail-closed
+routing contract. The pinned bridge 0.7.3 was rebuilt, the pinned player binary
+was verified against pacman's checksum, and missing libraries were extracted
+from signed packages for the isolated runs. Host packages were unchanged at that
+point.
+
+All 15 gates subsequently passed twice consecutively, in
+`native-pinned-review-20261003.abukawxy/` and
+`native-pinned-review-20261003.rbtb2hc1/`: eight independent input lanes, automatic
+owned 7.1 routing, 18 PCM capture windows with 74 acoustic assertions, four genuine
+Atmos captures retaining 15 objects, and cleanup/route invariants. A previous run,
+`native-pinned-review-20261003.ji60e8_s/`, failed the Atmos graph-stability gate.
+Detailed instrumentation was added without changing acceptance predicates; the
+successful follow-up does not establish that earlier failure's cause.
+
+The earlier core revision 2 build used virtual-environment frontends and
+`makepkg --nodeps` for their missing pacman records. Its full tests ran, but did
+not detect the incorrect installation prefix. The revision 3 system-Python build
+and staging checks address that separate failure; no tests were skipped or
+weakened to make either audio or package validation pass.
+
+Snapshot history records accepted selected-provider packets, not a lossless
+Bluetooth transport capture. Host-monotonic timestamps do not establish the
+earbud's sensor clock or acoustic output delay.
+
+
+## Original cloud environment — September 2026
+
+The initial development runtime was Ubuntu 24.04 with Python 3.12. Development
+continued on the actual CachyOS desktop on September 28, October 3 and October 5. The supported
+installation target is Arch/CachyOS with KDE Plasma, PipeWire, WirePlumber and BlueZ.
+This reference retains dated evidence from each environment; [current status](../STATUS.md)
+summarizes the latest branch. The limitations below describe the original cloud
+runtime, not the current CachyOS desktop.
 
 Pure Python tests, binary protocol fixtures, real child-process lifecycle checks,
-source-matched patch checks, archive checksums, and wheel construction can run
-here. Tests which replace an external service with a fixture establish the
+source-matched patch checks, archive checksums, and wheel construction ran
+in that cloud environment. Tests which replace an external service with a fixture establish the
 client's behavior against that fixture; they do not establish hardware or upstream
 interoperability.
 
-The automated suite is run with the separately installed `dbus-next` test
-dependency:
+The original cloud suite used separately installed test dependencies as below.
+For current development, use the [contributor commands](../CONTRIBUTING.md).
 
 ```sh
 PYTHONPATH=../test-deps:. \
@@ -26,12 +214,12 @@ developer runs may also save `test-results.txt`; that generated log is not track
 
 ## Completed hosted CI checks
 
-[CI run 35379035113](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035113)
-passed for commit 9d573ea. Python 3.11, 3.12 and 3.13 plus the Arch package lane
-each ran 256 tests with zero skips. The native Qt/Plasma smoke test reported five
-passes including setup and cleanup. The hosted jobs use a private D-Bus session and
-the native Lua, compiler, JavaScript and limiter dependencies that the development
-sandbox cannot provide.
+[CI run 35410414111](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414111)
+passed for commit `2f20be1`. Python 3.11, 3.12 and 3.13 plus the Arch package lane
+each ran 296 tests. The Python matrix requires zero skips; the native Qt/Plasma
+smoke reported five passes and zero skips. Hosted jobs supply the private D-Bus
+session, Lua, compiler, JavaScript and limiter dependencies unavailable together
+in the development sandbox.
 
 The suite covers Sony protocol/axis and recenter fixtures, TIDAL credential
 races, source validation, graph audits, reconnection races, playback ownership,
@@ -39,31 +227,82 @@ native presentation logic and independent provider failures. These fixtures prov
 the client behavior and package checks; they are not physical Bluetooth or
 listening tests.
 
-## Completed hosted integration checks
+## September 19 channel-preservation audit
 
-[CachyOS integration run 35379035086](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35379035086)
-passed the installed packages and native Qt cards, built the pinned Harletty bridge,
-and exercised real PipeWire 1.6.8 and WirePlumber 0.5.17 processes. The production
-route applied the device-scoped WF-1000XM5 EQ and SWH limiter to the synthetic
-headphone sink, while actual Sony-helper UDP packets drove the production tracker,
-Engine and OSC path. It captured and analyzed 18 48 kHz stereo windows covering
-positions, yaw, pitch, roll, recenter and mirror checks. The captured endpoint is
-synthetic/headless, and the report explicitly keeps hardware validation false.
+The earlier claim that the hosted PCM test proved a complete 7.1 spatial path is
+withdrawn. Saved artifacts from [run 35382912735](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35382912735)
+showed native eight-channel source PCM adapted into only two graph ports, linked
+to the first two of eight **unpositioned** renderer inputs. The pinned upstream
+capture code omitted SPA channel positions. WirePlumber kept the source's
+existing stereo format because the new target was unpositioned.
 
-[Full installer VM run 35380898340](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35380898340)
-passed in a freshly booted minimal CachyOS guest with a CachyOS kernel and KVM.
-The unchanged installer, package ownership, systemd/udev/PipeWire services and
-daemon verification all passed. The guest then decoded the pinned real E-AC-3 JOC
-fixture through mpv and the orender/Harletty bridge, rendered to the post-EQ
-synthetic earbud monitor, captured neutral/repeat/yaw Atmos windows, and passed
-stop/restore route checks. Its retained result is exit code 0. The same artifact
-records the expected WAIT state for physical XM5, BlueZ HID, SlimeVR and KDE
-headphone acceptance because no physical hardware was attached.
+Reanalysis using complete 100 ms stimulus periods measured rear/front spectral
+differences of only 0.000044 dB (left) and 0.000229 dB (right). The earlier Hann
+window estimator was phase-sensitive for this repeating fixture, adding about
+0.239 dB artificial variation in a cyclic-shift check. Restored geometric checks
+reject those old captures on seven assertions. Assertions accepting rear/front
+equality and removed roll/compound-pose equivalences were incorrect.
 
-Both runs retain machine-readable reports, package hashes, PipeWire graph snapshots,
-Sony pose evidence and PCM artifacts. They establish a complete software and
-synthetic-audio route; they do not establish physical axis orientation, subjective
-localization, or TIDAL account entitlement.
+Version 0.2.3 adds the native position declaration and validates it by parsing the
+exact serialized SPA format in Rust tests. The Python auditor requires named,
+matching source-to-renderer links and preservation of the source's native channel
+set. The hosted gate must reproduce a source initially downmixed to stereo, then
+prove it reconfigures into eight channels after selection. Eight different tones
+are recorded from the renderer input monitor and checked for missing, swapped,
+duplicated or mixed lanes. Post-EQ broadband recordings separately test actual
+spatial DSP with restored position, yaw, pitch, roll and recenter assertions.
+
+## Confirmed repaired software path
+
+The fresh native checks completed successfully after the September 19 handoff:
+
+- [Renderer build 35410414135](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410414135), `2f20be1`, compiled the CLI and FFI library and passed two OSC bind-policy plus two native channel-format/PCM-lane tests.
+- [CachyOS integration 35410253252](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410253252), implementation `50d542b`, passed the installed suite, native Qt cards, real routing, EQ/limiter, independent lanes and spatial captures.
+- [Booted CachyOS installer 35410104281](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/35410104281), the same implementation, passed full installation, real file ownership, retained user settings/permissions/Companion backup and a repeat core install, followed by PCM and encoded Atmos routes.
+
+On September 28, both artifact archives were downloaded and their SHA256 digests
+checked against GitHub. Independent inspection found eight active matching
+FL/FR/FC/LFE/SL/SR/RL/RR input links. Direct sinusoid projection of actual PCM
+confirmed the input tones with maximum unwanted/wanted amplitude ratio
+2.70e-9. All eight source tones also survived the post-EQ stereo output; the
+smallest observed per-ear tone RMS was 0.003012. These are fixture measurements,
+not advertised hardware audio specifications.
+
+Raw-capture hashes were checked and all 18 windows/74 acoustic assertions rerun
+for each artifact. Rear/front spectral differences were 3.479 dB (left) and
+5.618 dB (right). Deliberately replacing rear captures with front captures,
+freezing head-pose captures, or reversing yaw caused the repaired analyzer to
+reject the recordings. The old incorrectly approved artifact still failed seven
+geometry checks.
+
+The booted VM's separate encoded Atmos route produced four real captures with
+15 decoded objects, tracking active and routing verified. Independent left/right
+energy measurements reproduced the reported opposite-yaw difference of 8.585 dB.
+The final cleanup graph contained no nodes belonging to the stopped media player.
+Media reports record actual pose acknowledgements and require cleanup before pass.
+
+These tests used a synthetic headphone endpoint and helper UDP telemetry. They do
+not establish physical Bluetooth/HID behavior, Slime receiver operation, listener
+translation, subjective localization or TIDAL account entitlement. The September
+19 VM was a minimal booted system, not a full graphical desktop.
+
+## September 28 continuation
+
+No changes from the user's local session had been pushed when the repository was
+inspected; the audit branch still pointed to `2f20be1` and main to `f490ac3`.
+The continuation preserves the verified fixes, tightens incomplete live/EQ output
+readiness and adds a real Plasma Wayland session with fish and nano to the VM.
+The continuing validation record, exact tested commits, run results and artifact
+links are maintained in [pull request #1](https://github.com/Lich-King-Ethan/spatial-workbench/pull/1).
+See [the VM procedure](full-installer-ci.md).
+
+The first full-desktop boot established the real SDDM Wayland/KWin/plasmashell
+session, but exposed a brittle nano Save As prompt matcher. Its replacement
+requires nano to save exact new bytes and exit successfully, retaining a terminal
+transcript. The next boot passed nano and desktop screenshot checks and reached
+the real installer, exposing desktop-portal activation during the isolated
+Companion package check. These failures are kept as evidence; neither is counted
+as a completed installer or application pass.
 
 ## Completed local checks
 
@@ -127,7 +366,7 @@ runtime. It returned exit code 1 and reported the absent user bus, PipeWire,
 player, sensor helper and renderer dependencies. This confirms its blocked-host
 reporting path; it is not a diagnosis of the user's computer.
 
-## Explicitly blocked here
+## Restrictions in the original cloud runtime
 
 `dbus-run-session -- python3 -c 'print("private-bus-started")'` fails before the
 application is started:

@@ -7,6 +7,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 
 from spatial.health import Diagnostics
 
@@ -124,16 +125,31 @@ class AutomaticDiagnostics(unittest.IsolatedAsyncioTestCase):
     async def test_timeout_and_close_reap_actual_child(self):
         self.helper(sleep=30)
         instance = self.diagnostics(timeout=0.07)
-        instance.request("audio", "error", "fault")
-        await self.until(lambda: self.started.exists())
-        pid = int(self.invocations()[-1])
-        await self.until(lambda: instance.status()["state"] == "unavailable" and not instance.status()["running"])
+        # A real timeout may kill the interpreter before its imports finish or
+        # it writes the marker. Observe the actual OS process creation instead
+        # of requiring Python startup to fit inside the 70 ms timeout.
+        launched = asyncio.get_running_loop().create_future()
+        create_process = asyncio.create_subprocess_exec
+
+        async def observe_launch(*args, **kwargs):
+            process = await create_process(*args, **kwargs)
+            launched.set_result(process)
+            return process
+
+        with patch("spatial.health.asyncio.create_subprocess_exec", side_effect=observe_launch):
+            instance.request("audio", "error", "fault")
+            process = await asyncio.wait_for(launched, 2)
+            pid = process.pid
+            await self.until(lambda: instance.status()["state"] == "unavailable" and not instance.status()["running"])
+        self.assertIn("timed out", instance.status()["reason"])
+        self.assertIsNotNone(process.returncode)
         with self.assertRaises(ProcessLookupError):
             os.kill(pid, 0)
         self.assertFalse(list(self.reports.glob("*.json")))
+        previous_invocations = len(self.invocations())
         other = self.diagnostics()
         other.request("audio", "error", "another fault")
-        await self.until(lambda: len(self.invocations()) == 2)
+        await self.until(lambda: len(self.invocations()) == previous_invocations + 1)
         second_pid = int(self.invocations()[-1])
         await other.close()
         with self.assertRaises(ProcessLookupError):

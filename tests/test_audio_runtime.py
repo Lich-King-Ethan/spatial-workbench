@@ -25,6 +25,19 @@ from spatial.pose import IDENTITY, Quaternion
 SINK = Sink("AA:BB:CC:DD:EE:FF", "bluez_output.AA_BB_CC_DD_EE_FF.1", "75", "a2dp", "idle")
 
 
+def stereo_connections(source, destination, channels=("FL", "FR")):
+    ports, links = [], []
+    for index, channel in enumerate(channels):
+        output, input_ = 100 + index, 200 + index
+        for port, node, direction in ((output, source, "out"), (input_, destination, "in")):
+            ports.append({"id": port, "type": "PipeWire:Interface:Port", "info": {"props": {
+                "node.id": node, "port.direction": direction, "audio.channel": channel}}})
+        links.append({"type": "PipeWire:Interface:Link", "info": {
+            "output-node-id": source, "input-node-id": destination,
+            "output-port-id": output, "input-port-id": input_, "state": "active"}})
+    return ports, links
+
+
 def ready_telemetry():
     telemetry = RendererTelemetry()
     telemetry.accept("/omniphony/state/capabilities", [json.dumps(
@@ -35,6 +48,33 @@ def ready_telemetry():
 
 
 class AudioPureTests(unittest.TestCase):
+    def test_bitrate_is_live_packet_evidence_and_never_cached_after_unload(self):
+        audio = AudioRuntime()
+        audio.process = SimpleNamespace(returncode=None)
+        audio._file_loaded = True
+        audio._properties["audio-bitrate"] = 319_876.5
+        self.assertEqual(audio.status()["bitrate"], 319_876.5)
+        audio._file_loaded = False
+        self.assertIsNone(audio.status()["bitrate"])
+        audio._file_loaded = True
+        for invalid in (None, True, "320000", -1, 0, float("nan"), float("inf")):
+            audio._properties["audio-bitrate"] = invalid
+            self.assertIsNone(audio.status()["bitrate"])
+        audio._properties["audio-bitrate"] = 96_000
+        audio.process.returncode = 0
+        self.assertIsNone(audio.status()["bitrate"])
+
+    def test_remote_segment_allowance_is_explicit_and_commas_are_escaped(self):
+        arguments = ("/usr/bin/mpv", "/tmp/private/r.yaml", "/tmp/private/m.sock", SINK, 1, 2)
+        ordinary = playback_argv(*arguments)
+        self.assertFalse(any("protocol_whitelist" in item for item in ordinary))
+        prepared_dash = playback_argv(*arguments, validated_tidal_dash=True)
+        self.assertEqual([item for item in prepared_dash if "protocol_whitelist" in item],
+                         ["--demuxer-lavf-o=protocol_whitelist=%18%file,https,tls,tcp"])
+        # The explicit bool comes from PreparedTrack, never a suffix or metadata
+        # string. mpv needs all four protocols, with no HTTP or blanket wildcard.
+        self.assertEqual(playback_argv(*arguments, validated_tidal_dash="true"), ordinary)
+
     def test_native_sink_and_private_control_config(self):
         argv = playback_argv("/usr/bin/mpv", "/tmp/private/r.yaml", "/tmp/private/m.sock", SINK, 1, 2)
         self.assertIn("--audio-device=pipewire/" + SINK.name, argv)
@@ -42,6 +82,11 @@ class AudioPureTests(unittest.TestCase):
         self.assertIn("--ad=orender", argv)
         self.assertIn("--no-config", argv)
         self.assertIn("--ad-orender-osc-bind=127.0.0.1", argv)
+        self.assertIn("--audio-channels=stereo", argv)
+        pcm_argv = playback_argv("/usr/bin/mpv", "/tmp/r.yaml", "/tmp/m.sock", SINK, 1, 2,
+                                allow_pcm_route=True)
+        self.assertIn("--audio-channels=auto", pcm_argv)
+        self.assertNotIn("--audio-channels=stereo", pcm_argv)
         self.assertNotIn("wpctl", argv)
         text = config_text('/tmp/library "with quotes".so')
         self.assertIn('bridge_path: "/tmp/library \\"with quotes\\".so"'.replace('\\\\', '\\'), text)
@@ -92,6 +137,39 @@ class AudioPureTests(unittest.TestCase):
         telemetry.datagram_received(encode("/omniphony/state/renderer", '{"binaural":null}'), ("127.0.0.1", 5))
         self.assertFalse(telemetry.ready)
 
+    def test_ended_renderer_requires_a_complete_fresh_handshake(self):
+        for event in ("state/shutdown", "heartbeat/unknown"):
+            with self.subTest(event=event):
+                telemetry = ready_telemetry()
+                telemetry.expected_config = "/private/renderer.yaml"
+                telemetry.config_path = telemetry.expected_config
+                telemetry.config_status = "loaded"
+                telemetry.clipping, telemetry.master_gain, telemetry.object_count = 1, 0.8, 11
+                self.assertTrue(telemetry.ready)
+                telemetry.accept("/omniphony/" + event, [])
+                self.assertFalse(telemetry.registered)
+                self.assertIsNone(telemetry.object_count)
+                self.assertIsNone(telemetry.clipping)
+                self.assertIsNone(telemetry.master_gain)
+                telemetry.accept("/omniphony/state/capabilities", [json.dumps(
+                    {"producer": "renderer", "variant": "embedded", "host": "mpv"})])
+                telemetry.accept("/omniphony/heartbeat/ack", [])
+                self.assertFalse(telemetry.ready)
+                telemetry.accept("/omniphony/state/renderer", [json.dumps(
+                    {"binaural": {"outputMode": "binaural"}})])
+                self.assertFalse(telemetry.ready)
+                telemetry.accept("/omniphony/state/render/config_path", [telemetry.expected_config])
+                telemetry.accept("/omniphony/state/render/config_status", ["loaded"])
+                self.assertTrue(telemetry.ready)
+
+    def test_reported_bridge_failure_blocks_readiness_until_cleared(self):
+        telemetry = ready_telemetry()
+        telemetry.accept("/omniphony/state/render/bridge_error", ["private decoder error"])
+        self.assertFalse(telemetry.ready)
+        self.assertNotIn("private", telemetry.error)
+        telemetry.accept("/omniphony/state/render/bridge_error", [""])
+        self.assertTrue(telemetry.ready)
+
     def test_nonfinite_json_does_not_escape_to_companion_state(self):
         for address in ("/omniphony/state/renderer", "/omniphony/state/capabilities"):
             for invalid in ('{"value":NaN}', '{"value":Infinity}', '{"value":1e400}'):
@@ -110,31 +188,106 @@ class AudioPureTests(unittest.TestCase):
         stream = obj("Node", 4, {"media.class": "Stream/Output/Audio", "client.id": 3,
                    "target.object": SINK.name, "node.dont-fallback": True, "node.dont-reconnect": "true"})
         sink = obj("Node", 5, {"node.name": SINK.name, "object.serial": SINK.serial})
-        link = {"type": "PipeWire:Interface:Link", "id": 6,
-                "info": {"output-node-id": 4, "input-node-id": 5}}
+        ports, links = stereo_connections(4, 5)
         self.assertEqual(audio.verify_output([client, stream, sink])["state"], "waiting")
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "verified")
+        objects = [client, stream, sink, *ports, *links]
+        self.assertEqual(audio.verify_output(objects)["state"], "verified")
+        self.assertEqual(audio.verify_output(objects[:-1])["state"], "waiting")
+        links[1]["info"]["state"] = "init"
+        self.assertEqual(audio.verify_output(objects)["state"], "waiting")
+        links[1]["info"]["state"] = "active"
+        self.assertEqual(audio.verify_output([*objects, links[0]])["state"], "violation")
+        ports[1]["info"]["props"]["audio.channel"] = "FR"
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
+        ports[1]["info"]["props"]["audio.channel"] = "FL"
+        second_stream = obj("Node", 9, {**stream["info"]["props"]})
+        self.assertEqual(audio.verify_output([*objects, second_stream])["state"], "waiting")
         sink["info"]["props"]["object.serial"] = "new-session"
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "violation")
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
         sink["info"]["props"]["object.serial"] = SINK.serial
         del stream["info"]["props"]["node.dont-reconnect"]
-        self.assertEqual(audio.verify_output([client, stream, sink, link])["state"], "violation")
+        self.assertEqual(audio.verify_output(objects)["state"], "violation")
 
     def test_known_pending_filter_is_waiting_until_its_own_audit_completes(self):
         audio = AudioRuntime()
         audio.process = SimpleNamespace(pid=777, returncode=None)
         audio._sink = SINK
+        ports, links = stereo_connections(4, 20)
         objects = [
             {"type": "PipeWire:Interface:Node", "id": 4, "info": {"props": {
                 "application.process.id": 777, "media.class": "Stream/Output/Audio",
                 "target.object": SINK.name, "node.dont-fallback": True, "node.dont-reconnect": True}}},
-            {"type": "PipeWire:Interface:Link", "info": {"output-node-id": 4, "input-node-id": 20}},
+            *ports, *links,
         ]
         self.assertEqual(audio.verify_output(objects)["state"], "violation")
         self.assertEqual(audio.verify_output(objects, pending_filter_inputs={"20"})["state"], "waiting")
         self.assertEqual(audio.verify_output(objects, allowed_filter_inputs={"20"})["state"], "verified")
         objects.append({"type": "PipeWire:Interface:Link", "info": {"output-node-id": 4, "input-node-id": 99}})
         self.assertEqual(audio.verify_output(objects, pending_filter_inputs={"20"})["state"], "violation")
+
+    def test_native_pcm_requires_a_verified_route_for_this_source_session(self):
+        from spatial.live_audio import LIVE_CHANNELS
+        audio = AudioRuntime(allow_pcm_route=True)
+        audio.process = SimpleNamespace(pid=777, returncode=None)
+        audio._sink = SINK
+        for channels in (LIVE_CHANNELS, ("FL", "FR", "FC", "LFE", "RL", "RR"), ("FC",)):
+            with self.subTest(channels=channels):
+                ports, links = stereo_connections(4, 20, channels)
+                stream = {"type": "PipeWire:Interface:Node", "id": 4, "info": {"props": {
+                    "application.process.id": 777, "media.class": "Stream/Output/Audio",
+                    "object.serial": "400", "target.object": SINK.name,
+                    "node.dont-fallback": True, "node.dont-reconnect": False}}}
+                objects = [stream, *ports, *links]
+                routes = {"400": {"20"}}
+                self.assertEqual(audio.verify_output(objects, verified_pcm_routes=routes)["state"], "verified")
+                # A stereo filter allow-list, another source/session, or another
+                # capture destination cannot authorize native multichannel PCM.
+                for kwargs in ({"allowed_filter_inputs": {"20"}},
+                               {"verified_pcm_routes": {"401": {"20"}}},
+                               {"verified_pcm_routes": {"400": {"21"}}}):
+                    self.assertEqual(audio.verify_output(objects, **kwargs)["state"], "violation")
+                audio.allow_pcm_route = False
+                stream["info"]["props"]["node.dont-reconnect"] = True
+                self.assertEqual(audio.verify_output(objects, verified_pcm_routes=routes)["state"], "violation")
+                audio.allow_pcm_route = True
+
+    def test_verified_pcm_route_still_requires_complete_unique_matching_channels(self):
+        import copy
+        from spatial.live_audio import LIVE_CHANNELS
+        audio = AudioRuntime(allow_pcm_route=True)
+        audio.process = SimpleNamespace(pid=777, returncode=None)
+        audio._sink = SINK
+        ports, links = stereo_connections(4, 20, LIVE_CHANNELS)
+        stream = {"type": "PipeWire:Interface:Node", "id": 4, "info": {"props": {
+            "application.process.id": 777, "media.class": "Stream/Output/Audio",
+            "object.serial": "400", "target.object": SINK.name,
+            "node.dont-fallback": True, "node.dont-reconnect": False}}}
+        objects = [stream, *ports, *links]
+        def audit(graph):
+            return audio.verify_output(graph, verified_pcm_routes={"400": {"20", "21"}})["state"]
+        self.assertEqual(audit(objects), "verified")
+        self.assertEqual(audit(objects[:-1]), "waiting")
+        self.assertEqual(audit([*objects, links[0]]), "violation")
+        for mutate in (lambda info: info.update({"input-port-id": 201}),
+                       lambda info: info.update({"input-node-id": 999})):
+            broken = copy.deepcopy(objects)
+            mutate(broken[-len(links)]["info"])
+            self.assertEqual(audit(broken), "violation")
+        for channel in ("UNK", "FL"):
+            broken = copy.deepcopy(objects)
+            # Unsupported positions and repeated labels fail even when every
+            # port is linked one-to-one and both ends agree on the label.
+            broken[1 + 2 * 2]["info"]["props"]["audio.channel"] = channel
+            broken[2 + 2 * 2]["info"]["props"]["audio.channel"] = channel
+            self.assertEqual(audit(broken), "violation")
+        split = copy.deepcopy(objects)
+        split[2]["info"]["props"]["node.id"] = 21
+        split[-len(links)]["info"]["input-node-id"] = 21
+        self.assertEqual(audit(split), "violation")
+        for extra in ({"output-node-id": 4, "input-node-id": 20, "state": "init"},
+                      {"output-node-id": 4, "input-node-id": 20, "state": "active",
+                       "output-port-id": 900, "input-port-id": 901}):
+            self.assertEqual(audit([*objects, {"type": "PipeWire:Interface:Link", "info": extra}]), "waiting")
 
     def test_renderer_capability_and_container_hint_are_not_object_evidence(self):
         audio = AudioRuntime()
@@ -178,6 +331,7 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
                     with self.assertRaises(AudioError):
                         await audio.start(media, SINK)
                 environment = spawn.call_args.kwargs["env"]
+                self.assertIn("--audio-channels=" + ("auto" if allow_pcm else "stereo"), spawn.call_args.args)
                 props = json.loads(environment["PIPEWIRE_PROPS"])
                 self.assertEqual(props["target.object"], SINK.serial)
                 self.assertTrue(props["node.dont-fallback"])
@@ -214,7 +368,7 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
     async def test_opt_in_orender_is_detected_without_public_decoder_entry(self):
         # mpv-omniphony 0.5.2 registers orender inside reinit_decoder(), while
         # --ad=help uses audio_decoder_list(), which advertises only lavc.
-        names = ("ad-orender-config", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
+        names = ("ad-orender-config", "ad-orender-osc", "ad-orender-osc-rx-port", "ad-orender-osc-bind",
                  "ad-orender-osc-port", "ad-orender-osc-monitor-target",
                  "input-ipc-server", "ad-orender-library")
         listing = "Options:\n\n" + "".join(f" --{name:<30} String (default: )\n" for name in names)
@@ -239,6 +393,8 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("localhost-only", result["reason"])
 
             for output, code, explanation in (
+                (listing.replace("--ad-orender-osc ", "--ad-orender-osc-old "), 0,
+                 "--ad-orender-osc"),
                 (listing.replace("--ad-orender-library ", "--ad-orender-library-old "), 0,
                  "--ad-orender-library"),
                 (listing, 1, "exited 1"),
@@ -331,3 +487,19 @@ class AudioAsyncTests(unittest.IsolatedAsyncioTestCase):
         finally:
             sender.close()
             transport.close()
+
+    async def test_ipc_eof_cannot_leave_loaded_renderer_readiness(self):
+        audio = AudioRuntime()
+        audio.process = SimpleNamespace(returncode=None)
+        audio.reader = asyncio.StreamReader()
+        audio._file_loaded = True
+        audio.telemetry = ready_telemetry()
+        audio._properties["track-list"] = [{"type": "audio", "selected": True,
+            "decoder": "orender", "codec-profile": "Dolby Atmos + 11 objects"}]
+        self.assertTrue(audio.status()["renderer_ready"])
+        audio.reader.feed_eof()
+        await audio._read_ipc()
+        self.assertFalse(audio.status()["loaded"])
+        self.assertFalse(audio.status()["renderer_ready"])
+        self.assertIn("control connection was lost", audio.status()["error"])
+        self.assertFalse(audio.telemetry.registered)

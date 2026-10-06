@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
-# Arch/CachyOS package build and install. Run as the desktop user, never as root.
+# BudsLink Spatial Companion package build and install. Run as the desktop user, never as root.
 set -Eeuo pipefail
 umask 077
+# Scope editor defaults to this invocation and its package-review subprocesses.
+# Do not rewrite the desktop account's shell or existing editor preferences.
+export EDITOR="${EDITOR:-nano}"
+export VISUAL="${VISUAL:-$EDITOR}"
 
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 install_packages=0
@@ -17,10 +21,13 @@ install.sh sets up the full application. build.sh without --install builds the
 core and native Companion packages only. Missing official build tools are
 installed through pacman; standard sudo and package-review prompts stay visible.
 
---with-audio builds the pinned local-control renderer and installs maintained
-AUR mpv-omniphony, harletty-bridge and sony-tracker packages. An existing yay or
-paru is used when present; otherwise their actual AUR recipes are reviewed and
-built directly with makepkg. --with-tidal installs official python-tidalapi.
+--with-audio builds the pinned local-control renderer and matching reviewed AUR
+mpv-omniphony 0.5.2-1 and harletty-bridge 0.7.3-1 recipes. These two packages use
+the same pinned makepkg path whether yay/paru is present or not. Sony tracking
+uses the checksummed local sony-tracker-spatial recipe with opt-in host-timestamped absolute
+orientation; its legacy CLI behavior remains the default. --with-tidal installs
+official python-tidalapi. Existing incompatible audio packages are reported
+before package transactions; the installer never silently downgrades that stack.
 Both options require --install. Existing user settings are preserved.
 USAGE
 }
@@ -108,7 +115,7 @@ on_error() {
     if (( result == 130 )); then
         message '[STOP] Installation cancelled.'
     else
-        message "[FAIL] $spatial_current_step (exit $result). Previously installed packages and user configuration have been retained."
+        message "[FAIL] $spatial_current_step (exit $result). Completed package transactions have not been rolled back; existing user configuration has been preserved."
         failure_diagnostics
     fi
     message "[INFO] Full private build log: $spatial_install_log"
@@ -117,7 +124,55 @@ on_error() {
 }
 trap 'on_error "$?"' ERR
 
+pinned_aur_recipe() {
+    # package commit exact-version PKGBUILD-sha256 .SRCINFO-sha256
+    case "$1" in
+        harletty-bridge)
+            printf '%s\n' '29ea73c708454ca11b7c124a677ddf370f709c99 0.7.3-1 da65b4e5d898a5b761e60ff96006e2ac7722e81beb6156a217951a1c613c4392 e6b8b980e774d5bfa72e6437a845afafd888d38250c7f3dbdefbabb8d64a8b6b' ;;
+        mpv-omniphony)
+            printf '%s\n' 'f9e20fbbf55ca31da506ff770d1585bde11fbb89 0.5.2-1 951fd09dce6a0e385ccd65e42140a487dd092156e3b83b8b58eb1ef2d598c2f5 be02fda8ca8e7b74f3871584d977bde69b82383085975310ef36d3cf0d1b923c' ;;
+        *) return 1 ;;
+    esac
+}
+installed_package_version() {
+    local package="$1" record
+    record=$(pacman -Q "$package" 2>/dev/null) || return 1
+    [[ "$record" == "$package "* ]] || return 1
+    printf '%s\n' "${record#"$package "}"
+}
+preflight_audio_stack() {
+    local package installed commit expected recipe_hash metadata_hash mismatch=0
+    for package in harletty-bridge mpv-omniphony; do
+        read -r commit expected recipe_hash metadata_hash < <(pinned_aur_recipe "$package")
+        if installed=$(installed_package_version "$package") && [[ "$installed" != "$expected" ]]; then
+            message "[FAIL] Installed $package $installed does not match the supported $expected package."
+            mismatch=1
+        fi
+    done
+    for package in orender orender-spatial; do
+        if installed=$(installed_package_version "$package"); then
+            # The known earlier downstream revisions can safely be upgraded.
+            # A different upstream renderer cannot build our pinned mpv ABI.
+            if [[ "$package" == orender && $(vercmp "$installed" 0.5.2) == 0 ]] || \
+               [[ "$package" == orender-spatial && "$installed" =~ ^0\.5\.2-[123]$ ]]; then
+                continue
+            fi
+            message "[FAIL] Installed $package $installed is outside the supported Omniphony 0.5.2 stack."
+            mismatch=1
+        fi
+    done
+    if (( mismatch )); then
+        message '[INFO] No package transaction has started. Use a separate clean build environment or restore the compatible renderer/player/bridge group through reviewed pacman transactions before retrying.'
+        message '[INFO] Required group: orender-spatial 0.5.2-3, mpv-omniphony 0.5.2-1, harletty-bridge 0.7.3-1. Newer versions cannot be mixed into this group.'
+        return 1
+    fi
+}
+
 message "[INFO] Full private build log: $spatial_install_log"
+if (( with_audio )); then
+    spatial_current_step='Check installed audio version compatibility'
+    preflight_audio_stack
+fi
 if (( install_packages )); then
     if ! systemctl --user show-environment >/dev/null 2>&1; then
         message '[FAIL] No user systemd session. Run bash install.sh inside your normal KDE terminal.'
@@ -127,11 +182,16 @@ fi
 
 # No separate -Sy: use the user's existing coherent package databases. Ordinary
 # system updates remain under the user's package-management policy.
-run_step 'Ensure official build tools' sudo pacman -S --needed base-devel python git
+run_step 'Ensure official build tools and review editor' sudo pacman -S --needed base-devel python git nano
 if (( with_tidal || with_audio )); then
     distro_modules=()
     if (( with_tidal )); then distro_modules+=(python-tidalapi); fi
-    if (( with_audio )); then distro_modules+=(pipewire-audio swh-plugins); fi
+    if (( with_audio )); then
+        # The pinned mpv recipe omits these five libraries from its package
+        # dependencies although its executable links them. Install their real
+        # repository packages before building or reusing that exact player.
+        distro_modules+=(pipewire-audio swh-plugins libcdio-paranoia mujs uchardet libsixel libxpresent)
+    fi
     run_step 'Install official optional modules' sudo pacman -S --needed "${distro_modules[@]}"
 fi
 run_logged_step 'Generate complete checksummed package sources' python3 "$project_dir/tools/make-release.py"
@@ -161,12 +221,13 @@ build_package() {
         package_files+=("$package_file")
     done <<< "$package_list"
 }
-build_package "$project_dir/dist/arch/core" 'Build and test Spatial Audio'
+build_package "$project_dir/dist/arch/core" 'Build and test BudsLink Spatial Companion'
 if (( with_companion )); then
-    build_package "$project_dir/dist/arch/companion" 'Build the native BudsLink Companion integration'
+    build_package "$project_dir/dist/arch/companion" 'Build the native BudsLink Spatial Companion widget'
 fi
 if (( with_audio )); then
     build_package "$project_dir/dist/arch/orender" 'Build and test the pinned renderer'
+    build_package "$project_dir/dist/arch/sony" 'Build and test the pinned Sony tracker'
 fi
 for package_file in "${package_files[@]}"; do message "[INFO] Package: $package_file"; done
 if (( ! install_packages )); then
@@ -186,10 +247,24 @@ installed_aur_satisfies() {
 }
 build_aur_package() {
     local package="$1"
-    local directory
+    local directory specification pinned_commit='' pinned_version='' recipe_hash metadata_hash
     directory=$(mktemp -d "$spatial_install_dir/aur-${package}.XXXXXXXX")
-    run_logged_step "Fetch maintained AUR recipe: $package" git clone --depth 1 --single-branch \
-        "https://aur.archlinux.org/${package}.git" "$directory/source"
+    if specification=$(pinned_aur_recipe "$package"); then
+        read -r pinned_commit pinned_version recipe_hash metadata_hash <<< "$specification"
+        run_logged_step "Fetch pinned AUR recipe: $package $pinned_version" git clone --no-checkout \
+            "https://aur.archlinux.org/${package}.git" "$directory/source"
+        run_logged_step "Select reviewed AUR commit: $package" git -C "$directory/source" checkout --detach "$pinned_commit"
+        if [[ $(git -C "$directory/source" rev-parse HEAD) != "$pinned_commit" ]]; then
+            message "[FAIL] AUR checkout does not match the reviewed commit for $package"
+            return 1
+        fi
+        printf '%s  %s\n' "$recipe_hash" "$directory/source/PKGBUILD" \
+            "$metadata_hash" "$directory/source/.SRCINFO" > "$directory/recipe.sha256"
+        run_logged_step "Verify reviewed AUR recipe hashes: $package" sha256sum --check "$directory/recipe.sha256"
+    else
+        run_logged_step "Fetch maintained AUR recipe: $package" git clone --depth 1 --single-branch \
+            "https://aur.archlinux.org/${package}.git" "$directory/source"
+    fi
     if ! grep -Eq "^[[:space:]]*pkgname[[:space:]]*=[[:space:]]*${package}$" "$directory/source/.SRCINFO"; then
         message "[FAIL] Fetched AUR metadata does not declare the expected package: $package"
         return 1
@@ -204,8 +279,18 @@ build_aur_package() {
         message "[FAIL] AUR metadata does not declare a package version: $package"
         return 1
     fi
-    requirement="${package}>=${epoch:+${epoch}:}${version}-${release}"
-    if installed_aur_satisfies "$package" "$requirement"; then
+    version="${epoch:+${epoch}:}${version}-${release}"
+    requirement="${package}>=$version"
+    if [[ -n "$pinned_version" ]]; then
+        if [[ "$version" != "$pinned_version" ]]; then
+            message "[FAIL] Reviewed AUR recipe version for $package is not $pinned_version"
+            return 1
+        fi
+        requirement="${package}=$pinned_version"
+    fi
+    if { [[ -n "$pinned_version" ]] && [[ $(installed_package_version "$package" || true) == "$pinned_version" ]]; } || \
+       { [[ -z "$pinned_version" ]] && installed_aur_satisfies "$package" "$requirement"; }; then
+        run_logged_step "Check installed package files: $package" pacman -Qk "$package"
         passed "Reuse installed $package satisfying $requirement"
         return 0
     fi
@@ -224,18 +309,16 @@ build_aur_package() {
     build_package "$directory/source" "Build and test AUR package: $package"
     run_step "Install AUR package: $package" sudo pacman -U --needed "${package_files[@]:first_package}"
 }
-if (( with_audio )); then
+install_audio_modules() {
     message '[INFO] mpv-omniphony replaces stock mpv through the package manager; review its transaction.'
-    if command -v yay >/dev/null 2>&1; then
-        run_step 'Install maintained upstream audio modules' yay -S --needed mpv-omniphony harletty-bridge sony-tracker
-    elif command -v paru >/dev/null 2>&1; then
-        run_step 'Install maintained upstream audio modules' paru -S --needed mpv-omniphony harletty-bridge sony-tracker
-    else
-        # All non-repository runtime dependencies are installed in dependency order.
-        build_aur_package harletty-bridge
-        build_aur_package mpv-omniphony
-        build_aur_package sony-tracker
-    fi
+    message '[INFO] The renderer, player and decoder bridge use one tested version group. Pinned recipes are used even when an AUR helper is installed.'
+    build_aur_package harletty-bridge
+    build_aur_package mpv-omniphony
+    # Sony's checksummed absolute-mode package was built and installed with the
+    # local packages above. A helper must not replace it with the legacy recipe.
+}
+if (( with_audio )); then
+    install_audio_modules
 fi
 run_step 'Reload tracker access rules' sudo udevadm control --reload-rules
 run_step 'Apply tracker access to connected HID devices' sudo udevadm trigger --action=change --subsystem-match=hidraw
@@ -253,8 +336,8 @@ if (( with_companion )); then
 fi
 run_logged_step 'Create or validate user configuration' spatialctl setup
 run_logged_step 'Reload user services' systemctl --user daemon-reload
-run_logged_step 'Enable Spatial Audio for this desktop account' systemctl --user enable spatiald.service
-run_logged_step 'Start Spatial Audio' systemctl --user restart spatiald.service
+run_logged_step 'Enable BudsLink Spatial Companion for this desktop account' systemctl --user enable spatiald.service
+run_logged_step 'Start BudsLink Spatial Companion' systemctl --user restart spatiald.service
 
 spatial_current_step='Wait for the actual daemon control interface'
 spatial_ready_deadline=$((SECONDS + 20))
@@ -270,7 +353,12 @@ passed 'Live daemon control interface is ready'
 verification_report="$spatial_install_dir/verification-$(date -u +%Y%m%dT%H%M%S)-$$.json"
 spatial_current_step='Verify the real host installation'
 message '[RUN ] Verify the real host installation'
-if spatial-verify --output "$verification_report" 2>&1 | tee -a "$spatial_install_log"; then
+verification_arguments=(--output "$verification_report")
+if (( ! with_audio )); then
+    verification_arguments+=(--core-only)
+    message '[INFO] Verifying the selected core installation; optional audio checks will be OFF. Run spatial-verify for full host verification.'
+fi
+if spatial-verify "${verification_arguments[@]}" 2>&1 | tee -a "$spatial_install_log"; then
     passed 'Host acceptance checks passed'
 else
     verification_result=$?

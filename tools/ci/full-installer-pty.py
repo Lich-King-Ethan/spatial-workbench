@@ -5,6 +5,7 @@ The real installer and package managers keep their terminal, code and prompts.
 Only known confirmations receive input; an unexpected prompt is a test failure.
 """
 from pathlib import Path
+import argparse
 import os
 import sys
 import time
@@ -13,18 +14,33 @@ import pexpect
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    selection = parser.add_mutually_exclusive_group()
+    selection.add_argument('--core-only', action='store_true',
+                           help='repeat the real core installer without recompiling the renderer')
+    selection.add_argument('--desktop-only', action='store_true',
+                           help='install core and Companion for the explicitly limited UI precheck')
+    args = parser.parse_args()
     if os.geteuid() == 0 or os.environ.get('XDG_RUNTIME_DIR') != '/run/user/1000':
         raise SystemExit('Run as the integration VM desktop user with its real user manager')
     project = Path(__file__).resolve().parents[2]
-    child = pexpect.spawn('/usr/bin/bash', ['install.sh'], cwd=str(project),
+    if args.core_only:
+        command, budget_minutes = 'exec bash build.sh --install --core-only', 5
+    elif args.desktop_only:
+        command, budget_minutes = 'exec bash build.sh --install', 10
+    else:
+        command, budget_minutes = 'exec bash install.sh', 65
+    # Match the user's Konsole/fish entry point while respecting the scripts'
+    # Bash implementation. Never ask fish to parse a Bash source file.
+    child = pexpect.spawn('/usr/bin/fish', ['--login', '--command', command], cwd=str(project),
                           encoding='utf-8', codec_errors='replace', timeout=60,
                           dimensions=(40, 160))
     child.logfile_read = sys.stdout
-    deadline = time.monotonic() + 65 * 60
+    deadline = time.monotonic() + budget_minutes * 60
     prompts = [
         r':: Proceed with installation\? \[Y/n\]\s*',
         r'Enter a number \(default=1\):\s*',
-        r'Build and install (?:harletty-bridge|mpv-omniphony|sony-tracker) from the recipe above\? \[Y/n\]\s*',
+        r'Build and install (?:harletty-bridge|mpv-omniphony) from the recipe above\? \[Y/n\]\s*',
         # Detect other common confirmation prompts, but never approve them.
         r'[^\r\n]*\? \[[yYnN]/[yYnN]\]\s*',
         r'\[sudo\] password for [^:]+:\s*',
@@ -42,7 +58,7 @@ def main():
             elif matched == 5:
                 child.close()
                 return child.exitstatus if child.exitstatus is not None else 128 + (child.signalstatus or 1)
-        raise TimeoutError('The real installer exceeded its 65 minute test budget')
+        raise TimeoutError(f'The real installer exceeded its {budget_minutes} minute test budget')
     finally:
         if child.isalive():
             child.terminate(force=True)

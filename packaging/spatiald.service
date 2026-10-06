@@ -1,5 +1,5 @@
 [Unit]
-Description=Headphone tracking and spatial playback integration
+Description=BudsLink Spatial Companion
 After=graphical-session.target pipewire.service wireplumber.service
 PartOf=graphical-session.target
 StartLimitIntervalSec=0

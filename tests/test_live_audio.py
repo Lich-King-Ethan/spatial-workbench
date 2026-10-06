@@ -18,6 +18,9 @@ from spatial.live_audio import (GUARD_KEY, LiveAudio, LiveTelemetry, Route,
                                 _metadata, audit_snapshot, available_streams, live_config)
 
 
+SURROUND_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
+
+
 SINK = Sink("AA:BB:CC:DD:EE:FF", "bluez_output.AA_BB_CC_DD_EE_FF.1", "75", "a2dp", "idle")
 
 
@@ -39,25 +42,44 @@ def entry(key, value, subject=10, type="Spa:String"):
 def link(number, source, target, port, state="active"):
     return {"id": number, "type": "PipeWire:Interface:Link", "info": {
         "output-node-id": source, "input-node-id": target,
-        "output-port-id": port, "state": state}}
+        "output-port-id": port, "input-port-id": port + 100 if target == 20 else port + 1000,
+        "state": state}}
 
 
-def graph():
-    return [
+def pcm_format(channels):
+    return {"mediaType": "audio", "mediaSubtype": "raw", "format": "F32LE",
+            "rate": 48000, "channels": len(channels), "position": list(channels)}
+
+
+def graph(channels=("FL", "FR")):
+    objects = [
         obj("Client", 3, **{"application.process.id": 999}),
         obj("Node", 5, **{"media.class": "Audio/Sink", "node.name": SINK.name, "object.serial": "75"}),
         obj("Node", 10, **{"media.class": "Stream/Output/Audio", "application.name": "Actual game", "object.serial": "100"}),
         obj("Node", 20, **{"media.class": "Audio/Sink", "node.name": "spatial-live-test", "object.serial": "200", "client.id": 3}),
         obj("Node", 30, **{"media.class": "Stream/Output/Audio", "node.name": "omniphony", "object.serial": "300", "client.id": 3,
                           "target.object": SINK.name, "node.dont-fallback": True, "node.dont-move": True}),
-        obj("Port", 101, **{"node.id": 10, "port.direction": "out"}),
-        obj("Port", 102, **{"node.id": 10, "port.direction": "out"}),
-        obj("Port", 301, **{"node.id": 30, "port.direction": "out"}),
-        obj("Port", 302, **{"node.id": 30, "port.direction": "out"}),
+        obj("Port", 101, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[0]}),
+        obj("Port", 102, **{"node.id": 10, "port.direction": "out", "audio.channel": channels[1]}),
+        obj("Port", 301, **{"node.id": 30, "port.direction": "out", "audio.channel": "FL"}),
+        obj("Port", 302, **{"node.id": 30, "port.direction": "out", "audio.channel": "FR"}),
         metadata(entry("target.object", "200", type="Spa:Id"), entry(GUARD_KEY, "100:200")),
-        link(401, 10, 20, 101), link(402, 10, 20, 102),
-        link(403, 30, 5, 301), link(404, 30, 5, 302),
     ]
+    objects[2]["info"]["params"] = {"Format": [pcm_format(channels)]}
+    objects[3]["info"]["params"] = {"Format": [pcm_format(SURROUND_CHANNELS)]}
+    objects.extend(obj("Port", 201 + index, **{"node.id": 20, "port.direction": "in",
+                                               "audio.channel": channel})
+                   for index, channel in enumerate(SURROUND_CHANNELS))
+    objects.extend(obj("Port", 101 + index, **{"node.id": 10, "port.direction": "out",
+                                               "audio.channel": channel})
+                   for index, channel in enumerate(channels) if index > 1)
+    objects.extend(link(401 + index, 10, 20, 101 + index)
+                   for index in range(len(channels)))
+    objects.extend(obj("Port", 1301 + index, **{"node.id": 5, "port.direction": "in",
+                                                "audio.channel": channel})
+                   for index, channel in enumerate(("FL", "FR")))
+    objects.extend([link(450, 30, 5, 301), link(451, 30, 5, 302)])
+    return objects
 
 
 def ready():
@@ -113,17 +135,114 @@ class LivePureTests(unittest.TestCase):
         telemetry.last_seen = time.monotonic() - 5
         self.assertFalse(telemetry.ready)
 
+    def test_renderer_failure_and_shutdown_invalidate_live_input(self):
+        telemetry = ready()
+        telemetry.error = "live PCM failed"
+        self.assertFalse(telemetry.ready)
+        telemetry = ready()
+        telemetry.accept("/omniphony/state/shutdown", [])
+        self.assertEqual(telemetry.input, {})
+        self.assertFalse(telemetry.ready)
+
     def test_entire_owned_channel_graph_and_guard_are_required(self):
         live, objects = running(), graph()
         self.assertEqual(live.audit(objects)["state"], "ready")
         self.assertEqual(live.verified_input_ids(objects), {"20"})
+        self.assertEqual(live.verified_pcm_routes(objects), {"100": {"20"}})
         objects.pop()
         self.assertEqual(live.audit(objects)["state"], "waiting")
         self.assertEqual(live.pending_input_ids(objects), {"20"})
         self.assertEqual(live.verified_input_ids(objects), set())
+        self.assertEqual(live.verified_pcm_routes(objects), {})
         objects[9]["metadata"] = []
         self.assertEqual(live.audit(objects)["state"], "violation")
         self.assertEqual(live.pending_input_ids(objects), set())
+
+    def test_surround_native_channels_must_survive_before_the_renderer(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        self.assertEqual(live.audit(objects)["state"], "ready")
+        # Real regression: pw-cat's client format stayed 7.1 while its adapter
+        # retained the previous stereo sink's two graph ports and links.
+        downmixed = graph()
+        downmixed[2]["info"]["params"]["Format"] = [pcm_format(SURROUND_CHANNELS)]
+        self.assertEqual(live.audit(downmixed)["state"], "violation")
+        self.assertIn("lost before", live.audit(downmixed)["reason"])
+        live._state = "starting"
+        self.assertEqual(live.audit(downmixed)["state"], "waiting")
+
+    def test_renderer_node_properties_do_not_prove_native_channel_positions(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        objects[3]["info"]["props"].update({"audio.channels": 8,
+            "audio.position": "FL,FR,FC,LFE,SL,SR,RL,RR"})
+        del objects[3]["info"]["params"]["Format"][0]["position"]
+        self.assertEqual(live.audit(objects)["state"], "violation")
+        self.assertIn("positioned 7.1", live.audit(objects)["reason"])
+
+    def test_unknown_capture_ports_and_crossed_channel_links_are_rejected(self):
+        for mutate in (
+            lambda g: next(o for o in g if o["id"] == 201)["info"]["props"].update({"audio.channel": "UNK"}),
+            lambda g: next(o for o in g if o["id"] == 401)["info"].update({"input-port-id": 207}),
+            lambda g: g.append(link(499, 10, 20, 101)),
+        ):
+            objects = graph(SURROUND_CHANNELS)
+            mutate(objects)
+            self.assertEqual(running().audit(objects)["state"], "violation")
+
+    def test_missing_native_format_never_claims_spatial_readiness(self):
+        live, objects = running(), graph(SURROUND_CHANNELS)
+        objects[2]["info"]["params"]["Format"] = []
+        self.assertEqual(live.audit(objects)["state"], "violation")
+        objects = graph(SURROUND_CHANNELS)
+        objects[3]["info"]["params"]["Format"] = []
+        self.assertEqual(live.audit(objects)["state"], "waiting")
+
+    def test_renderer_stereo_channels_must_reach_matching_destination_ports(self):
+        for mutate in (
+            lambda g: next(o for o in g if o["id"] == 450)["info"].update({"input-port-id": 1302}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"audio.channel": "UNK"}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"node.id": 99}),
+            lambda g: next(o for o in g if o["id"] == 1301)["info"]["props"].update({"port.direction": "out"}),
+            lambda g: g.append(link(499, 30, 5, 301)),
+        ):
+            with self.subTest(mutate=mutate):
+                objects = graph()
+                mutate(objects)
+                self.assertEqual(running().audit(objects)["state"], "violation")
+
+    def test_renderer_missing_destination_ports_cannot_claim_ready(self):
+        objects = [o for o in graph() if o["id"] != 1302]
+        self.assertEqual(running().audit(objects)["state"], "waiting")
+
+    def test_initial_unknown_renderer_ports_wait_for_binaural_stereo_negotiation(self):
+        objects = graph()
+        # Real native startup: a 12-channel unpositioned speaker stream appears
+        # briefly before Omniphony replaces it with its binaural FL/FR stream.
+        for port in (301, 302):
+            next(o for o in objects if o["id"] == port)["info"]["props"]["audio.channel"] = "UNK"
+        objects.extend(obj("Port", port, **{"node.id": 30, "port.direction": "out", "audio.channel": "UNK"})
+                       for port in range(303, 313))
+        live = running()
+        live._state = "starting"
+        self.assertEqual(live.audit(objects)["state"], "waiting")
+        self.assertFalse(live.status()["renderer_ready"])
+        self.assertEqual(live.audit(graph())["state"], "ready")
+        # Losing a positioned output after startup is never normal negotiation.
+        live._state = "playing"
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
+    def test_named_stereo_crossing_is_invalid_even_during_startup(self):
+        objects = graph()
+        next(o for o in objects if o["id"] == 450)["info"]["input-port-id"] = 1302
+        live = running()
+        live._state = "starting"
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
+    def test_renderer_stereo_cannot_split_between_physical_sink_and_equalizer(self):
+        objects = graph()
+        objects[-1]["info"]["input-node-id"] = 60
+        next(o for o in objects if o["id"] == 1302)["info"]["props"]["node.id"] = 60
+        live = running(authorized_filter_inputs=lambda _: {"60"})
+        self.assertEqual(live.audit(objects)["state"], "violation")
 
     def test_unsafe_edges_sink_replacement_and_missing_guards_reject(self):
         for mutate in (
@@ -151,11 +270,66 @@ class LivePureTests(unittest.TestCase):
         objects = graph()
         objects[-1]["info"]["input-node-id"] = 60
         objects[-2]["info"]["input-node-id"] = 60
+        for number in (1301, 1302):
+            next(o for o in objects if o["id"] == number)["info"]["props"]["node.id"] = 60
         live = running(pending_filter_inputs=lambda _: {"60"})
         self.assertEqual(live.audit(objects)["state"], "waiting")
         self.assertEqual(live.verified_input_ids(objects), set())
         live._authorized_filter_inputs = lambda _: {"60"}
         self.assertEqual(live.audit(objects)["state"], "ready")
+
+    def test_pending_eq_transition_does_not_claim_ready_from_old_direct_links(self):
+        objects = graph()
+        for index, channel in enumerate(("FL", "FR")):
+            objects.append(obj("Port", 601 + index, **{"node.id": 60, "port.direction": "in",
+                                                       "audio.channel": channel}))
+            edge = link(460 + index, 30, 60, 301 + index)
+            edge["info"]["input-port-id"] = 601 + index
+            objects.append(edge)
+        live = running(pending_filter_inputs=lambda _: {"60"})
+        self.assertEqual(live.audit(objects)["state"], "waiting")
+        # Once the EQ is verified, the source must have exactly one destination;
+        # retaining both routes then is a real duplicate, not a settling graph.
+        live._authorized_filter_inputs = lambda _: {"60"}
+        self.assertEqual(live.audit(objects)["state"], "violation")
+
+    def test_extra_unsettled_renderer_links_block_otherwise_complete_output(self):
+        for target in (5, 60):
+            for label, extra_info in (
+                ("unenumerated output", {"output-port-id": 399}),
+                ("unenumerated input", {"input-port-id": 1399}),
+                ("negotiating", {"state": "negotiating"}),
+            ):
+                with self.subTest(target=target, link=label):
+                    objects = graph()
+                    for item in objects:
+                        if item["id"] in (450, 451):
+                            item["info"]["input-node-id"] = target
+                        elif item["id"] in (1301, 1302):
+                            item["info"]["props"]["node.id"] = target
+                    live = running(authorized_filter_inputs=lambda _: {"60"})
+                    self.assertEqual(live.audit(objects)["state"], "ready")
+                    extra = link(999, 30, target, 301)
+                    extra["info"].update(extra_info)
+                    objects.append(extra)
+                    self.assertEqual(live.audit(objects)["state"], "waiting")
+                    self.assertEqual(live.verified_input_ids(objects), set())
+                    objects.pop()
+                    self.assertEqual(live.audit(objects)["state"], "ready")
+
+    def test_mono_source_still_allows_positioned_stereo_adapter_output(self):
+        objects = graph()
+        objects[2]["info"]["params"]["Format"] = [pcm_format(("MONO",))]
+        self.assertEqual(running().audit(objects)["state"], "ready")
+
+    def test_unsettled_extra_source_link_cannot_authorize_owned_pcm(self):
+        for state, expected in (("init", "waiting"), ("negotiating", "waiting"), ("error", "violation")):
+            with self.subTest(state=state):
+                live, objects = running(), graph(SURROUND_CHANNELS)
+                self.assertEqual(live.verified_pcm_routes(objects), {"100": {"20"}})
+                objects.append(link(999, 10, 20, 101, state=state))
+                self.assertEqual(live.audit(objects)["state"], expected)
+                self.assertEqual(live.verified_pcm_routes(objects), {})
 
     def test_external_diagnostics_reuse_graph_audit_and_reject_stale_session(self):
         live, objects = running(), graph()
@@ -164,10 +338,12 @@ class LivePureTests(unittest.TestCase):
         result = audit_snapshot(objects, status, SINK)
         self.assertEqual(result["state"], "ready")
         self.assertEqual(result["verified_inputs"], {"20"})
+        self.assertEqual(result["verified_pcm_routes"], {"100": {"20"}})
         objects[-1]["info"]["input-node-id"] = 99
         result = audit_snapshot(objects, status, SINK)
         self.assertEqual(result["state"], "violation")
         self.assertEqual(result["pending_inputs"], set())
+        self.assertEqual(result["verified_pcm_routes"], {})
         status["input_serial"] = "replaced"
         self.assertEqual(audit_snapshot(graph(), status, SINK)["state"], "violation")
 
@@ -247,10 +423,202 @@ class LiveAsyncTests(unittest.IsolatedAsyncioTestCase):
             await live.stop()
             self.assertIn(("wpctl", "set-mute", "10", "0"), events)
 
+    async def test_owned_source_stop_quiesces_real_watcher_before_source_then_route(self):
+        live = running()
+        observing, cancelled = asyncio.Event(), asyncio.Event()
+        events = []
+        async def capture():
+            if asyncio.current_task() is live._monitor:
+                observing.set()
+                try:
+                    await asyncio.Event().wait()
+                finally:
+                    cancelled.set()
+            return graph()
+        async def stop_source():
+            self.assertTrue(cancelled.is_set())
+            self.assertTrue(live._route.applied)
+            self.assertIsNotNone(live.process)
+            events.append("source stopped")
+            await asyncio.sleep(0)
+        async def restore(objects):
+            self.assertEqual(events, ["source stopped"])
+            events.append("route restored")
+        async def terminate(process):
+            events.append("renderer stopped")
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", capture), \
+                patch("spatial.live_audio.stop_child", terminate):
+            monitor = live._monitor = asyncio.create_task(live._watch())
+            await observing.wait()
+            await live.stop_owned_source(stop_source)
+        self.assertTrue(monitor.cancelled())
+        self.assertEqual(events, ["source stopped", "route restored", "renderer stopped"])
+        self.assertEqual(live.status()["error"], "")
+        self.assertFalse(live.status()["running"])
+
+    async def test_owned_stop_cancels_real_blocked_start_before_waiting_for_live_lock(self):
+        live = LiveAudio()
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+        stopped = []
+        async def probe():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        async def stop_source():
+            self.assertTrue(cancelled.is_set())
+            stopped.append(True)
+        with patch.object(live, "probe", probe):
+            await live.start(SINK, "100", graph())
+            await entered.wait()
+            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+        self.assertEqual(stopped, [True])
+        self.assertEqual(live.status()["state"], "idle")
+        self.assertEqual(live.status()["error"], "")
+
+    async def test_owned_source_stop_survives_startup_cleanup_and_preserves_real_errors(self):
+        live = running()
+        live._state = "starting"
+        live._error = "existing real renderer failure"
+        entered = asyncio.Event()
+        events = []
+        async def launch():
+            async with live._lock:
+                entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except BaseException:
+                    # The real startup's cancellation cleanup owns this lock.
+                    await live._stop("setup failed")
+                    raise
+        async def stop_source():
+            self.assertTrue(live._route.applied)
+            events.append("source stopped")
+        async def restore(objects):
+            self.assertEqual(events, ["source stopped"])
+            events.append("route restored")
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock):
+            live._launch_task = asyncio.create_task(launch())
+            await entered.wait()
+            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+        self.assertEqual(events, ["source stopped", "route restored"])
+        self.assertEqual(live.status()["error"], "existing real renderer failure")
+        self.assertIsNone(live._pending_source_stop)
+
+    async def test_owned_source_stop_failure_mutes_before_releasing_route(self):
+        live = running()
+        events = []
+        async def stop_source():
+            raise OSError("cannot stop source")
+        async def command(*args, **kwargs):
+            events.append(args)
+            return "Volume: 1.00 [MUTED]\n" if args[1] == "get-volume" else ""
+        async def restore(objects):
+            self.assertIn(("wpctl", "set-mute", "10", "1"), events)
+            events.append(("restore",))
+        live._route.restore = restore
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                patch("spatial.live_audio._command", command), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock):
+            with self.assertRaisesRegex(OSError, "cannot stop source"):
+                await live.stop_owned_source(stop_source)
+        self.assertIn(("restore",), events)
+        self.assertIn("Could not stop owned playback", live.status()["error"])
+
+    async def test_owned_source_failure_in_other_cleanup_is_not_swallowed_or_unmuted(self):
+        for startup in (True, False):
+            with self.subTest(startup=startup):
+                live = running()
+                entered, release = asyncio.Event(), asyncio.Event()
+                commands = []
+                async def stop_source():
+                    raise OSError("source remains alive")
+                async def command(*args, **kwargs):
+                    commands.append(args)
+                    return "Volume: 1.00 [MUTED]\n" if args[1] == "get-volume" else ""
+                async def launch():
+                    async with live._lock:
+                        entered.set()
+                        try:
+                            await asyncio.Event().wait()
+                        except BaseException:
+                            await live._stop("setup failed")
+                            raise
+                async def monitor():
+                    try:
+                        await asyncio.Event().wait()
+                    finally:
+                        entered.set()
+                        await release.wait()
+                with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
+                        patch("spatial.live_audio._command", command), \
+                        patch("spatial.live_audio.stop_child", new_callable=AsyncMock), \
+                        patch.object(live._route, "restore", new_callable=AsyncMock):
+                    if startup:
+                        live._launch_task = asyncio.create_task(launch())
+                        await entered.wait()
+                        with self.assertRaisesRegex(OSError, "source remains alive"):
+                            await asyncio.wait_for(live.stop_owned_source(stop_source), .5)
+                    else:
+                        live._monitor = asyncio.create_task(monitor())
+                        await asyncio.sleep(0)
+                        earlier = asyncio.create_task(live.stop("connection lost"))
+                        await entered.wait()
+                        owned = asyncio.create_task(live.stop_owned_source(stop_source))
+                        await asyncio.sleep(0)
+                        release.set()
+                        results = await asyncio.wait_for(asyncio.gather(earlier, owned, return_exceptions=True), .5)
+                        self.assertTrue(all(isinstance(result, OSError) for result in results))
+                self.assertIn(("wpctl", "set-mute", "10", "1"), commands)
+                self.assertNotIn(("wpctl", "set-mute", "10", "0"), commands)
+                self.assertIn("Could not stop owned playback", live.status()["error"])
+
     async def test_failed_mute_verification_retains_capture_and_route(self):
         live = running()
+        self.assertEqual(live.audit(graph())["state"], "ready")
+        self.assertTrue(live.status()["renderer_ready"])
         with patch("spatial.live_audio.pipewire.capture", AsyncMock(return_value=graph())), \
                 patch("spatial.live_audio._command", AsyncMock(return_value="Volume: 1.00\n")), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
+                patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
+            await live.stop("headphones disconnected")
+            self.assertEqual(live.status()["state"], "error")
+            self.assertFalse(live.status()["renderer_ready"])
+            self.assertEqual(live.status()["routing"]["state"], "violation")
+            self.assertTrue(live._route.applied)
+            kill.assert_not_awaited()
+            restore.assert_not_awaited()
+            # A diagnostics refresh can see the retained graph again. It must
+            # not reactivate a session whose stop failed and needs user recovery.
+            self.assertEqual(live.audit(graph())["state"], "violation")
+            self.assertFalse(live.status()["renderer_ready"])
+
+    async def test_lost_graph_after_failed_mute_is_not_treated_as_destroyed_source(self):
+        live = running()
+        live.audit(graph())
+        # The stream remains alive, but the second observation fails. A later
+        # successful snapshot must not let cleanup restore an unmuted stream.
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(side_effect=[graph(), OSError("session busy"), graph()])), \
+                patch("spatial.live_audio._command", AsyncMock(side_effect=AudioError("mute failed"))), \
+                patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
+                patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
+            await live.stop("headphones disconnected")
+            self.assertEqual(live.status()["state"], "error")
+            self.assertFalse(live.status()["renderer_ready"])
+            self.assertTrue(live._route.applied)
+            kill.assert_not_awaited()
+            restore.assert_not_awaited()
+
+    async def test_ambiguous_source_after_failed_mute_is_not_treated_as_destroyed(self):
+        live = running()
+        ambiguous = graph()
+        ambiguous.append(obj("Node", 11, **{"media.class": "Stream/Output/Audio", "object.serial": "100"}))
+        with patch("spatial.live_audio.pipewire.capture", AsyncMock(side_effect=[graph(), ambiguous, graph()])), \
+                patch("spatial.live_audio._command", AsyncMock(side_effect=AudioError("mute failed"))), \
                 patch("spatial.live_audio.stop_child", new_callable=AsyncMock) as kill, \
                 patch.object(live._route, "restore", new_callable=AsyncMock) as restore:
             await live.stop("headphones disconnected")

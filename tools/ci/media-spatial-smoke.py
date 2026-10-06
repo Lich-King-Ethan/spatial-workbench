@@ -51,13 +51,29 @@ def owned_outputs(objects, pid):
 
 
 def stereo_linked(objects, source, destination):
+    ports = {str(obj["id"]): obj for obj in objects
+             if obj.get("type") == "PipeWire:Interface:Port"}
     links = [obj["info"] for obj in objects
              if obj.get("type") == "PipeWire:Interface:Link"
              and str((obj.get("info") or {}).get("output-node-id")) == str(source)]
-    return (links and all(str(link.get("input-node-id")) == str(destination) for link in links)
-            and all(link.get("state") in ("active", "paused") for link in links)
-            and len({link["output-port-id"] for link in links}) == 2
-            and len({link["input-port-id"] for link in links}) == 2)
+    if len(links) != 2:
+        return False
+    channels = set()
+    for link in links:
+        output = ports.get(str(link.get("output-port-id")), {})
+        target = ports.get(str(link.get("input-port-id")), {})
+        channel = props(output).get("audio.channel")
+        if (str(link.get("input-node-id")) != str(destination)
+                or link.get("state") not in ("active", "paused")
+                or str(props(output).get("node.id")) != str(source)
+                or str(props(target).get("node.id")) != str(destination)
+                or (output.get("info") or {}).get("direction") != "output"
+                or (target.get("info") or {}).get("direction") != "input"
+                or channel not in ("FL", "FR")
+                or props(target).get("audio.channel") != channel):
+            return False
+        channels.add(channel)
+    return channels == {"FL", "FR"}
 
 
 def pcm_metrics(path, period_frames):
@@ -95,7 +111,9 @@ async def run(gate, sink, bridge, recorder):
               "output": "post-EQ synthetic earbud sink monitor, stereo float32, 48 kHz",
               "pose_transport": "Sony helper UDP → production adapter/Engine → AudioRuntime → OSC",
               "windows": {}}
-    player = AudioRuntime(bridge_path=bridge)
+    # Match the daemon's native-PCM-enabled launch policy. The decoder must
+    # still emit binaural stereo for Atmos when mpv preserves native channels.
+    player = AudioRuntime(bridge_path=bridge, allow_pcm_route=True)
     eq = gate.equalizer
     media_pid = None
     try:
@@ -107,21 +125,31 @@ async def run(gate, sink, bridge, recorder):
             media.write_bytes(sample * 32)
             await player.start(media, sink, require_spatial=True)
             media_pid = player.process.pid
-            report["player"] = player.status()
-            require(report["player"]["decoder"] == "orender"
-                    and report["player"]["object_count"] > 0
-                    and report["player"]["renderer_ready"],
+            report["initial_player"] = player.status()
+            require(report["initial_player"]["decoder"] == "orender"
+                    and report["initial_player"]["object_count"] > 0
+                    and report["initial_player"]["renderer_ready"],
                     "mpv did not verify real decoded objects through the embedded renderer")
 
             def full_graph(objects):
                 status = player.status()
+                evidence = {"player": status}
+                report["last_graph_check"] = evidence
                 require(status["running"] and not status["error"],
                         f"Atmos player failed: {status}")
                 inputs = eq.verified_input_ids(objects)
                 audit = player.verify_output(objects, allowed_filter_inputs=inputs,
                                               pending_filter_inputs=eq.pending_input_ids(objects))
+                evidence.update(audit=audit, verified_eq_inputs=sorted(map(str, inputs)),
+                                equalizer=eq.status())
                 require(audit["state"] != "violation", f"Unsafe Atmos output graph: {audit}")
                 outputs = owned_outputs(objects, media_pid)
+                mute_values = ([] if len(outputs) != 1 else [entry["mute"]
+                    for entry in outputs[0].get("info", {}).get("params", {}).get("Props", [])
+                    if "mute" in entry])
+                report["player_source_mute"] = mute_values
+                require(not any(value is True for value in mute_values),
+                        "The actual Atmos player source is muted; prior playback cleanup must preserve stream mute")
                 group = eq.status()["link_group"]
                 eq_out = [obj for obj in objects
                           if obj.get("type") == "PipeWire:Interface:Node"
@@ -130,10 +158,31 @@ async def run(gate, sink, bridge, recorder):
                           if obj.get("type") == "PipeWire:Interface:Node"
                           and props(obj).get("node.name") == sink.name
                           and str(props(obj).get("object.serial")) == sink.serial]
-                return (audit["state"] == "verified" and len(inputs) == 1
-                        and len(outputs) == len(eq_out) == len(target) == 1
-                        and stereo_linked(objects, outputs[0]["id"], next(iter(inputs)))
-                        and stereo_linked(objects, eq_out[0]["id"], target[0]["id"]))
+                checks = {
+                    "renderer_ready": bool(status["renderer_ready"]),
+                    "spatial_source": status["source_mode"] == "spatial",
+                    "route_verified": audit["state"] == "verified",
+                    "one_eq_input": len(inputs) == 1,
+                    "source_unmuted": mute_values == [False],
+                    "one_owned_output": len(outputs) == 1,
+                    "one_eq_output": len(eq_out) == 1,
+                    "one_exact_sink": len(target) == 1,
+                    "source_to_eq_stereo": (len(outputs) == len(inputs) == 1
+                        and stereo_linked(objects, outputs[0]["id"], next(iter(inputs)))),
+                    "eq_to_sink_stereo": (len(eq_out) == len(target) == 1
+                        and stereo_linked(objects, eq_out[0]["id"], target[0]["id"]))}
+                evidence.update(checks=checks, source_mute=mute_values,
+                    node_counts={"owned_outputs": len(outputs), "eq_outputs": len(eq_out),
+                                 "exact_sinks": len(target), "verified_eq_inputs": len(inputs)})
+                verified = all(checks.values())
+                if not verified:
+                    # Preserve the last rejected *real* snapshot before player
+                    # cleanup destroys it. Overwrite one bounded artifact while
+                    # initial negotiation is pending; never relax the predicate.
+                    name = "media-graph-last-unready.json"
+                    (gate.report_dir / name).write_text(json.dumps(objects, indent=2) + "\n")
+                    evidence["snapshot"] = name
+                return verified
 
             objects = await gate.until("actual-atmos-mpv-eq-earbud-chain", full_graph, timeout=20)
             output = owned_outputs(objects, media_pid)[0]
@@ -170,7 +219,12 @@ async def run(gate, sink, bridge, recorder):
                     require(full_graph(await gate.snapshot()), "Media graph changed during capture")
                     report["windows"][name] = pcm_metrics(path, period_frames=72192)
                     report["windows"][name]["path"] = str(path.relative_to(gate.report_dir))
-                    report["windows"][name]["renderer_pose"] = list(expected)
+                    report["windows"][name]["expected_renderer_pose"] = list(expected)
+                    report["windows"][name]["renderer_pose"] = values
+                    report["windows"][name]["player"] = player.status()
+                    require(report["windows"][name]["player"]["tracking"],
+                            "Media renderer lost tracking readiness during capture")
+                    report["player"] = report["windows"][name]["player"]
                 report["sony_pose_evidence"] = tracker.records
             windows = report["windows"]
             neutral = windows["pose_neutral"]["left_minus_right_db"]
@@ -189,17 +243,23 @@ async def run(gate, sink, bridge, recorder):
                     "Actual decoded Atmos PCM did not move between the simulated ears")
             require(negative > 0.5 and negative - turned > 2.0,
                     "The opposite head turn did not restore the expected ear-energy polarity")
-            report["status"] = "passed"
     except BaseException as exc:
         report["error"] = f"{type(exc).__name__}: {exc}"
         raise
     finally:
-        gate.watch.protected = None
         try:
             await player.stop("media smoke complete")
+            if media_pid is not None:
+                await gate.until("actual-atmos-player-cleaned-up",
+                                 lambda objects: not owned_outputs(objects, media_pid))
+            if "error" not in report:
+                report["status"] = "passed"
+        except BaseException as exc:
+            report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+            if "error" not in report:
+                report["error"] = report["cleanup_error"]
+                raise
         finally:
+            gate.watch.protected = None
             (gate.report_dir / "media-spatial-smoke.json").write_text(json.dumps(report, indent=2) + "\n")
-    if media_pid is not None:
-        await gate.until("actual-atmos-player-cleaned-up",
-                         lambda objects: not owned_outputs(objects, media_pid))
     return report

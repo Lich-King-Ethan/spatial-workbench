@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Runs only on a disposable GitHub-hosted runner. No host credentials enter the VM.
 set -Eeuo pipefail
+ci_validation_scope=${CI_VALIDATION_SCOPE:-full}
+case "$ci_validation_scope" in
+    full|desktop) ;;
+    *) printf 'Unknown VM validation scope: %s\n' "$ci_validation_scope" >&2; exit 2 ;;
+esac
 [[ ${GITHUB_ACTIONS:-} == true && ${RUNNER_ENVIRONMENT:-} == github-hosted ]] || {
     printf 'This provisioning script requires a disposable GitHub-hosted runner.\n' >&2
     exit 1
@@ -8,6 +13,7 @@ set -Eeuo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 evidence_dir="$project_dir/installer-evidence"
 mkdir -p "$evidence_dir"
+printf '%s\n' "$ci_validation_scope" > "$evidence_dir/validation-scope.txt"
 exec > >(tee "$evidence_dir/host.log") 2>&1
 vm_dir=$(mktemp -d "$RUNNER_TEMP/spatial-installer.XXXXXXXX")
 vm_root="$vm_dir/root"
@@ -31,7 +37,8 @@ finish() {
 }
 trap finish EXIT
 
-printf 'Source commit: %s\nOfficial userspace image: %s\n' "$GITHUB_SHA" "$CACHYOS_IMAGE"
+printf 'Source commit: %s\nOfficial userspace image: %s\nValidation scope: %s\n' \
+    "$GITHUB_SHA" "$CACHYOS_IMAGE" "$ci_validation_scope"
 lscpu
 free -h
 df -h "$RUNNER_TEMP"
@@ -54,13 +61,13 @@ PY
     printf 'ENVIRONMENT UNAVAILABLE: this job requires the public 16GB runner.\n' >&2
     exit 1
 }
-required_kib=$((22 * 1024 * 1024))
+required_kib=$((45 * 1024 * 1024))
 available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n1 | tr -d ' ')
 if (( available_kib < required_kib )); then
     # These unrelated SDKs are preinstalled on this disposable runner and are
     # never used by this job. Do not prune Docker globally or touch the checkout.
-    printf 'Reclaiming unused runner Android SDK and GHC installations.\n'
-    sudo rm -rf -- /usr/local/lib/android /opt/ghc
+    printf 'Reclaiming unused runner Android, GHC, .NET and PowerShell installations.\n'
+    sudo rm -rf -- /usr/local/lib/android /opt/ghc /usr/share/dotnet /usr/local/share/powershell
     available_kib=$(df --output=avail -k "$RUNNER_TEMP" | tail -n1 | tr -d ' ')
 fi
 printf 'VM disk preflight: available=%s KiB; required=%s KiB\n' "$available_kib" "$required_kib"
@@ -79,11 +86,11 @@ git -C "$project_dir" archive --format=tar HEAD > "$vm_dir/source.tar"
 docker run --detach --cap-add=SYS_ADMIN --name "$container_name" "$CACHYOS_IMAGE" sleep infinity
 docker cp "$vm_dir/source.tar" "$container_name:/source.tar"
 docker cp "$project_dir/tools/ci/full-installer-prepare.sh" "$container_name:/prepare.sh"
-docker exec "$container_name" bash /prepare.sh
+docker exec --env "CI_VALIDATION_SCOPE=$ci_validation_scope" "$container_name" bash /prepare.sh
 docker stop "$container_name"
 
 # Export directly into the guest disk, avoiding a second unpacked rootfs.
-truncate -s 18G "$vm_dir/root.raw"
+truncate -s 36G "$vm_dir/root.raw"
 mkfs.ext4 -F -L spatial-ci "$vm_dir/root.raw"
 mkdir "$vm_root"
 sudo mount -o loop "$vm_dir/root.raw" "$vm_root"
@@ -100,15 +107,18 @@ sudo umount "$vm_root"
 mounted=0
 docker rm "$container_name"
 
-printf 'Booting 4 vCPU / 10GiB minimal CachyOS guest with its own kernel and udev.\n'
+printf 'Booting 4 vCPU / 12GiB CachyOS Plasma Wayland desktop; guest prepares its own 8GiB swapfile.\n'
+free -h > "$evidence_dir/host-memory-before-boot.txt"
+: > "$evidence_dir/serial.log"
 # NAT supplies outbound package/source downloads. There are no forwarded ports,
 # host filesystem shares, SSH credentials, Bluetooth devices or audio hardware.
-sudo timeout --signal=TERM --kill-after=20s 75m qemu-system-x86_64 \
-    -machine q35,accel=kvm -cpu host -smp 4 -m 10G \
+sudo timeout --signal=TERM --kill-after=20s 95m qemu-system-x86_64 \
+    -machine q35,accel=kvm -cpu host -smp 4 -m 12G \
     -kernel "$vm_dir/vmlinuz" -initrd "$vm_dir/initramfs.img" \
-    -append 'root=/dev/vda rw console=ttyS0 systemd.unit=multi-user.target' \
+    -append 'root=/dev/vda rw console=ttyS0 systemd.unit=graphical.target' \
     -drive "file=$vm_dir/root.raw,format=raw,if=virtio,cache=writeback" \
     -netdev user,id=network -device virtio-net-pci,netdev=network \
+    -vga none -device virtio-vga,xres=1280,yres=800 -device qemu-xhci -device usb-tablet \
     -display none -monitor none -serial stdio -no-reboot \
     > "$evidence_dir/serial.log" 2>&1 &
 qemu_pid=$!
@@ -145,5 +155,10 @@ fi
     printf 'The actual installer or its acceptance checks failed.\n' >&2
     exit 1
 }
-printf 'PASS: full installer completed in the booted VM; physical headphone checks remain WAIT.\n'
-cat "$evidence_dir/acceptance.json"
+if [[ "$ci_validation_scope" == desktop ]]; then
+    printf 'PASS: desktop UI precheck only; full installer, audio and repeat-install gates were NOT RUN.\n'
+    cat "$evidence_dir/desktop-acceptance.json"
+else
+    printf 'PASS: full installer completed from fish in the booted Plasma VM; physical headphone checks remain WAIT.\n'
+    cat "$evidence_dir/acceptance.json"
+fi

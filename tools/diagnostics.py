@@ -56,8 +56,8 @@ def collect(include_logs=False):
         "wireplumber": ["wpctl", "status"],
         "user_services": ["systemctl", "--user", "show", "spatiald.service", "pipewire.service", "wireplumber.service",
                           "--property=Id,LoadState,ActiveState,SubState,Result,NRestarts"],
-        "packages": ["pacman", "-Q", "spatial-workbench", "plasma-budslink-companion-spatial", "python-dbus-next",
-                     "pipewire", "wireplumber", "bluez", "mpv-omniphony", "orender", "orender-spatial", "sony-tracker"],
+        "packages": ["pacman", "-Q", "budslink-spatial-companion", "plasma-budslink-spatial-companion", "python-dbus-next",
+                     "pipewire", "wireplumber", "bluez", "mpv-omniphony", "orender", "orender-spatial", "sony-tracker", "sony-tracker-spatial"],
         "budslink_install": ["flatpak", "info", "--show-version", "io.github.maniacx.BudsLink"],
     }
     if include_logs:

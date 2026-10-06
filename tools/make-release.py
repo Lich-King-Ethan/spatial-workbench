@@ -20,18 +20,20 @@ def digest(path):
 
 def release(output):
     version = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]["version"]
-    prefix = f"spatial-workbench-{version}"
+    prefix = f"budslink-spatial-companion-{version}"
     core = output / "core"
     companion = output / "companion"
     orender = output / "orender"
+    sony = output / "sony"
     core.mkdir(parents=True, exist_ok=True)
     companion.mkdir(parents=True, exist_ok=True)
     orender.mkdir(parents=True, exist_ok=True)
+    sony.mkdir(parents=True, exist_ok=True)
     content = io.BytesIO()
     included = ("spatial", "tests", "docs", "examples", "config", "plasma", "wireplumber", "LICENSES",
                 "packaging", "tools", ".github", "LICENSE", "README.md", "STATUS.md",
                 "pyproject.toml", "build.sh", "install.sh", "Makefile", "MANIFEST.in",
-                "CONTRIBUTING.md", ".gitignore", "test-results.txt")
+                "CONTRIBUTING.md", ".gitignore")
     with tarfile.open(fileobj=content, mode="w", format=tarfile.PAX_FORMAT) as archive:
         for item in included:
             path = ROOT / item
@@ -58,26 +60,43 @@ def release(output):
     shutil.copyfile(ROOT / "packaging/companion-PROVENANCE.md", companion / "PROVENANCE.md")
     shutil.copyfile(ROOT / "plasma/tests/CMakeLists.txt", companion / "native-qml-CMakeLists.txt")
     shutil.copyfile(ROOT / "plasma/tests/qml-smoke.cpp", companion / "native-qml-smoke.cpp")
+    shutil.copyfile(ROOT / "plasma/tests/private-session.conf", companion / "native-qml-private-session.conf")
+    shutil.copyfile(ROOT / "plasma/tests/run-private.sh", companion / "native-qml-run-private.sh")
     replacements = {
         "@VERSION@": version, "@UPSTREAM_SHA256@": UPSTREAM_SHA256,
         "@PATCH_SHA256@": digest(companion / "companion.patch"),
         "@PROVENANCE_SHA256@": digest(companion / "PROVENANCE.md"),
         "@QML_CMAKE_SHA256@": digest(companion / "native-qml-CMakeLists.txt"),
         "@QML_SMOKE_SHA256@": digest(companion / "native-qml-smoke.cpp"),
+        "@QML_BUS_SHA256@": digest(companion / "native-qml-private-session.conf"),
+        "@QML_RUNNER_SHA256@": digest(companion / "native-qml-run-private.sh"),
     }
     recipe = (ROOT / "packaging/companion-PKGBUILD.in").read_text()
     for token, value in replacements.items():
         recipe = recipe.replace(token, value)
     (companion / "PKGBUILD").write_text(recipe)
     shutil.copyfile(ROOT / "packaging/orender-loopback.patch", orender / "orender-loopback.patch")
+    shutil.copyfile(ROOT / "packaging/orender-live-channels.patch", orender / "orender-live-channels.patch")
     shutil.copyfile(ROOT / "packaging/orender-Cargo.lock", orender / "orender-Cargo.lock")
     recipe = (ROOT / "packaging/orender-PKGBUILD.in").read_text().replace(
         "@PATCH_SHA256@", digest(orender / "orender-loopback.patch")).replace(
+        "@LIVE_PATCH_SHA256@", digest(orender / "orender-live-channels.patch")).replace(
         "@LOCK_SHA256@", digest(orender / "orender-Cargo.lock"))
     (orender / "PKGBUILD").write_text(recipe)
+    for source_name, target_name in (("sony-absolute.patch", "sony-absolute.patch"),
+                                     ("sony-native-test.py", "sony-native-test.py"),
+                                     ("sony-PROVENANCE.md", "PROVENANCE.md")):
+        shutil.copyfile(ROOT / "packaging" / source_name, sony / target_name)
+    recipe = (ROOT / "packaging/sony-PKGBUILD.in").read_text()
+    for token, filename in (("@PATCH_SHA256@", "sony-absolute.patch"),
+                            ("@TEST_SHA256@", "sony-native-test.py"),
+                            ("@PROVENANCE_SHA256@", "PROVENANCE.md")):
+        recipe = recipe.replace(token, digest(sony / filename))
+    (sony / "PKGBUILD").write_text(recipe)
     print(f"{source}: sha256 {digest(source)}")
     print(f"{companion / 'PKGBUILD'}: pinned upstream {COMMIT}")
-    print(f"{orender / 'PKGBUILD'}: pinned Omniphony 0.5.2 with local OSC bind patch")
+    print(f"{orender / 'PKGBUILD'}: pinned Omniphony 0.5.2 with local OSC and positioned PCM input patches")
+    print(f"{sony / 'PKGBUILD'}: pinned SonyTrackerLinux 1.0.0 with opt-in host-timestamped absolute orientation")
 
 
 if __name__ == "__main__":

@@ -3,27 +3,64 @@
 The Companion package's `check()` compiles this Qt Test executable and runs it
 offscreen on a new private D-Bus session. It loads the **patched upstream** cards,
 including the original `WidgetCard.qml`, actual Plasma/Kirigami/DBus QML plugins,
-Qt's file-dialog type, and a real KI18n translation context. It does not substitute
+Qt's file-dialog type, and a real KI18n translation context. Each engine uses
+`Plasma::setupPlasmaStyle`, as the shell does, so native Kirigami colors match
+Plasma's SVG controls. The fixture window uses the native background color.
+Enabled music controls must use the Plasma theme plugin with readable foreground
+and background contrast; no application color scheme is hardcoded or changed. It does not substitute
 QML components or replace imports with test doubles.
 
-The explicitly named `ControlFixture` provides only a `State` property and
-`PropertiesChanged` signals on that private bus. The test does not start spatiald,
-BudsLink, an audio renderer, or playback. Qt may activate desktop portal helpers
-inside the private test session. The test covers component
+The explicitly named `ControlFixture` provides a `State` property,
+`PropertiesChanged` signals, and fixture responses to `TidalRequest` on a separate
+connection to that private bus. Separate connections retain genuine asynchronous
+reply semantics, including delayed replies. The test does not start spatiald,
+BudsLink, an audio renderer, or playback. `run-private.sh` uses
+`private-session.conf`, which loads no desktop service-activation directories or
+host bus configuration. This prevents portal helpers from starting and mounting a
+document filesystem inside the temporary runtime. Cleanup stays on that runtime's
+filesystem and reports errors without unmounting or stopping desktop services.
+The test covers component
 creation, visible tracker delegates, plain tracker names, playback format updates,
-and exact application-stream identifiers. Component errors and **every warning
+exact application-stream identifiers, and the full disconnected representation.
+The disconnected check verifies real service-state refresh, loss/recovery,
+disabled actions when status is unavailable, and malformed-state handling.
+The TIDAL check clicks the actual sign-in/cancel, search, category, collection,
+favorites, pagination, quality, playback and sign-out controls. It checks the
+bounded results area and Max-first selection, all five quality request values,
+quality changes applying to a new playback request, owned and saved playlist rows,
+nested playlist folders, empty folders, Back and category changes that return to
+the library root, raw server pagination positions, and delivered stream quality
+with observed decoder format kept separate from the selected limit. It checks delayed playback errors after
+accepted requests, native MPRIS pause/skip and Stop during a pending search, plus
+plain catalog text, browsing while disconnected, playback readiness, provider errors,
+late replies after cancellation or service loss, and recovery of a pending login
+after the actual popup window hides or its card is destroyed and recreated,
+including a delayed sign-in start. Recovery also handles authorization completing
+while closed without resurrecting a session removed by logout. Closing the popup
+preserves the bounded daemon attempt; explicit Cancel and sign-out end it. A
+separate check exercises the real FullRepresentation → DevicePage → TIDAL card
+quality binding and selection signals with a persistent fixture owner. Its
+preference survives destruction/recreation, external config updates retain the
+binding, and an unknown saved value displays Max without rewriting it. The
+patched main widget connects that chain to Plasma's per-widget KConfig entry,
+whose default is Max. The
+check requires no further account polling while hidden. No credentials, catalog service,
+web browser, or audio devices are involved. An optional
+`SPATIAL_QML_SCREENSHOT=/absolute/path.png` saves the fixture card for layout review.
+Component errors and **every warning
 reported by the QML engine** fail the test. General platform diagnostic messages
 remain visible; there is no warning suppression list.
 
-Arch dependencies come from the Companion recipe, plus `cmake`, `ninja`, `dbus`,
-`ki18n`, and `ttf-dejavu`. To run against an already patched checkout:
+Arch dependencies come from the Companion recipe, including Plasma 6.7 or later,
+Kirigami Platform, `cmake`, `extra-cmake-modules`, `ninja`, `dbus`, `ki18n`, and
+`ttf-dejavu`. To run against an already patched checkout:
 
 ```sh
 cmake -S plasma/tests -B /tmp/spatial-qml-build -G Ninja \
   -DSPATIAL_COMPANION_QML_DIR=/absolute/path/to/companion/contents/ui
 cmake --build /tmp/spatial-qml-build
-QT_QPA_PLATFORM=offscreen QT_QUICK_BACKEND=software \
-  SPATIAL_QML_PRIVATE_BUS=1 dbus-run-session -- /tmp/spatial-qml-build/spatial-qml-smoke
+bash plasma/tests/run-private.sh plasma/tests/private-session.conf \
+  /tmp/spatial-qml-build/spatial-qml-smoke
 ```
 
 This is a native import/instantiation and binding smoke test, not a screenshot

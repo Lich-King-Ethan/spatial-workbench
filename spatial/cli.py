@@ -1,8 +1,9 @@
-"""Command-line setup, playback, and diagnostics for Spatial Audio."""
+"""Command-line setup, playback, and diagnostics for BudsLink Spatial Companion."""
 import argparse
 import asyncio
 import json
 import logging
+import os
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,8 @@ def parser():
     initialize = sub.add_parser("setup", help="create missing user configuration without overwriting settings")
     initialize.add_argument("--config", type=Path)
     sub.add_parser("status", help="show live device, tracker, renderer, and module state")
+    timing = sub.add_parser("timing-snapshot", help="explicitly read bounded head-tracking timing evidence")
+    timing.add_argument("--output", type=Path, help="exclusively create a private JSON file; never overwrite")
     play = sub.add_parser("play", help="play a local file, HTTP media URL, or TIDAL track/album/playlist")
     play.add_argument("media")
     for name, help_text in (("stop", "stop playback and release its process"),
@@ -90,6 +93,11 @@ async def client(command, *args):
                    "live-start": "call_start_live", "live-stop": "call_stop_live"}
         if command == "status":
             return json.loads(await interface.get_state())
+        if command == "timing-snapshot":
+            snapshot = json.loads(await asyncio.wait_for(interface.call_timing_snapshot(), 5))
+            if not isinstance(snapshot, dict):
+                raise ValueError("Timing snapshot is not a JSON object")
+            return snapshot
         if command == "seek":
             import math
             if not math.isfinite(args[0]) or abs(args[0]) > 2**62 / 1_000_000:
@@ -108,7 +116,8 @@ def doctor(selected_address=None, config=None):
         result["tools"][tool] = shutil.which(tool)
     if shutil.which("pacman"):
         for pkg in ("pipewire", "pipewire-audio", "wireplumber", "bluez", "mpv-omniphony",
-                    "orender", "orender-spatial", "harletty-bridge", "sony-tracker", "python-dbus-next", "python-tidalapi"):
+                    "orender", "orender-spatial", "harletty-bridge", "sony-tracker", "sony-tracker-spatial",
+                    "python-dbus-next", "python-tidalapi"):
             try:
                 proc = subprocess.run(["pacman", "-Q", pkg], capture_output=True, text=True, timeout=3)
                 result["packages"][pkg] = proc.stdout.strip() if proc.returncode == 0 else None
@@ -148,6 +157,16 @@ def main(argv=None):
             asyncio.run(Runtime(Settings.load(args.config)).run())
         elif args.command == "doctor":
             print(json.dumps(doctor(args.bluetooth_address, args.config), indent=2))
+        elif args.command == "timing-snapshot":
+            snapshot = asyncio.run(client("timing-snapshot"))
+            encoded = json.dumps(snapshot, indent=2, ensure_ascii=False, allow_nan=False) + "\n"
+            if args.output is None:
+                print(encoded, end="")
+            else:
+                fd = os.open(args.output, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+                with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                    os.fchmod(handle.fileno(), 0o600)
+                    handle.write(encoded)
         elif args.command == "live":
             if args.live_command == "list":
                 state = asyncio.run(client("status"))
@@ -184,7 +203,7 @@ def main(argv=None):
     except Exception as exc:
         message = str(exc)
         if "ServiceUnknown" in message or "not provided by any .service" in message:
-            message = "Spatial Audio is not running; run systemctl --user start spatiald.service"
+            message = "BudsLink Spatial Companion is not running; run systemctl --user start spatiald.service"
         print(f"spatialctl: {message}", file=sys.stderr)
         return 1
     return 0

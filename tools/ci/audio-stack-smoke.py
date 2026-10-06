@@ -23,7 +23,18 @@ import struct
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 import uuid
+
+
+SURROUND_CHANNELS = ("FL", "FR", "FC", "LFE", "SL", "SR", "RL", "RR")
+# Integral cycles in the same 100 ms period as the broadband fixture. A low
+# frequency tag exercises the LFE lane without requiring full-band LFE output.
+LANE_FREQUENCIES = (410, 610, 810, 90, 1010, 1210, 1410, 1610)
+# A digital presence floor, not an expected HRTF/EQ gain: each source tag must
+# exceed -100 dBFS RMS in at least one ear. Direction and relative ear response
+# are checked separately by the broadband geometry gate.
+MINIMUM_OUTPUT_TONE_RMS = 1e-5
 
 
 class Failure(RuntimeError):
@@ -49,7 +60,7 @@ def named(objects, name):
     return found[0] if len(found) == 1 else None
 
 
-def ports_for(objects, node_id, *, direction, monitor=None):
+def ports_for(objects, node_id, *, direction, monitor=None, channels=("FL", "FR")):
     """Return a node's channel ports, optionally restricted to monitor ports."""
     result = {}
     for obj in objects:
@@ -62,7 +73,9 @@ def ports_for(objects, node_id, *, direction, monitor=None):
         if monitor is not None and bool(port_props.get("port.monitor", False)) is not monitor:
             continue
         channel = port_props.get("audio.channel")
-        if channel in ("FL", "FR"):
+        if channel in channels:
+            if channel in result:
+                return {}  # Ambiguous channel labels cannot prove a route.
             result[channel] = obj
     return result
 
@@ -74,16 +87,187 @@ def destinations(objects, source):
             and obj["info"].get("state") in ("active", "paused")}
 
 
-def stereo_linked(objects, source, target):
-    """Require both actual output ports, not merely one node-to-node edge."""
-    links = [obj["info"] for obj in objects
+def channels_linked(objects, source, target, channels):
+    """Require exactly one same-channel edge per lane, with no side route."""
+    output = ports_for(objects, source, direction="output", channels=channels)
+    inputs = ports_for(objects, target, direction="input", channels=channels)
+    if set(output) != set(channels) or set(inputs) != set(channels):
+        return False
+    links = [obj.get("info") or {} for obj in objects
              if obj.get("type") == "PipeWire:Interface:Link"
-             and str(obj["info"].get("output-node-id")) == str(source)
-             and str(obj["info"].get("input-node-id")) == str(target)
-             and obj["info"].get("state") in ("active", "paused")]
-    return (len({link["output-port-id"] for link in links}) == 2
-            and len({link["input-port-id"] for link in links}) == 2
-            and destinations(objects, source) == {str(target)})
+             and str((obj.get("info") or {}).get("output-node-id")) == str(source)]
+    expected = {(str(output[channel]["id"]), str(inputs[channel]["id"]))
+                for channel in channels}
+    return (len(links) == len(channels)
+            and all(str(link.get("input-node-id")) == str(target)
+                    and link.get("state") in ("active", "paused") for link in links)
+            and {(str(link.get("output-port-id")), str(link.get("input-port-id")))
+                 for link in links} == expected)
+
+
+def stereo_linked(objects, source, target):
+    return channels_linked(objects, source, target, ("FL", "FR"))
+
+
+def native_surround_format(node, *, ordered=True):
+    formats = ((node.get("info") or {}).get("params") or {}).get("Format", [])
+    return (len(formats) == 1 and formats[0].get("mediaType") == "audio"
+            and formats[0].get("mediaSubtype") == "raw"
+            and formats[0].get("rate") == 48000
+            and formats[0].get("channels") == len(SURROUND_CHANNELS)
+            and (formats[0].get("position") == list(SURROUND_CHANNELS) if ordered else
+                 len(formats[0].get("position", [])) == len(SURROUND_CHANNELS)
+                 and set(formats[0].get("position", [])) == set(SURROUND_CHANNELS)))
+
+
+def owned_nodes(objects, pid):
+    clients = {str(obj["id"]) for obj in objects
+               if obj.get("type") == "PipeWire:Interface:Client"
+               and str(props(obj).get("application.process.id")) == str(pid)}
+    return [obj for obj in nodes(objects).values()
+            if str(props(obj).get("application.process.id")) == str(pid)
+            or str(props(obj).get("client.id")) in clients]
+
+
+def owned_outputs(objects, pid):
+    return [obj for obj in owned_nodes(objects, pid)
+            if props(obj).get("media.class") == "Stream/Output/Audio"]
+
+
+def verify_owned_pcm_stop_state(state, automatic_capture):
+    """Reject stale capture/error state before any integration-test rescue stop."""
+    audio, live = state.get("audio", {}), state.get("live", {})
+    require(state.get("loading") is False and audio.get("running") is False
+            and audio.get("process_id") is None,
+            f"Owned PCM Stop returned with an active player: {state}")
+    require(live.get("state") == "idle" and live.get("running") is False
+            and live.get("renderer_ready") is False and live.get("process_id") is None
+            and automatic_capture is False,
+            f"Owned PCM Stop returned before automatic capture stopped: {state}")
+    require(not state.get("playback_error") and not audio.get("error") and not live.get("error"),
+            f"Owned PCM Stop retained an error: {state}")
+
+
+def write_owned_pcm_fixture(path):
+    """Write real 7.1 PCM with distinct tones in standard WAVE speaker order."""
+    channels = ("FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR")
+    frequencies = dict(zip(SURROUND_CHANNELS, LANE_FREQUENCIES))
+    period = b"".join(struct.pack("<8h", *(
+        round(0.02 * 32767 * math.sin(2 * math.pi * frequencies[channel] * frame / 48000))
+        for channel in channels)) for frame in range(4800))
+    # WAVE_FORMAT_EXTENSIBLE's speaker mask fixes the interleaving order. A
+    # plain 8-channel WAV header would leave positions to decoder guesswork.
+    fmt = (struct.pack("<HHIIHHHHI", 0xfffe, 8, 48000, 48000 * 16, 16, 16, 22, 16, 0x63f)
+           + bytes.fromhex("0100000000001000800000aa00389b71"))
+    size = len(period) * 600
+    with path.open("wb") as output:
+        output.write(b"RIFF" + struct.pack("<I", 4 + 8 + len(fmt) + 8 + size)
+                     + b"WAVEfmt " + struct.pack("<I", len(fmt)) + fmt
+                     + b"data" + struct.pack("<I", size))
+        for _ in range(600):
+            output.write(period)
+    return {"path": path.name, "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "channels": list(channels), "tone_frequencies_hz": [frequencies[c] for c in channels],
+            "sample_rate": 48000, "duration_seconds": 60,
+            "format": "WAVE_FORMAT_EXTENSIBLE signed 16-bit PCM", "speaker_mask": "0x63f"}
+
+
+def surround_input_preserved(objects, source, target):
+    by_id = nodes(objects)
+    return (native_surround_format(by_id.get(str(source), {}))
+            and native_surround_format(by_id.get(str(target), {}))
+            and channels_linked(objects, source, target, SURROUND_CHANNELS))
+
+
+def lane_fixture(sample_rate=48000):
+    """Different audible identity for every actual 7.1 source lane."""
+    return b"".join(struct.pack("<8f", *(
+        0.02 * math.sin(2 * math.pi * frequency * frame / sample_rate)
+        for frequency in LANE_FREQUENCIES)) for frame in range(sample_rate // 10))
+
+
+def analyze_input_lanes(path, sample_rate=48000):
+    """Measure real pre-renderer monitor PCM, never infer PCM from graph labels."""
+    import numpy as np
+    raw = Path(path).read_bytes()
+    require(len(raw) % (4 * len(SURROUND_CHANNELS)) == 0,
+            "Renderer input capture contains incomplete 7.1 float32 frames")
+    samples = np.frombuffer(raw, dtype="<f4").reshape(-1, len(SURROUND_CHANNELS))
+    require(len(samples) >= sample_rate * 0.8, "Renderer input capture is too short")
+    require(np.isfinite(samples).all(), "Renderer input capture contains non-finite PCM")
+    require(np.max(np.abs(samples)) < 0.999, "Renderer input capture is clipped")
+    size = sample_rate // 10
+    start = (len(samples) - 8 * size) // 2
+    blocks = samples[start:start + 8 * size].reshape(8, size, len(SURROUND_CHANNELS))
+    power = np.mean(np.abs(np.fft.rfft(blocks.astype(np.float64), axis=1)) ** 2, axis=0)
+    # Rows are observed input lanes; columns are the unique stimulus tones.
+    rms = np.sqrt(2 * power[np.asarray(LANE_FREQUENCIES) // 10].T) / size
+    wanted = np.diag(rms)
+    leakage = rms.copy()
+    np.fill_diagonal(leakage, 0)
+    relative = np.max(leakage, axis=1) / np.maximum(wanted, 1e-30)
+    evidence = {"status": "failed", "channels": list(SURROUND_CHANNELS),
+                "tone_frequencies_hz": list(LANE_FREQUENCIES),
+                "tone_rms_by_input_lane": rms.tolist(),
+                "maximum_unwanted_to_wanted_ratio_by_lane": relative.tolist(),
+                "minimum_wanted_rms": 0.001, "maximum_crosstalk_ratio": 0.01,
+                "frames": len(samples), "sha256": hashlib.sha256(raw).hexdigest()}
+    if not (np.all(wanted >= 0.001) and np.all(relative <= 0.01)):
+        exc = Failure("Actual renderer input loses, swaps, or mixes independent 7.1 source lanes")
+        exc.report = evidence
+        raise exc
+    evidence["status"] = "passed"
+    return evidence
+
+
+def analyze_output_lanes(path, sample_rate=48000):
+    """Prove every source tag survives the renderer and EQ into either ear."""
+    import numpy as np
+    raw = Path(path).read_bytes()
+    evidence = {"status": "failed", "channels": list(SURROUND_CHANNELS),
+                "output_channels": ["FL", "FR"],
+                "tone_frequencies_hz": list(LANE_FREQUENCIES),
+                "format": "stereo float32 little-endian",
+                "sample_rate": sample_rate, "bytes": len(raw),
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "minimum_tone_rms": MINIMUM_OUTPUT_TONE_RMS,
+                "minimum_tone_rms_dbfs": 20 * math.log10(MINIMUM_OUTPUT_TONE_RMS),
+                "criterion": "Each source tone exceeds the RMS floor in at least one output ear"}
+
+    def check(condition, message):
+        if not condition:
+            evidence["error"] = message
+            exc = Failure(message)
+            exc.report = evidence
+            raise exc
+
+    check(sample_rate == 48000, "Post-EQ lane capture must use 48 kHz")
+    check(len(raw) % 8 == 0, "Post-EQ lane capture contains incomplete stereo float32 frames")
+    samples = np.frombuffer(raw, dtype="<f4").reshape(-1, 2)
+    evidence["frames"] = len(samples)
+    size = sample_rate // 10
+    check(len(samples) >= 8 * size, "Post-EQ lane capture is too short")
+    check(np.isfinite(samples).all(), "Post-EQ lane capture contains non-finite PCM")
+    evidence["peak"] = float(np.max(np.abs(samples)))
+    check(evidence["peak"] < 0.999, "Post-EQ lane capture is clipped")
+    # The eight distinct tags each complete an integral number of cycles in
+    # 100 ms. Untapered complete periods prevent a loud surviving tag leaking
+    # into a missing tag's bin merely because the recorder started mid-cycle.
+    start = (len(samples) - 8 * size) // 2
+    blocks = samples[start:start + 8 * size].reshape(8, size, 2)
+    power = np.mean(np.abs(np.fft.rfft(blocks.astype(np.float64), axis=1)) ** 2, axis=0)
+    rms = np.sqrt(2 * power[np.asarray(LANE_FREQUENCIES) // 10]) / size
+    strongest = np.max(rms, axis=1)
+    missing = [channel for channel, value in zip(SURROUND_CHANNELS, strongest)
+               if value <= MINIMUM_OUTPUT_TONE_RMS]
+    evidence.update({"analyzed_frames": 8 * size, "period_frames": size,
+                     "spectral_window": "rectangular complete stimulus periods",
+                     "tone_rms_by_source_lane": rms.tolist(),
+                     "strongest_ear_rms_by_source_lane": strongest.tolist(),
+                     "missing_source_lanes": missing})
+    check(not missing, "Post-EQ audio loses source tones: " + ", ".join(missing))
+    evidence["status"] = "passed"
+    return evidence
 
 
 class JSONSequence:
@@ -185,24 +369,29 @@ def load_helper(filename):
 
 class PCMRecorder:
     """Observe a synthetic sink's real post-processing monitor ports."""
-    def __init__(self, gate, sink):
+    def __init__(self, gate, sink, *, channels=("FL", "FR"), label="earbud"):
         self.gate, self.sink = gate, sink
+        self.channels, self.label = tuple(channels), label
+        self.node_name = "spatial-ci-" + label + "-recorder"
+        self.frame_bytes = 4 * len(self.channels)
         self.data = bytearray()
         self.process = self.task = None
 
     async def start(self):
-        log = (self.gate.report_dir / "earbud-recorder.log").open("wb")
+        log = (self.gate.report_dir / (self.label + "-recorder.log")).open("wb")
         self.gate.files.append(log)
         self.process = await asyncio.create_subprocess_exec("pw-cat", "--record", "--raw",
-            "--rate", "48000", "--channels", "2", "--channel-map", "FL,FR", "--format", "f32",
+            "--rate", "48000", "--channels", str(len(self.channels)),
+            "--channel-map", ",".join(self.channels), "--format", "f32",
             # Do not let WirePlumber choose a smart-filter input as the
             # capture target. The gate must consume the endpoint's actual
             # post-EQ monitor, so it links those ports explicitly below.
             "--target", "0", "--properties", json.dumps({
-                "node.name": "spatial-ci-earbud-recorder", "node.autoconnect": False,
+                "node.name": self.node_name, "node.autoconnect": False,
+                "stream.dont-remix": True,
                 "node.dont-fallback": True, "node.dont-reconnect": True}),
             "-", stdout=asyncio.subprocess.PIPE, stderr=log)
-        self.gate.processes.append(("earbud-recorder", self.process))
+        self.gate.processes.append((self.label + "-recorder", self.process))
 
         async def consume():
             while chunk := await self.process.stdout.read(65536):
@@ -210,37 +399,39 @@ class PCMRecorder:
 
         self.task = asyncio.create_task(consume())
         self.gate.feeds.append(self.task)
-        objects = await self.gate.until("earbud-recorder-created", lambda value:
-            named(value, "spatial-ci-earbud-recorder") is not None
+        objects = await self.gate.until(self.label + "-recorder-created", lambda value:
+            named(value, self.node_name) is not None
             and (endpoint := named(value, self.sink.name)) is not None
             and str(props(endpoint).get("object.serial")) == self.sink.serial
-            and len(ports_for(value, endpoint["id"], direction="output", monitor=True)) == 2
-            and len(ports_for(value, named(value, "spatial-ci-earbud-recorder")["id"],
-                              direction="input")) == 2)
-        capture = named(objects, "spatial-ci-earbud-recorder")
+            and len(ports_for(value, endpoint["id"], direction="output", monitor=True,
+                              channels=self.channels)) == len(self.channels)
+            and len(ports_for(value, named(value, self.node_name)["id"],
+                              direction="input", channels=self.channels)) == len(self.channels))
+        capture = named(objects, self.node_name)
         endpoint = named(objects, self.sink.name)
-        endpoint_ports = ports_for(objects, endpoint["id"], direction="output", monitor=True)
-        capture_ports = ports_for(objects, capture["id"], direction="input")
-        require(set(endpoint_ports) == {"FL", "FR"}, "Synthetic endpoint lacks stereo monitor ports")
-        require(set(capture_ports) == {"FL", "FR"}, "Recorder lacks stereo input ports")
-        for channel in ("FL", "FR"):
+        endpoint_ports = ports_for(objects, endpoint["id"], direction="output", monitor=True,
+                                   channels=self.channels)
+        capture_ports = ports_for(objects, capture["id"], direction="input", channels=self.channels)
+        require(set(endpoint_ports) == set(self.channels), "Endpoint lacks required monitor channels")
+        require(set(capture_ports) == set(self.channels), "Recorder lacks required input channels")
+        for channel in self.channels:
             await self.gate.command("pw-link", str(endpoint_ports[channel]["id"]),
                                     str(capture_ports[channel]["id"]))
-        await self.gate.until("earbud-recorder-ready", lambda value:
-            (capture := named(value, "spatial-ci-earbud-recorder")) is not None
+        await self.gate.until(self.label + "-recorder-ready", lambda value:
+            (capture := named(value, self.node_name)) is not None
             and (endpoint := named(value, self.sink.name)) is not None
             and str(props(endpoint).get("object.serial")) == self.sink.serial
-            and stereo_linked(value, endpoint["id"], capture["id"]))
+            and channels_linked(value, endpoint["id"], capture["id"], self.channels))
 
     async def window(self, name, seconds=1):
         require(self.process.returncode is None, "Synthetic earbud recorder exited")
-        start = (len(self.data) + 7) // 8 * 8
+        start = (len(self.data) + self.frame_bytes - 1) // self.frame_bytes * self.frame_bytes
         await self.gate.observe(seconds)
-        end = len(self.data) // 8 * 8
+        end = len(self.data) // self.frame_bytes * self.frame_bytes
         pcm = self.data[start:end]
-        require(len(pcm) >= int(seconds * 48000 * 8 * 0.8),
-                f"Too little actual sink audio for {name}: {len(pcm) // 8} frames")
-        path = self.gate.report_dir / "earbud-audio" / (name + ".f32le")
+        require(len(pcm) >= int(seconds * 48000 * self.frame_bytes * 0.8),
+                f"Too little actual sink audio for {name}: {len(pcm) // self.frame_bytes} frames")
+        path = self.gate.report_dir / (self.label + "-audio") / (name + ".f32le")
         path.parent.mkdir(exist_ok=True)
         path.write_bytes(pcm)
         return path
@@ -276,6 +467,11 @@ class Gate:
                            "reason": "No genuine Harletty decoder bridge supplied; CLI/FFI only"}}
         if routing_only:
             self.report["renderer_audio"]["reason"] = "Explicit early routing gate; full renderer gate runs separately"
+        elif self.bridge.is_file():
+            self.report["renderer_audio"]["reason"] = (
+                "Full renderer audio path has not completed"
+                if require_renderer_audio or require_media_audio else
+                "Full renderer audio path was not requested; CLI/FFI only")
 
     def passed(self, name, **detail):
         self.report["checks"].append({"name": name, "status": "passed", **detail})
@@ -460,12 +656,12 @@ class Gate:
         blocks = {channel: b"".join(struct.pack("<8f", *(
                     value if index == channel else 0.0 for index in range(8)))
                     for value in noise) for channel in (0, 1, 2, 6, 7)}
-        signal = {"channel": 2}
+        signal = {"block": blocks[2]}
 
         async def feed():
             try:
                 while source_process.returncode is None:
-                    source_process.stdin.write(blocks[signal["channel"]])
+                    source_process.stdin.write(signal["block"])
                     await source_process.stdin.drain()
             except (BrokenPipeError, ConnectionResetError):
                 return
@@ -475,6 +671,9 @@ class Gate:
             (source := named(value, source_name)) is not None
             and destinations(value, source["id"]) == {str(original_sink["id"])})
         source = named(objects, source_name)
+        require(native_surround_format(source), "Source is not actual positioned 48 kHz 7.1 PCM")
+        require(stereo_linked(objects, source["id"], original_sink["id"]),
+                "Fixture must reproduce an existing 7.1 source already remixed to a stereo sink")
         before = _metadata(objects, source["id"])
         self.live = LiveAudio(bridge_path=self.bridge,
             authorized_filter_inputs=self.equalizer.verified_input_ids,
@@ -497,18 +696,70 @@ class Gate:
             owned = self.live._owned_nodes(value)
             rendered = [node for node, properties in owned.items()
                         if properties.get("media.class") == "Stream/Output/Audio"]
+            renderer_input = named(value, state["input_node"])
+            endpoint = named(value, sink.name)
             return (audit["state"] == "ready" and len(eq_inputs) == 1
                     and len(rendered) == 1 and eq_output is not None
+                    and renderer_input is not None
+                    and str(props(renderer_input).get("object.serial")) == state["input_serial"]
+                    and surround_input_preserved(value, source["id"], renderer_input["id"])
+                    and endpoint is not None
+                    and str(props(endpoint).get("object.serial")) == sink.serial
                     and stereo_linked(value, rendered[0], next(iter(eq_inputs)))
-                    and stereo_linked(value, eq_output["id"], named(value, sink.name)["id"]))
+                    and stereo_linked(value, eq_output["id"], endpoint["id"]))
 
         await self.until("full-spatial-renderer-eq-earbud-chain", full_graph, timeout=35)
         await self.until("monitor-observed-real-renderer-input", lambda _: (
             actual := named(list(self.watch.objects.values()), self.live.status()["input_node"]))
-            is not None and destinations(list(self.watch.objects.values()), source["id"]) == {str(actual["id"])})
+            is not None and surround_input_preserved(list(self.watch.objects.values()),
+                                                     source["id"], actual["id"]))
         self.watch.arm(props(source)["object.serial"], self.live.status()["input_serial"])
         recorder = PCMRecorder(self, sink)
         await recorder.start()
+        input_monitor = SimpleNamespace(name=self.live.status()["input_node"],
+                                        serial=self.live.status()["input_serial"])
+        input_recorder = PCMRecorder(self, input_monitor, channels=SURROUND_CHANNELS,
+                                     label="renderer-input")
+        await input_recorder.start()
+        tags = lane_fixture()
+        (self.report_dir / "source-lane-fixture.f32le").write_bytes(tags)
+        signal["block"] = tags
+        await self.observe(1)
+        require(full_graph(await self.snapshot()), "Full chain changed before lane identity capture")
+        input_path, output_path = await asyncio.gather(
+            input_recorder.window("independent-lanes"), recorder.window("independent-lanes"))
+        require(full_graph(await self.snapshot()), "Full chain changed during lane identity capture")
+        try:
+            lane_evidence = analyze_input_lanes(input_path)
+        except Failure as exc:
+            if hasattr(exc, "report"):
+                (self.report_dir / "source-lane-evidence.json").write_text(
+                    json.dumps(exc.report, indent=2) + "\n")
+            raise
+        lane_evidence.update({"input_capture": str(input_path.relative_to(self.report_dir)),
+            "post_eq_capture": str(output_path.relative_to(self.report_dir)),
+            "fixture_sha256": hashlib.sha256(tags).hexdigest(),
+            "fixture": "source-lane-fixture.f32le", "fixture_period_frames": 4800,
+            "format": "8-channel interleaved float32 little-endian, 48 kHz"})
+        try:
+            lane_evidence["post_eq"] = analyze_output_lanes(output_path)
+        except Failure as exc:
+            lane_evidence["status"] = "failed"
+            lane_evidence["error"] = str(exc)
+            lane_evidence["post_eq"] = exc.report
+            raise
+        finally:
+            (self.report_dir / "source-lane-evidence.json").write_text(
+                json.dumps(lane_evidence, indent=2) + "\n")
+        self.passed("actual-eight-channel-input-has-independent-source-lanes",
+                    evidence="source-lane-evidence.json")
+        self.passed("all-eight-source-tones-survive-renderer-and-eq",
+                    evidence="source-lane-evidence.json")
+        input_recorder.process.terminate()
+        await input_recorder.process.wait()
+        await self.until("renderer-input-recorder-cleaned-up", lambda value:
+                         named(value, input_recorder.node_name) is None)
+        signal["block"] = blocks[2]
         windows = {}
 
         async def apply_pose(pose):
@@ -532,11 +783,12 @@ class Gate:
             tracker.records[-1]["renderer_acknowledged"] = await apply_pose(neutral)
             for name, channel in (("position_fl", 0), ("position_fr", 1), ("position_fc", 2),
                                   ("position_rl", 6), ("position_rr", 7)):
-                signal["channel"] = channel
+                signal["block"] = blocks[channel]
                 await self.observe(1)
                 require(full_graph(await self.snapshot()), f"Full chain not verified for {name}")
                 windows[name] = await recorder.window(name)
-            signal["channel"] = 2
+                require(full_graph(await self.snapshot()), f"Full chain changed during {name}")
+            signal["block"] = blocks[2]
             for name in ("pose_neutral", "pose_yaw_plus90", "pose_yaw_minus90", "pose_yaw_180",
                          "pose_pitch_plus45", "pose_pitch_minus45", "pose_roll_plus45",
                          "pose_roll_minus45", "pose_pitch_plus45_roll_plus90",
@@ -547,6 +799,7 @@ class Gate:
                 await self.observe(1)
                 require(full_graph(await self.snapshot()), f"Full chain not verified for {name}")
                 windows[name] = await recorder.window(name)
+                require(full_graph(await self.snapshot()), f"Full chain changed during {name}")
             pose_records = tracker.records
         (self.report_dir / "sony-pose-evidence.json").write_text(json.dumps(pose_records, indent=2) + "\n")
         try:
@@ -564,7 +817,8 @@ class Gate:
             "output": "real post-EQ synthetic sink monitor, stereo float32 at 48 kHz",
             "windows": {name: str(path.relative_to(self.report_dir)) for name, path in windows.items()},
             "pose_transport": "actual Sony helper UDP → production adapter/Engine → OSC",
-            "acoustic_metrics": "spatial-acoustics.json", "hardware_validated": False}
+            "acoustic_metrics": "spatial-acoustics.json",
+            "independent_source_lanes": "source-lane-evidence.json", "hardware_validated": False}
         self.passed("real-pcm-position-headpose-recenter-through-renderer-eq-earbud-chain",
                     windows=len(windows))
         self.watch.protected = None
@@ -575,6 +829,9 @@ class Gate:
         require(_metadata(objects, source["id"], GUARD_KEY) is None, "Full chain stop retained route guard")
         source_process.terminate()
         await source_process.wait()
+        self.report["owned_pcm_audio"] = await self.owned_pcm_chain(sink, recorder)
+        self.passed("owned-mpv-native-surround-through-renderer-eq-earbud-chain",
+                    evidence="owned-pcm-smoke.json")
         if self.require_media_audio:
             media = load_helper("media-spatial-smoke.py")
             self.report["media_audio"] = await media.run(self, sink, self.bridge, recorder)
@@ -583,6 +840,227 @@ class Gate:
         recorder.process.terminate()
         await recorder.process.wait()
         self.passed("full-chain-stop-restores-original-source-route")
+
+    async def owned_pcm_chain(self, sink, recorder):
+        """Exercise the owned player's distinct PCM path, including both audits."""
+        from spatial.audio_runtime import AudioRuntime
+        from spatial.live_audio import LiveAudio
+        from spatial.runtime import Runtime
+        from spatial.settings import Settings
+
+        report = {"status": "failed", "hardware_validated": False,
+                  "input": "owned mpv decoding ordinary positioned 7.1 PCM, not Atmos",
+                  "output": "post-EQ synthetic earbud sink monitor, stereo float32, 48 kHz"}
+        media = self.report_dir / "owned-surround.wav"
+        report["fixture"] = write_owned_pcm_fixture(media)
+        player = AudioRuntime(bridge_path=self.bridge, allow_pcm_route=True)
+        self.live = LiveAudio(bridge_path=self.bridge,
+            authorized_filter_inputs=self.equalizer.verified_input_ids,
+            pending_filter_inputs=self.equalizer.pending_input_ids)
+        runtime = Runtime(Settings(bridge_path=str(self.bridge), sony_enabled=False,
+                                   slime_enabled=False, automatic_diagnostics=False), audio=player,
+                          preferences_path=Path(os.environ["XDG_CONFIG_HOME"]) / "owned-pcm-preferences.json")
+        runtime.equalizer, runtime.live = self.equalizer, self.live
+        runtime.engine.connect(sink.device)
+        runtime.engine.observe_sink(runtime.engine.epoch, sink)
+        runtime.desktop = SimpleNamespace(pipewire_objects=await self.snapshot())
+
+        async def observe_desktop():
+            # Real private-session snapshots feed the production supervisors.
+            # Only the headless endpoint observation is synthetic; launch,
+            # automatic capture, audit timing and stop behavior are production.
+            while not runtime.stop_event.is_set():
+                runtime.desktop.pipewire_objects = await self.snapshot()
+                runtime.notify()
+                await asyncio.sleep(0.05)
+
+        tasks = [asyncio.create_task(coroutine, name=name) for name, coroutine in (
+            ("owned-pcm-desktop", observe_desktop()), ("owned-pcm-policy", runtime._tick()),
+            ("owned-pcm-automatic", runtime._native_audio_loop()),
+            ("owned-pcm-live", runtime._live_loop()))]
+
+        def runtime_healthy():
+            for task in tasks:
+                if task.done():
+                    task.result()
+                    raise Failure(f"Production owned PCM supervisor stopped early: {task.get_name()}")
+            require(not runtime.playback_error, f"Production PCM policy stopped playback: {runtime.playback_error}")
+
+        player_pid = None
+        input_recorder = None
+        try:
+            await runtime.play(str(media))
+            runtime_healthy()
+            require(player.process is not None, "Production runtime stopped the owned PCM player during launch")
+            player_pid = player.process.pid
+            self.processes.append(("owned-pcm-player", player.process))
+
+            def source_ready(value):
+                runtime_healthy()
+                outputs = owned_outputs(value, player_pid)
+                return (len(outputs) == 1 and bool(destinations(value, outputs[0]["id"]))
+                        and native_surround_format(outputs[0], ordered=False))
+
+            objects = await self.until("owned-mpv-native-surround-source", source_ready,
+                                       child=player.process)
+            source = owned_outputs(objects, player_pid)[0]
+            source_id, source_serial = str(source["id"]), str(props(source)["object.serial"])
+            report["source_serial"] = source_serial
+            report["source_format"] = source["info"]["params"]["Format"]
+
+            def full_graph(value):
+                runtime_healthy()
+                status = player.status()
+                state = self.live.status()
+                require(status["running"] and not status["error"],
+                        f"Owned PCM player failed: {status}")
+                require(not state["error"], f"Owned PCM live renderer failed: {state}")
+                if state["state"] != "playing":
+                    return False
+                live_audit = self.live.audit(value)
+                require(live_audit["state"] != "violation",
+                        f"Unsafe owned PCM live graph: {live_audit}")
+                eq_inputs = self.equalizer.verified_input_ids(value)
+                live_inputs = self.live.verified_input_ids(value)
+                pending = ((self.equalizer.pending_input_ids(value) | self.live.pending_input_ids(value))
+                           - eq_inputs - live_inputs)
+                routes = self.live.verified_pcm_routes(value)
+                audit = player.verify_output(value, allowed_filter_inputs=eq_inputs,
+                    pending_filter_inputs=pending, verified_pcm_routes=routes)
+                require(audit["state"] != "violation", f"Unsafe owned PCM player graph: {audit}")
+                outputs = owned_outputs(value, player_pid)
+                rendered = owned_outputs(value, self.live.process.pid)
+                renderer_input = named(value, state["input_node"])
+                group = self.equalizer.status()["link_group"]
+                eq_output = named(value, group + ".output") if group else None
+                endpoint = named(value, sink.name)
+                report["last_player"] = status
+                report["last_live"] = state
+                report["last_player_audit"] = audit
+                return (len(outputs) == 1 and str(outputs[0]["id"]) == source_id
+                        and str(props(outputs[0]).get("object.serial")) == source_serial
+                        and native_surround_format(outputs[0], ordered=False)
+                        and renderer_input is not None and native_surround_format(renderer_input)
+                        and str(props(renderer_input).get("object.serial")) == state["input_serial"]
+                        and channels_linked(value, source_id, renderer_input["id"], SURROUND_CHANNELS)
+                        and runtime._live_automatic and runtime._live_media_pid == player_pid
+                        and live_audit["state"] == "ready" and state["renderer_ready"]
+                        and audit["state"] == "verified" and len(eq_inputs) == len(live_inputs) == 1
+                        and routes == {source_serial: live_inputs}
+                        and len(rendered) == 1 and eq_output is not None and endpoint is not None
+                        and str(props(endpoint).get("object.serial")) == sink.serial
+                        and stereo_linked(value, rendered[0]["id"], next(iter(eq_inputs)))
+                        and stereo_linked(value, eq_output["id"], endpoint["id"]))
+
+            await self.until("owned-mpv-pcm-renderer-eq-earbud-chain", full_graph, timeout=35)
+            def monitor_has_route(_):
+                observed = list(self.watch.objects.values())
+                capture = named(observed, self.live.status()["input_node"])
+                return (capture is not None
+                        and str(props(capture).get("object.serial")) == self.live.status()["input_serial"]
+                        and channels_linked(observed, source_id, capture["id"], SURROUND_CHANNELS))
+
+            # GraphWatch retains every link event, but its objects are not a
+            # full snapshot: pw-dump metadata events contain partial updates.
+            # Audit guards using fresh complete snapshots, as the daemon does.
+            await self.until("monitor-observed-owned-pcm-route", monitor_has_route)
+            require(full_graph(await self.snapshot()), "Owned PCM graph changed before monitor protection")
+            self.watch.arm(source_serial, self.live.status()["input_serial"])
+            input_monitor = SimpleNamespace(name=self.live.status()["input_node"],
+                                            serial=self.live.status()["input_serial"])
+            input_recorder = PCMRecorder(self, input_monitor, channels=SURROUND_CHANNELS,
+                                         label="owned-pcm-renderer-input")
+            await input_recorder.start()
+            # Repeatedly exercise the same production audit which used to
+            # stop real 7.1 playback shortly after the live route became ready.
+            deadline = time.monotonic() + 5
+            observations = 0
+            while time.monotonic() < deadline:
+                require(full_graph(await self.snapshot()), "Owned PCM chain did not remain verified")
+                observations += 1
+                await self.observe(0.1)
+            report["sustained_audit_seconds"] = 5
+            report["sustained_verified_observations"] = observations
+            input_path, output_path = await asyncio.gather(
+                input_recorder.window("independent-lanes"),
+                recorder.window("owned-pcm-independent-lanes"))
+            require(full_graph(await self.snapshot()), "Owned PCM chain changed during lane capture")
+            report["input_lanes"] = analyze_input_lanes(input_path)
+            report["post_eq_lanes"] = analyze_output_lanes(output_path)
+            report["input_capture"] = str(input_path.relative_to(self.report_dir))
+            report["post_eq_capture"] = str(output_path.relative_to(self.report_dir))
+            report["runtime"] = runtime.state()
+            renderer_pid = self.live.status().get("process_id")
+            require(type(renderer_pid) is int and renderer_pid > 0,
+                    "Owned PCM renderer identity disappeared before Stop validation")
+            stopped = report["stop"] = {"status": "failed", "player_pid": player_pid,
+                                       "renderer_pid": renderer_pid, "observations": []}
+            await runtime.stop_playback()
+            runtime_healthy()
+            stopped["state_after_stop"] = runtime.state()
+            verify_owned_pcm_stop_state(stopped["state_after_stop"], runtime._live_automatic)
+
+            def stop_nodes_removed(objects):
+                runtime_healthy()
+                verify_owned_pcm_stop_state(runtime.state(), runtime._live_automatic)
+                return not (owned_nodes(objects, player_pid) or owned_nodes(objects, renderer_pid))
+
+            # PipeWire removal events may trail process exit. No extra stop is
+            # allowed while waiting for those events or proving continued idle.
+            await self.until("owned-pcm-stop-removed-nodes", stop_nodes_removed, timeout=3)
+            idle_started = time.monotonic()
+            while True:
+                objects = await self.snapshot()
+                current = runtime.state()
+                stopped["observations"].append({"elapsed_seconds": time.monotonic() - idle_started,
+                    "state": current, "automatic_capture": runtime._live_automatic,
+                    "player_node_ids": [obj["id"] for obj in owned_nodes(objects, player_pid)],
+                    "renderer_node_ids": [obj["id"] for obj in owned_nodes(objects, renderer_pid)]})
+                require(stop_nodes_removed(objects), "Owned PCM nodes reappeared after Stop")
+                if time.monotonic() - idle_started >= 1:
+                    break
+                await self.observe(.1)
+            stopped.update(status="passed", supervisors_alive=True,
+                           idle_observation_seconds=time.monotonic() - idle_started,
+                           validated_before_fallback_cleanup=True)
+        except BaseException as exc:
+            report["error"] = f"{type(exc).__name__}: {exc}"
+            if hasattr(exc, "report"):
+                report["failed_measurement"] = exc.report
+            raise
+        finally:
+            self.watch.protected = None
+            try:
+                try:
+                    # Stop this owned request before ending supervisors. A
+                    # service failure with a still-live captured source must
+                    # mute it; deliberately triggering that recovery here
+                    # would persist a stream mute into the next media gate.
+                    await runtime.stop_playback()
+                    await runtime.stop_live()
+                finally:
+                    runtime.stop_event.set()
+                    for task in tasks:
+                        task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                if (input_recorder is not None and input_recorder.process is not None
+                        and input_recorder.process.returncode is None):
+                    input_recorder.process.terminate()
+                    await input_recorder.process.wait()
+                await self.live.stop()
+                await player.stop("owned PCM smoke complete")
+                if player_pid is not None:
+                    await self.until("owned-pcm-player-cleaned-up", lambda value:
+                                     not owned_outputs(value, player_pid))
+                if "error" not in report:
+                    report["status"] = "passed"
+            except BaseException as exc:
+                report["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+                if "error" not in report:
+                    raise
+            finally:
+                (self.report_dir / "owned-pcm-smoke.json").write_text(json.dumps(report, indent=2) + "\n")
+        return report
 
     async def run(self, private):
         require(os.geteuid() != 0, "Run this gate as an unprivileged build user")
@@ -799,7 +1277,7 @@ class Gate:
                     and stereo_linked(value, output["id"], headphones["id"]))
 
         await self.until("production-smart-eq-linked", eq_ready)
-        self.passed("production-eq-smart-filter-real-swh-limiter", status=self.equalizer.status())
+        self.passed("production-eq-smart-filter-real-swh-limiter", equalizer=self.equalizer.status())
         await self.equalizer.stop()
         eq_source.terminate()
         await eq_source.wait()

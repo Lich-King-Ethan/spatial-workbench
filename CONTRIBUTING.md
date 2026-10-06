@@ -1,4 +1,4 @@
-# Contributing
+# Contributing to BudsLink Spatial Companion
 
 Keep changes scoped to one provider or interface where possible. Hardware
 discovery, routing, decoding, tracking, account access, and Companion UI remain
@@ -10,16 +10,16 @@ connection recovery, routing ownership, tracker selection, or credential handlin
 
 Use Python 3.11 or later in a virtual environment. The complete suite needs a
 private session D-Bus, Node.js, a Lua shared library, a C compiler, and the SWH
-LADSPA limiter. On Arch, install the test dependencies with:
+LADSPA limiter. On Arch, install the dependencies and run the checks below.
+These commands work in fish and Bash without activating a shell-specific script:
 
 ```sh
-sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins
+sudo pacman -S --needed python python-pip base-devel dbus nodejs lua swh-plugins git
 python -m venv .venv
-. .venv/bin/activate
-python -m pip install -e '.[tidal]' build
-SPATIAL_TEST_DBUS=1 dbus-run-session -- python -m unittest discover -s tests -v
+.venv/bin/python -m pip install -e '.[tidal]' build numpy
+env SPATIAL_TEST_DBUS=1 dbus-run-session -- .venv/bin/python -m unittest discover -s tests -v
 luac -p wireplumber/scripts/spatial-live-guard.lua
-python -m build
+.venv/bin/python -m build
 ```
 
 The D-Bus tests must use a private bus, not the active desktop session. The Lua,
@@ -27,11 +27,14 @@ JavaScript, native-library, and private-bus tests exercise real local runtimes.
 They do not validate a Bluetooth connection, a Plasma popup, or acoustic output.
 Read `STATUS.md` and the module documentation for outstanding hardware checks.
 
-Generate package sources with `python tools/make-release.py`. On Arch, build
+Generate package sources with `.venv/bin/python tools/make-release.py`. On Arch, build
 inside each generated `dist/arch/core` and `dist/arch/companion` directory using
 `makepkg --syncdeps --cleanbuild`. Run makepkg as an ordinary user. The separate
 `dist/arch/orender` recipe compiles the pinned renderer and runs its Rust tests
-and binary/library marker checks; this build takes longer.
+and binary/library marker checks; this build takes longer. The Companion's native
+UI gate needs Plasma 6.7 or later, Kirigami Platform and `extra-cmake-modules`,
+listed in its package recipe. It initializes the actual Plasma theme and checks
+control contrast; a plain offscreen Qt palette is not representative of Plasma.
 
 ## Report a reproducible problem
 
@@ -64,3 +67,40 @@ renderer-path-triggered workflow. Actions are pinned to commit IDs, checkout
 credentials are not persisted, and workflows request read-only repository access.
 CI artifacts are unsigned test builds. A configured workflow is not evidence
 that a GitHub run passed; use the actual run logs when reporting results.
+
+## Licensing and compatibility
+
+Original contributions use AGPL-3.0-only. Preserve upstream GPL/MIT notices and
+attribution; read the [license map](docs/licensing.md) before importing code.
+Do not relicense the derived Plasma widget or third-party assets by changing a
+project-wide label.
+
+The Python/Arch distribution is `budslink-spatial-companion`. Keep the `spatial`
+module, `spatialctl` alias, `spatiald.service`, D-Bus names and saved config paths
+compatible. Package ownership checks must use actual renamed package owners.
+The repository URL has not been renamed.
+
+## Current validation boundaries
+
+On October 5, the revision 5 source and core package suites passed **509 tests**;
+the Companion package passed **8 native UI checks with no skips**. Revision 5
+is installed, with all 122 baseline files unchanged. Its **15 audio gates** passed
+on private PipeWire, including clean shutdown before fallback cleanup. Installed
+AAC decoded, but its route/listening trial was blocked by a saved application mute.
+That acceptance remains pending.
+
+The user accepted channel direction changes and yaw anchoring with prediction off.
+TIDAL authorization and browsing work; real FLAC reached the renderer, EQ and XM5s
+with fresh tracking, and the user confirmed it sounded good. Pitch, roll, recenter,
+prediction comparison, Atmos streaming and refreshed-panel interaction remain
+pending. See [current status](STATUS.md) for exact evidence and limits.
+
+Use private buses, synthetic protocol fixtures and isolated audio endpoints for
+development. Keep failures in the evidence record: normal playback shutdown must
+stop its producer before capture cleanup, while actual renderer failures must
+remain visible. TIDAL's Max/CD/AAC choices accept available renditions within
+their documented ceilings. Strict Atmos and the legacy strict Lossless API must
+reject stereo and lossy substitutions respectively. Never weaken acoustic
+assertions to make a run green.
+Coordinate audible playback and movement checks with the user; fixture results
+cannot establish their listening experience. See [current status](STATUS.md).

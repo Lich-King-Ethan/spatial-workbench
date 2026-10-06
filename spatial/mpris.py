@@ -39,7 +39,7 @@ class Application(ServiceInterface):
 
     @dbus_property(access=PropertyAccess.READ)
     def Identity(self) -> 's':
-        return "Spatial Audio"
+        return "BudsLink Spatial Companion"
 
     @dbus_property(access=PropertyAccess.READ)
     def SupportedUriSchemes(self) -> 'as':
@@ -203,7 +203,7 @@ async def serve(runtime, stop):
     reply = await bus.request_name(SERVICE, NameFlag.DO_NOT_QUEUE)
     if reply != RequestNameReply.PRIMARY_OWNER:
         bus.disconnect()
-        raise RuntimeError("another Spatial Audio media service is already running")
+        raise RuntimeError("another BudsLink Spatial Companion media service is already running")
     player = Player(runtime)
     bus.export(PATH, Application(runtime))
     bus.export(PATH, player)

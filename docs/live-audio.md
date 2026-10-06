@@ -13,13 +13,25 @@ the ordinary physical headphones, including the separately verified headphone EQ
 when enabled. Capturing the headphone monitor is not used. The graph audit rejects
 feedback, unselected applications entering the capture input, renderer links to
 other outputs, replaced device serials, missing routing protections, and failed
-links. Readiness requires every selected-source and renderer output channel to
-have an established path; the existence of a process or sink alone is insufficient.
+links. Readiness requires the renderer's negotiated native format to contain the
+fixed eight named channels, the source's native speakers to survive in its actual
+graph ports, and each application channel to reach its matching renderer input.
+Every renderer output channel must have an established path. A declared node
+property or a process alone cannot establish channel preservation.
+
+Owned media playback preserves mpv's original PCM channel layout with
+`--audio-channels=auto` when automatic PCM routing is enabled. Forcing stereo
+here would destroy surround information before the PipeWire audit can see it.
+The player accepts native multichannel links only through a source-serial-bound
+capture route whose full PCM and binaural output chain was independently
+verified in the same graph snapshot. Direct headphone, EQ and rendered output
+links still require matching FL/FR pairs; pending links never establish readiness.
 
 ## Engine and content contract
 
 The supported standalone engine is **Omniphony v0.5.2 with the packaged
-`+spatial-loopback1` patch**. The runtime probes that version and the necessary
+`+spatial-loopback1` patch and positioned-input patch (`orender-spatial` pkgrel 2)**.
+The runtime probes the version and necessary
 CLI options before launch. It creates a private configuration and FIFO, starts
 `orender render --continuous`, and uses v0.5.2's implemented
 `render.input_mode: live` path. The separate `orender input-live` command is
@@ -91,12 +103,14 @@ verified failure muting, and safe capture retention when muting fails. The
 WirePlumber hook has a separate executable Lua policy test. These fixtures test
 policy and process lifecycle, not an actual desktop graph.
 
-The development host has no running PipeWire desktop, physical XM5, or installed
-Omniphony renderer. Actual channel negotiation, game behavior, local latency,
-physical head-motion directions, output privacy on process/device failures, and
-KDE presentation still require the supported Arch desktop's integration checks.
-The user's September 17, 2026 Companion confirmation does not independently
-validate those new audio features.
+The earlier cloud development environment had no physical devices. Subsequent
+hosted and local isolated PipeWire tests established native channel negotiation
+and software routing behavior; September 28 testing also reached the actual
+WF-1000XM5 and corrected yaw compensation. Selected-game behavior, the remaining
+physical axes, latency perception and real-device recovery still need acceptance.
+The repaired October 3 installed stack passes the private native gate; physical
+testing awaits the user connecting the headphones. See [current status](../STATUS.md)
+and the [physical record](local-pc-validation-20260928.md).
 
 Primary references:
 
@@ -139,7 +153,8 @@ must be verified before shipping a transparent device-wide feature.
 This mechanism is now implemented as the independent [equalizer module](equalizer.md),
 with a sourced AutoEQ DHRME five-band profile and a downstream SWH limiter. It does
 not implement arbitrary-application head tracking. The module's real limiter DSP
-has been tested; its full live desktop graph still needs a local runtime check.
+has been tested, and the September 28 physical chain included its verified final
+route. Remaining presentation and recovery checks are recorded separately.
 Omniphony's upstream clipping meter cannot prove that a later EQ stage is safe,
 and EQ headroom is not unconditionally added back as makeup gain.
 

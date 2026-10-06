@@ -1,0 +1,47 @@
+# SonyTrackerLinux 1.0.0 with opt-in absolute and host-timestamped modes.
+# The legacy CLI and OpenTrack UDP format remain the default.
+pkgname=sony-tracker-spatial
+pkgver=1.0.0
+pkgrel=2
+pkgdesc='Sony head tracker with optional timestamped absolute orientation for spatial audio'
+arch=('x86_64')
+url='https://github.com/kdani3/SonyTrackerLinux'
+license=('MIT')
+depends=('glibc')
+makedepends=('gcc' 'make')
+checkdepends=('python')
+provides=("sony-tracker=$pkgver")
+conflicts=('sony-tracker')
+source=("sony-tracker-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz"
+        'sony-absolute.patch' 'sony-native-test.py' 'PROVENANCE.md')
+sha256sums=('27752dd19b4e6a6da8eb816b9beb22adcfe94ac68d756d9489dd613bbd5d9b26'
+            '@PATCH_SHA256@' '@TEST_SHA256@' '@PROVENANCE_SHA256@')
+
+prepare() {
+    cd "$srcdir/SonyTrackerLinux-$pkgver"
+    patch --forward --batch --fuzz=0 -Np1 < "$srcdir/sony-absolute.patch"
+}
+
+build() {
+    cd "$srcdir/SonyTrackerLinux-$pkgver"
+    # The upstream archive contains a prebuilt executable. Never package it.
+    make clean
+    make CC="${CC:-cc}" CFLAGS="$CFLAGS -std=c11 -Wall -Wextra" \
+        LDFLAGS="$LDFLAGS -lm -lpthread"
+}
+
+check() {
+    cd "$srcdir/SonyTrackerLinux-$pkgver"
+    python "$srcdir/sony-native-test.py" "$PWD"
+}
+
+package() {
+    cd "$srcdir/SonyTrackerLinux-$pkgver"
+    install -Dm755 sony-tracker "$pkgdir/usr/bin/sony-tracker"
+    install -Dm644 71-sony-head-tracker.rules \
+        "$pkgdir/usr/lib/udev/rules.d/71-sony-head-tracker.rules"
+    install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+    install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "$srcdir/PROVENANCE.md" "$pkgdir/usr/share/doc/$pkgname/PROVENANCE.md"
+    install -Dm644 "$srcdir/sony-absolute.patch" "$pkgdir/usr/share/doc/$pkgname/sony-absolute.patch"
+}

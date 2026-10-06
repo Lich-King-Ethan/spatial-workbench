@@ -113,7 +113,7 @@ def filter_config(profile_path: Path, sink: Sink, group: str, limiter_plugin: st
         "outputs": ["limit:Output 1", "limit:Output 2"],
     }
     return {
-        "context.properties": {"application.name": "Spatial Equalizer", "log.level": 1},
+        "context.properties": {"application.name": "BudsLink Spatial Companion EQ", "log.level": 1},
         "context.spa-libs": {"audio.convert.*": "audioconvert/libspa-audioconvert",
                              "support.*": "support/libspa-support"},
         "context.modules": [
@@ -142,7 +142,7 @@ def find_limiter() -> str:
 
 def audit_graph(objects, *, pid, group, sink: Sink) -> dict:
     """Only a complete, owned, verified EQ chain can be an approved intermediary."""
-    nodes, clients, links = {}, set(), []
+    nodes, ports, clients, links = {}, {}, set(), []
     for obj in objects:
         if not isinstance(obj, dict):
             continue
@@ -153,8 +153,10 @@ def audit_graph(objects, *, pid, group, sink: Sink) -> dict:
             clients.add(str(obj.get("id")))
         elif kind == "PipeWire:Interface:Node":
             nodes[str(obj.get("id"))] = props
+        elif kind == "PipeWire:Interface:Port":
+            ports[str(obj.get("id"))] = info
         elif kind == "PipeWire:Interface:Link":
-            links.append((str(info.get("output-node-id")), str(info.get("input-node-id"))))
+            links.append(info)
     def owned(props):
         return (str(props.get("application.process.id")) == str(pid)
                 or str(props.get("client.id")) in clients)
@@ -189,6 +191,8 @@ def audit_graph(objects, *, pid, group, sink: Sink) -> dict:
                   and props.get("media.class") == "Audio/Sink"}
     if not target_ids:
         return waiting
+    if len(target_ids) != 1:
+        return violation("EQ physical target is ambiguous")
     waiting["pending_input_node_ids"] = sorted(inputs)
     if not outputs:
         return waiting
@@ -199,13 +203,64 @@ def audit_graph(objects, *, pid, group, sink: Sink) -> dict:
             or str(output_props.get("node.dont-fallback")).lower() != "true"
             or str(output_props.get("node.dont-reconnect")).lower() != "true"):
         return violation("EQ routing protections are missing")
-    connected = False
-    for source, destination in links:
-        if source in outputs:
-            if destination not in target_ids:
-                return violation("EQ output is linked to another device")
-            connected = True
-    if not connected:
+    output_id = next(iter(outputs))
+
+    def direction(info):
+        # pw-dump normally publishes both fields. Accept either representation,
+        # but a contradictory native direction must not certify a link.
+        native = {"input": "in", "output": "out"}.get(info.get("direction"))
+        reported = (info.get("props") or {}).get("port.direction")
+        if "direction" in info and native is None:
+            return None
+        if native is not None and reported is not None and native != reported:
+            return None
+        return native or reported
+
+    output_ports = {
+        port: info for port, info in ports.items()
+        if str((info.get("props") or {}).get("node.id")) == output_id
+        and str((info.get("props") or {}).get("port.control", False)).lower() != "true"
+    }
+    channels = [(info.get("props") or {}).get("audio.channel") for info in output_ports.values()]
+    if (any(direction(info) != "out" for info in output_ports.values())
+            or any(channel not in {"FL", "FR"} for channel in channels)
+            or len(channels) != len(set(channels))):
+        return violation("EQ output ports do not expose distinct left and right channels")
+
+    connected, destinations, complete = set(), set(), True
+    for info in links:
+        source, destination = str(info.get("output-node-id")), str(info.get("input-node-id"))
+        output_port, input_port = str(info.get("output-port-id")), str(info.get("input-port-id"))
+        port_info = ports.get(output_port)
+        port_props = (port_info or {}).get("props") or {}
+        if source not in outputs and str(port_props.get("node.id")) not in outputs:
+            continue
+        if source != output_id:
+            return violation("EQ link does not belong to its output node")
+        if destination not in target_ids:
+            return violation("EQ output is linked to another device")
+        target_info = ports.get(input_port)
+        if port_info is None or target_info is None:
+            # Port enumeration and link negotiation are asynchronous.
+            complete = False
+            continue
+        target_props = target_info.get("props") or {}
+        if (str(port_props.get("node.id")) != source
+                or str(target_props.get("node.id")) != destination
+                or direction(port_info) != "out" or direction(target_info) != "in"
+                or str(port_props.get("port.control", False)).lower() == "true"
+                or str(target_props.get("port.control", False)).lower() == "true"):
+            return violation("EQ link port ownership or direction could not be verified")
+        if (port_props.get("audio.channel") not in {"FL", "FR"}
+                or port_props.get("audio.channel") != target_props.get("audio.channel")):
+            return violation("EQ output channel does not match the physical headphone channel")
+        if output_port in connected or input_port in destinations:
+            return violation("EQ output contains duplicate channel links")
+        connected.add(output_port)
+        destinations.add(input_port)
+        if info.get("state") not in {"active", "paused"}:
+            complete = False
+    if not complete or set(channels) != {"FL", "FR"} or connected != set(output_ports):
         return waiting
     return {"state": "verified", "reason": "EQ is linked to the selected physical headphones",
             "input_node_ids": sorted(inputs), "pending_input_node_ids": []}

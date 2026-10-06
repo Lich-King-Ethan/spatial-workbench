@@ -2,7 +2,10 @@
 import importlib.util
 import json
 from pathlib import Path
+import tempfile
 import unittest
+
+import numpy as np
 
 
 path = Path(__file__).resolve().parents[1] / "tools/ci/audio-stack-smoke.py"
@@ -27,7 +30,99 @@ def port(identifier, node_identifier, direction, channel, monitor=False):
         "audio.channel": channel, "port.monitor": monitor}}}
 
 
+def channel_graph(channels=smoke.SURROUND_CHANNELS):
+    source, target = node(10, 100), node(20, 200)
+    for obj in (source, target):
+        obj["info"]["params"] = {"Format": [{"mediaType": "audio", "mediaSubtype": "raw",
+            "rate": 48000, "channels": len(channels), "position": list(channels)}]}
+    result = [source, target]
+    for index, channel in enumerate(channels):
+        result.extend([port(100 + index, 10, "output", channel),
+                       port(200 + index, 20, "input", channel),
+                       {"id": 300 + index, "type": "PipeWire:Interface:Link", "info": {
+                           "output-node-id": 10, "output-port-id": 100 + index,
+                           "input-node-id": 20, "input-port-id": 200 + index,
+                           "state": "active"}}])
+    return result
+
+
 class AudioGateEvidenceTests(unittest.TestCase):
+    def test_owned_stop_rejects_stale_capture_or_error_before_rescue_cleanup(self):
+        stopped = {"loading": False, "playback_error": None,
+                   "audio": {"running": False, "process_id": None, "error": ""},
+                   "live": {"state": "idle", "running": False, "renderer_ready": False,
+                            "process_id": None, "error": ""}}
+        smoke.verify_owned_pcm_stop_state(stopped, False)
+        for section, field, value in (("live", "running", True), ("live", "state", "playing"),
+                                      ("live", "process_id", 42), ("live", "renderer_ready", True),
+                                      ("live", "error", "Selected application is no longer available"),
+                                      ("audio", "running", True), ("audio", "process_id", 43),
+                                      ("audio", "error", "real player error")):
+            with self.subTest(section=section, field=field):
+                stale = json.loads(json.dumps(stopped))
+                stale[section][field] = value
+                with self.assertRaises(smoke.Failure):
+                    smoke.verify_owned_pcm_stop_state(stale, False)
+        with self.assertRaises(smoke.Failure):
+            smoke.verify_owned_pcm_stop_state(stopped, True)
+
+    def test_owned_node_cleanup_includes_capture_inputs_and_client_owned_outputs(self):
+        capture, output, foreign = node(10, 100), node(20, 200), node(30, 300)
+        capture["info"]["props"].update({"application.process.id": 42, "media.class": "Audio/Sink"})
+        output["info"]["props"].update({"client.id": 7, "media.class": "Stream/Output/Audio"})
+        foreign["info"]["props"].update({"application.process.id": 99,
+                                          "media.class": "Stream/Output/Audio"})
+        client = {"id": 7, "type": "PipeWire:Interface:Client",
+                  "info": {"props": {"application.process.id": 42}}}
+        objects = [capture, output, foreign, client]
+        self.assertEqual([obj["id"] for obj in smoke.owned_nodes(objects, 42)], [10, 20])
+        self.assertEqual([obj["id"] for obj in smoke.owned_outputs(objects, 42)], [20])
+        self.assertEqual(smoke.owned_nodes([foreign], 42), [])
+
+    def test_surround_requires_all_eight_actual_same_channel_links(self):
+        self.assertTrue(smoke.surround_input_preserved(channel_graph(), 10, 20))
+        # This reproduces the hosted run: native PCM is 7.1 but the source's
+        # actual graph has already downmixed it to two ports.
+        objects = [obj for obj in channel_graph()
+                   if obj["id"] not in set(range(102, 108)) | set(range(302, 308))]
+        self.assertFalse(smoke.surround_input_preserved(objects, 10, 20))
+
+    def test_rejects_unknown_renderer_layout_even_with_eight_links(self):
+        objects = channel_graph()
+        del objects[1]["info"]["params"]["Format"][0]["position"]
+        for obj in objects:
+            if obj.get("type") == "PipeWire:Interface:Port" and obj["info"]["direction"] == "input":
+                obj["info"]["props"]["audio.channel"] = "UNK"
+        self.assertFalse(smoke.surround_input_preserved(objects, 10, 20))
+
+    def test_rejects_swapped_channels_despite_correct_link_count(self):
+        objects = channel_graph()
+        for obj in objects:
+            if obj["id"] == 300:
+                obj["info"]["input-port-id"] = 201
+            elif obj["id"] == 301:
+                obj["info"]["input-port-id"] = 200
+        self.assertFalse(smoke.surround_input_preserved(objects, 10, 20))
+
+    def test_rejects_side_routes_before_they_become_active(self):
+        objects = channel_graph()
+        objects.append(link(999, 40, "init"))
+        self.assertFalse(smoke.surround_input_preserved(objects, 10, 20))
+
+    def test_rejects_duplicate_links_and_ambiguous_channel_ports(self):
+        objects = channel_graph()
+        duplicate = json.loads(json.dumps(objects[-1]))
+        duplicate["id"] = 999
+        self.assertFalse(smoke.surround_input_preserved(objects + [duplicate], 10, 20))
+        self.assertFalse(smoke.surround_input_preserved(
+            objects + [port(999, 10, "output", "FL")], 10, 20))
+
+    def test_stereo_graph_cannot_be_satisfied_by_arbitrary_ports(self):
+        objects = channel_graph(("FL", "FR"))
+        self.assertTrue(smoke.stereo_linked(objects, 10, 20))
+        next(obj for obj in objects if obj["id"] == 201)["info"]["props"]["audio.channel"] = "UNK"
+        self.assertFalse(smoke.stereo_linked(objects, 10, 20))
+
     def test_ports_for_selects_stereo_monitor_channels(self):
         objects = [port(11, 10, "output", "FL", True),
                    port(12, 10, "output", "FR", True),
@@ -78,6 +173,134 @@ class AudioGateEvidenceTests(unittest.TestCase):
         watch.feed([{"id": 20, "info": None}, {"id": 30, "info": None}])
         watch.feed([link(30, 20, "init")])
         self.assertEqual(len(watch.violations), 1)
+
+
+class InputLaneEvidenceTests(unittest.TestCase):
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.capture = Path(self.directory.name) / "input.f32le"
+        self.samples = np.frombuffer(smoke.lane_fixture() * 10, dtype="<f4").reshape(-1, 8).copy()
+
+    def analyze(self, samples):
+        self.capture.write_bytes(samples.astype("<f4").tobytes())
+        return smoke.analyze_input_lanes(self.capture)
+
+    def test_independent_lanes_survive_arbitrary_capture_phase_and_gain(self):
+        samples = np.roll(self.samples, 177, axis=0) * np.arange(1, 9)[None, :] / 8
+        result = self.analyze(samples)
+        self.assertEqual(result["status"], "passed")
+        self.assertEqual(result["channels"], list(smoke.SURROUND_CHANNELS))
+
+    def test_swapped_rear_and_front_channels_fail(self):
+        self.samples[:, [0, 6]] = self.samples[:, [6, 0]]
+        with self.assertRaisesRegex(smoke.Failure, "loses, swaps, or mixes"):
+            self.analyze(self.samples)
+
+    def test_stereo_downmix_and_reexpansion_fail(self):
+        self.samples[:, 0] += self.samples[:, 6]
+        self.samples[:, 1] += self.samples[:, 7]
+        self.samples[:, 6:] = self.samples[:, :2]
+        with self.assertRaisesRegex(smoke.Failure, "loses, swaps, or mixes"):
+            self.analyze(self.samples)
+
+    def test_dropped_lfe_fails(self):
+        self.samples[:, 3] = 0
+        with self.assertRaises(smoke.Failure) as caught:
+            self.analyze(self.samples)
+        self.assertEqual(caught.exception.report["status"], "failed")
+
+    def test_identical_signal_copied_to_every_lane_fails(self):
+        self.samples[:] = self.samples[:, 0, None]
+        with self.assertRaises(smoke.Failure):
+            self.analyze(self.samples)
+
+    def test_nan_cannot_be_accepted_as_tone_evidence(self):
+        self.samples[24000, 3] = np.nan
+        with self.assertRaisesRegex(smoke.Failure, "non-finite"):
+            self.analyze(self.samples)
+
+
+class OutputLaneEvidenceTests(unittest.TestCase):
+    # Independent analytic mixer, not a renderer/HRTF model. A missing side
+    # or LFE channel leaves the other seven tones and both ears plainly loud.
+    tags = {"FL": 410, "FR": 610, "FC": 810, "LFE": 90,
+            "SL": 1010, "SR": 1210, "RL": 1410, "RR": 1610}
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.capture = Path(self.directory.name) / "post-eq.f32le"
+
+    def mixed(self, *, missing=(), phase=0, quiet=None):
+        time = (np.arange(48000) + phase) / 48000
+        samples = np.zeros((len(time), 2))
+        for index, (channel, frequency) in enumerate(self.tags.items()):
+            if channel in missing:
+                continue
+            # Different arbitrary gain per source; deliberately only one ear
+            # per tone so the gate cannot require identical ear amplitudes.
+            amplitude = (index + 1) * 0.002
+            if channel == quiet:
+                amplitude = smoke.MINIMUM_OUTPUT_TONE_RMS * 0.5 * np.sqrt(2)
+            samples[:, index % 2] += amplitude * np.sin(2 * np.pi * frequency * time)
+        return samples.astype("<f4")
+
+    def analyze(self, samples):
+        self.capture.write_bytes(samples.astype("<f4").tobytes())
+        return smoke.analyze_output_lanes(self.capture)
+
+    def test_all_tags_survive_with_arbitrary_gains_phase_and_single_ear_per_tag(self):
+        reference = self.analyze(self.mixed())
+        self.assertEqual(reference["status"], "passed")
+        self.assertEqual(reference["missing_source_lanes"], [])
+        self.assertEqual(reference["minimum_tone_rms_dbfs"], -100)
+        for phase in (177, 2399, 4799):
+            with self.subTest(phase=phase):
+                result = self.analyze(self.mixed(phase=phase))
+                np.testing.assert_allclose(result["tone_rms_by_source_lane"],
+                                           reference["tone_rms_by_source_lane"], atol=1e-10)
+
+    def test_missing_side_or_lfe_tag_fails_while_stereo_output_remains_loud(self):
+        for channel in ("SL", "SR", "LFE"):
+            with self.subTest(channel=channel):
+                samples = self.mixed(missing=(channel,), phase=791)
+                self.assertTrue(np.all(np.sqrt(np.mean(samples.astype(float) ** 2, axis=0)) > 0.008))
+                with self.assertRaisesRegex(smoke.Failure, "loses source tones") as caught:
+                    self.analyze(samples)
+                report = caught.exception.report
+                self.assertEqual(report["status"], "failed")
+                self.assertEqual(report["missing_source_lanes"], [channel])
+                self.assertEqual(len(report["tone_rms_by_source_lane"]), 8)
+                self.assertEqual(report["analyzed_frames"], 38400)
+                self.assertEqual(len(report["sha256"]), 64)
+
+    def test_nonzero_tag_below_presence_floor_does_not_pass(self):
+        with self.assertRaises(smoke.Failure) as caught:
+            self.analyze(self.mixed(quiet="LFE", phase=37))
+        report = caught.exception.report
+        self.assertEqual(report["missing_source_lanes"], ["LFE"])
+        self.assertGreater(report["strongest_ear_rms_by_source_lane"][3], 0)
+
+    def test_invalid_captures_fail_with_partial_evidence(self):
+        for kind in ("non-finite", "clipped", "short", "incomplete"):
+            with self.subTest(kind=kind):
+                samples = self.mixed()
+                if kind == "non-finite":
+                    samples[24000, 1] = np.nan
+                elif kind == "clipped":
+                    samples[24000, 1] = 1
+                elif kind == "short":
+                    samples = samples[:100]
+                raw = samples.tobytes()
+                if kind == "incomplete":
+                    raw = raw[:-1]
+                self.capture.write_bytes(raw)
+                with self.assertRaises(smoke.Failure) as caught:
+                    smoke.analyze_output_lanes(self.capture)
+                self.assertEqual(caught.exception.report["status"], "failed")
+                self.assertIn("error", caught.exception.report)
+                self.assertEqual(caught.exception.report["bytes"], len(raw))
 
 
 if __name__ == "__main__":

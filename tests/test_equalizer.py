@@ -23,8 +23,18 @@ def node(number, **props):
     return {"id": number, "type": "PipeWire:Interface:Node", "info": {"props": props}}
 
 
-def link(source, destination):
-    return {"type": "PipeWire:Interface:Link", "info": {"output-node-id": source, "input-node-id": destination}}
+def port(number, owner, channel, direction):
+    return {"id": number, "type": "PipeWire:Interface:Port", "info": {
+        "direction": {"in": "input", "out": "output"}[direction],
+        "props": {"node.id": owner, "audio.channel": channel, "port.direction": direction}}}
+
+
+def link(source, destination, output_port=None, input_port=None, state="active"):
+    return {"type": "PipeWire:Interface:Link", "info": {
+        "output-node-id": source, "input-node-id": destination,
+        "output-port-id": output_port if output_port is not None else source * 100 + 1,
+        "input-port-id": input_port if input_port is not None else destination * 100 + 1,
+        "state": state}}
 
 
 def graph(group=GROUP, sink=SINK):
@@ -37,7 +47,10 @@ def graph(group=GROUP, sink=SINK):
                    "node.link-group": group, "target.object": sink.serial,
                    "node.dont-fallback": True, "node.dont-reconnect": True}),
         node(30, **{"node.name": sink.name, "object.serial": sink.serial, "media.class": "Audio/Sink"}),
-        link(21, 30),
+        port(2001, 20, "FL", "in"), port(2002, 20, "FR", "in"),
+        port(2101, 21, "FL", "out"), port(2102, 21, "FR", "out"),
+        port(3001, 30, "FL", "in"), port(3002, 30, "FR", "in"),
+        link(21, 30, 2101, 3001), link(21, 30, 2102, 3002),
     ]
 
 
@@ -135,6 +148,81 @@ class GraphAudit(unittest.TestCase):
         self.assertEqual(result["state"], "waiting")
         self.assertEqual(result["input_node_ids"], [])
         self.assertEqual(result["pending_input_node_ids"], ["20"])
+
+    def test_both_channels_must_have_negotiated_links(self):
+        for state in ("init", "negotiating", "allocating", "error", "unlinked", None):
+            objects = graph()
+            objects[-1]["info"]["state"] = state
+            with self.subTest(state=state):
+                result = audit_graph(objects, pid=123, group=GROUP, sink=SINK)
+                self.assertEqual(result["state"], "waiting")
+                self.assertEqual(result["input_node_ids"], [])
+                self.assertEqual(result["pending_input_node_ids"], ["20"])
+        objects = graph()
+        objects[-1]["info"]["state"] = "paused"
+        self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "verified")
+
+    def test_partial_channel_or_port_enumeration_waits_without_approval(self):
+        for missing in (2101, 3001):
+            objects = [obj for obj in graph() if obj.get("id") != missing]
+            with self.subTest(missing=missing):
+                result = audit_graph(objects, pid=123, group=GROUP, sink=SINK)
+                self.assertEqual(result["state"], "waiting")
+                self.assertEqual(result["input_node_ids"], [])
+                self.assertEqual(result["pending_input_node_ids"], ["20"])
+        result = audit_graph(graph()[:-1], pid=123, group=GROUP, sink=SINK)
+        self.assertEqual(result["state"], "waiting")
+        self.assertEqual(result["pending_input_node_ids"], ["20"])
+
+    def test_crossed_channels_and_duplicate_links_are_rejected(self):
+        crossed = graph()
+        crossed[-2]["info"]["input-port-id"] = 3002
+        crossed[-1]["info"]["input-port-id"] = 3001
+        duplicate = graph() + [link(21, 30, 2101, 3001)]
+        for objects in (crossed, duplicate):
+            with self.subTest(objects=objects[-2:]):
+                self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "violation")
+
+    def test_real_port_ownership_direction_and_channels_are_required(self):
+        for port_id, key, value in (
+                (2101, "node.id", 888), (3001, "node.id", 888),
+                (2101, "port.direction", "in"), (3001, "port.direction", "out"),
+                (2101, "audio.channel", "UNK"), (3001, "audio.channel", "UNK"),
+                (2102, "audio.channel", "FL"), (3002, "audio.channel", "FL"),
+                (2101, "port.control", True), (3001, "port.control", True)):
+            objects = graph()
+            next(obj for obj in objects if obj.get("id") == port_id)["info"]["props"][key] = value
+            with self.subTest(port=port_id, key=key, value=value):
+                self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "violation")
+
+    def test_native_port_direction_cannot_contradict_the_property(self):
+        for direction in ("output", "unknown"):
+            objects = graph()
+            next(obj for obj in objects if obj.get("id") == 3001)["info"]["direction"] = direction
+            with self.subTest(direction=direction):
+                self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "violation")
+
+    def test_native_direction_and_property_direction_representations_work(self):
+        for only_native in (False, True):
+            objects = graph()
+            for obj in objects:
+                if obj["type"] == "PipeWire:Interface:Port":
+                    if only_native:
+                        obj["info"]["props"].pop("port.direction")
+                    else:
+                        obj["info"].pop("direction")
+            with self.subTest(only_native=only_native):
+                self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "verified")
+
+    def test_forged_output_node_cannot_hide_a_link_from_an_eq_port(self):
+        objects = graph() + [link(888, 40, 2101, 4001)]
+        self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "violation")
+
+    def test_additional_unknown_or_duplicate_eq_output_port_is_rejected(self):
+        for channel in ("FL", "FC", "UNK"):
+            objects = graph() + [port(2103, 21, channel, "out")]
+            with self.subTest(channel=channel):
+                self.assertEqual(audit_graph(objects, pid=123, group=GROUP, sink=SINK)["state"], "violation")
 
 
 class FakeProcess:

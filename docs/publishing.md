@@ -6,7 +6,7 @@ From the extracted project directory, run this as your normal desktop user:
 bash tools/publish-github.sh
 ```
 
-This creates **a public repository named `spatial-workbench` under your signed-in
+This creates **a public repository named `budslink-spatial-companion` under your signed-in
 GitHub account** and pushes the source. Running the command requests publication;
 there is no separate confirmation after authentication. This document does not
 mean a repository has already been created.
@@ -21,7 +21,7 @@ using `gh auth setup-git`.
 To require a particular signed-in account or choose another repository name:
 
 ```bash
-bash tools/publish-github.sh --owner Lich-King-Ethan --name spatial-workbench
+bash tools/publish-github.sh --owner Lich-King-Ethan --name budslink-spatial-companion
 ```
 
 `--owner` verifies the authenticated personal account. It cannot publish into

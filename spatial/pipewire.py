@@ -58,4 +58,27 @@ async def capture():
         raise
     if proc.returncode:
         raise RuntimeError("pw-dump could not read the user PipeWire session")
-    return json.loads(output)
+    try:
+        objects = json.loads(output)
+        if not isinstance(objects, list):
+            raise ValueError
+        seen = set()
+        for obj in objects:
+            if (not isinstance(obj, dict) or type(obj.get("id")) is not int
+                    or obj["id"] < 0 or obj["id"] in seen
+                    or not isinstance(obj.get("type"), str)
+                    or not obj["type"].startswith("PipeWire:Interface:")):
+                raise ValueError
+            seen.add(obj["id"])
+            if obj["type"] == "PipeWire:Interface:Node":
+                info = obj.get("info")
+                props = info.get("props") if isinstance(info, dict) else None
+                if (not isinstance(props, dict)
+                        or not str(props.get("object.serial", "")).isdigit()):
+                    raise ValueError
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        # An unreadable graph must never masquerade as an empty session. In
+        # particular, safe cleanup may restore audio only after proving the
+        # selected source ended or its mute succeeded.
+        raise RuntimeError("pw-dump returned an invalid graph snapshot") from None
+    return objects
