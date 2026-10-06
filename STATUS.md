@@ -10,7 +10,7 @@ Pitch, roll, off-center recenter and prediction comparisons remain pending.
 
 ## TIDAL quality and library access
 
-The built revision 5 update defaults to **Max (best available)** instead of requiring a
+The installed revision 5 update defaults to **Max (best available)** instead of requiring a
 lossless rendition. It accepts a lower available stereo format, with explicit
 CD, AAC 320 and AAC 96 ceilings. Atmos remains strict. Queue selections preserve
 their quality, and the panel remembers the user's choice in its own Plasma
@@ -25,14 +25,24 @@ The complete source and package suites passed **509 tests**, and the native UI
 package passed **8 checks with no skips**. Real-account silent probes loaded every library category
 and decoded Max/FLAC, CD-request/AAC, AAC 320 and AAC 96 using the installed player.
 The current account returned no root folders, so nested-folder acceptance uses
-bounded fixtures, including 400 folders and later pages. The first installation
-prompt timed out waiting for sudo; a fresh normal prompt is open. Revision 4
-remains installed until that transaction succeeds. A live AAC route check follows
-activation. These probes do not replace physical listening evidence.
+bounded fixtures, including 400 folders and later pages. Core `0.2.3-5` and
+Companion `0.2.0.spatial0.2.3-5` are installed through normal package prompts;
+their reviewed files match exactly and all 122 baseline files remain unchanged.
+The first sudo prompt timed out; the retry succeeded. Both services are active
+after the panel reload. All **15 installed audio gates passed** again.
+
+The installed AAC 96 trial decoded AAC and reported approximately 96 kbps, but
+stopped before route/listening acceptance because KDE restored a saved mute for
+the BudsLink application stream. Cleanup removed owned nodes and preserved
+defaults and settings. The mute's origin is unestablished; confirmation is pending
+before changing that saved setting. Silent probes do not replace listening evidence.
 
 For implementation commit `609ee88`, [CI](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391395844)
 passed all three Python lanes and the Arch package job. The
 [renderer build](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391398319)
+was cancelled during compilation when the documentation follow-up superseded it.
+The matching follow-up [CI](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391726857)
+also passed. Its [renderer run](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391726891)
 is still running; no result is assumed.
 
 ## October 5 physical checks

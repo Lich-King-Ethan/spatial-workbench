@@ -17,12 +17,31 @@ this account; nested-folder checks use explicit fixtures, including 400 root
 folders and a nested page beyond the SDK constructor's first 50 items. An initial
 probe accidentally imported the older installed provider; its signature errors
 remain in private evidence, and the corrected probe explicitly used the checkout.
-Installation and installed AAC routing are the next checks. The first sudo prompt
-timed out without a package transaction; its log is retained. A new normal Konsole
-prompt is open, with revision 4 still installed. Hosted CI for `609ee88` passed
+Revision 5 is now installed through normal prompts. The first sudo prompt timed
+out without a transaction; the retry completed with exit 0. Six installed artifacts
+match source and package bytes, and all 122 baseline files remained unchanged
+through installation and panel reload. Both user services are active. The actual
+installed stack passed all 15 strict private audio gates, retaining
+`hardware_validated: false` in its report under
+`build/local-validation/tidal-library-quality-20261005/installed-native-audio/`.
+
+The physical AAC 96 trial decoded AAC and observed 95,999 bps, but the owned player
+source was muted. KDE's saved stream properties confirm a BudsLink application
+mute; its origin is not established. The trial failed before route/listening
+acceptance, conditionally stopped its own request, removed its nodes and preserved
+defaults and all baseline files. It did not unmute the saved setting. Confirmation
+of the user's intent is pending before retry. The failed report is retained in
+`tidal-aac96-2wqgm8b2/` alongside the installed native report.
+
+Hosted CI for `609ee88` passed
 the Python 3.11–3.13 lanes and Arch package job in
 [run 37391395844](https://github.com/Lich-King-Ethan/spatial-workbench/actions/runs/37391395844).
-The matching renderer run remains in progress. Restricted standalone queue-test attempts stalled;
+The matching renderer was cancelled during compilation after the documentation
+push; no compiler/test failure was reported. The follow-up CI also passed; its
+renderer remains pending. The private AAC runner now saves candidate snapshots
+before readiness assertions so a future failed sample retains its exact evidence.
+Its offline checks pass; no playback condition was relaxed.
+Restricted standalone queue-test attempts stalled;
 the exact test passed in 0.01 seconds in both approved unrestricted contexts, with
 and without a private bus. Those interrupted logs are retained alongside the
 passing full/package suites; no assertion was changed to obtain a pass.

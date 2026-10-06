@@ -84,16 +84,16 @@ The repository URL has not been renamed.
 
 On October 5, the revision 5 source and core package suites passed **509 tests**;
 the Companion package passed **8 native UI checks with no skips**. Revision 5
-installation and its installed AAC route check await normal package prompts.
-Previously installed revision 4 passed **all 15 audio gates** on private
-PipeWire, including clean owned playback shutdown before fallback cleanup. All
-122 baseline settings/widget files remained unchanged. The user accepted channel
-direction changes and yaw anchoring with prediction off. Pitch, roll, recenter
-and prediction comparisons remain pending. TIDAL account authorization and browsing work, and a read-only
-observation confirmed actual stereo FLAC through the renderer/EQ/headphone route
-with fresh XM5 tracking. The user confirmed that TIDAL music sounds good. Atmos
-streaming, refreshed panel interaction and physical Stop still need acceptance.
-The shell was refreshed successfully; the latest player state is idle.
+is installed, with all 122 baseline files unchanged. Its **15 audio gates** passed
+on private PipeWire, including clean shutdown before fallback cleanup. Installed
+AAC decoded, but its route/listening trial was blocked by a saved application mute.
+That acceptance remains pending.
+
+The user accepted channel direction changes and yaw anchoring with prediction off.
+TIDAL authorization and browsing work; real FLAC reached the renderer, EQ and XM5s
+with fresh tracking, and the user confirmed it sounded good. Pitch, roll, recenter,
+prediction comparison, Atmos streaming and refreshed-panel interaction remain
+pending. See [current status](STATUS.md) for exact evidence and limits.
 
 Use private buses, synthetic protocol fixtures and isolated audio endpoints for
 development. Keep failures in the evidence record: normal playback shutdown must
